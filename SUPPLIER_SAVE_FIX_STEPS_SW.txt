@@ -1,0 +1,23 @@
+SMART HUB POS — KUREKEBISHA SUPPLIER SAVE (11/10/2026)
+
+Chanzo cha error:
+Akaunti yako kwenye jedwali la users ina role isiyoruhusu manager actions (mara nyingi 'viewer'). Hivyo suppliers.upsert inakataliwa kabla hata haijaandika supplier.
+
+Marekebisho ya code:
+1. updateCurrentUser sasa inaweza kupandisha akaunti iliyopo kuwa super_admin pale tu SUPER_ADMIN_USERNAME ya Convex inalingana na username ya kuingia na hakuna Super Admin mwingine. Haibadilishi username wala kufuta data.
+2. Supplier save ya Super Admin inaweka supplier kwenye ofisi/branch hai ya kwanza kama fomu haina branch selector; kama hakuna ofisi/branch hai, itaonyesha ujumbe wa wazi badala ya manager permission error.
+
+HATUA ZA KUTUMIA:
+1. Backup project yako na fungua folder SmartHubPOS kutoka ZIP hii.
+2. Fungua terminal kwenye folder hiyo na uhakikishe Convex deployment sahihi imechaguliwa/imeunganishwa.
+3. Weka username yako HALISI ya login (ile unayotumia kuingia SmartHubPOS) kwenye amri hii, usiandike neno username_yako lenyewe:
+   npx convex env set SUPER_ADMIN_USERNAME username_yako
+4. Deploy functions/schema:
+   npx convex dev --once
+5. Toka kwenye SmartHubPOS (sign out), kisha ingia tena kwa username hiyo hiyo.
+6. Jaribu kuhifadhi supplier tena.
+
+MUHIMU:
+- Ikiwa deployment ina Super Admin mwingine tayari, bootstrap haitampandisha mtumiaji wa pili.
+- Kama hutaki kubadilisha role ya akaunti, usiweke username nyingine kwenye environment variable. Usifute akaunti wala data.
+- Marekebisho haya bado yanahitaji ku-deploy kwenye Convex backend unayotumia; kubadilisha ZIP peke yake hakubadilishi backend iliyopo tayari.

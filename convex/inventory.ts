@@ -1,0 +1,142 @@
+import { mutation, query } from "./_generated/server";
+import { v } from "convex/values";
+import { canAccessRecord, filterScoped, requireActiveUser, resolveWriteScope, requireManager, scopedRows } from "./access";
+import { getSystemAccount, postSystemJournal, roundMoney } from "./ledger";
+const validQty = (n: number) => Number.isFinite(n) && n >= 0;
+export const listMovements = query({ args: { productId: v.optional(v.id("products")) }, handler: async (ctx, args) => { const user = await requireActiveUser(ctx, "stock"); const all = args.productId ? await ctx.db.query("stockMovements").withIndex("by_product", q => q.eq("productId", args.productId!)).collect() : await scopedRows(ctx, user, "stockMovements"); return filterScoped(user, all).sort((a,b)=>b.movementDate.localeCompare(a.movementDate)); } });
+export const adjust = mutation({ args: { productId: v.id("products"), newQty: v.number(), reason: v.string(), adjustmentDate: v.string() }, handler: async (ctx,args) => { const user = await requireManager(ctx, "stock"); const scope = await resolveWriteScope(ctx, user); if (!validQty(args.newQty) || !args.reason.trim()) throw new Error("Weka stock halali na sababu ya marekebisho."); const p = await ctx.db.get(args.productId); if (!canAccessRecord(user,p) || !p) throw new Error("Bidhaa haipatikani kwenye branch yako."); const delta = Math.round((args.newQty - p.currentQty) * 1e8) / 1e8; if (delta === 0) throw new Error("Kiasi kipya ni sawa na kilichopo; hakuna cha kurekebisha."); await ctx.db.patch(args.productId,{currentQty:args.newQty}); const id = await ctx.db.insert("stockAdjustments",{...scope,adjustmentDate:args.adjustmentDate,productId:args.productId,qtyBefore:p.currentQty,adjustmentQty:delta,qtyAfter:args.newQty,reason:args.reason,status:"approved",requestedBy:user._id,approvedBy:user._id,approvedAt:new Date().toISOString()}); await ctx.db.insert("stockMovements",{...scope,movementDate:args.adjustmentDate,productId:args.productId,movementType:"adjustment",referenceId:String(id),referenceType:"stockAdjustment",qtyIn:Math.max(delta,0),qtyOut:Math.max(-delta,0),runningBalance:args.newQty,unitCost:p.weightedAvgCost??p.lastPurchaseCost??0,notes:args.reason,createdBy:user._id});
+ const value=roundMoney(Math.abs(delta)*(p.weightedAvgCost??p.lastPurchaseCost??0));
+ if(value>0){const inventory=await getSystemAccount(ctx,scope,"1200","Inventory","asset");const adjustment=await getSystemAccount(ctx,scope,delta>0?"5100":"5200",delta>0?"Stock adjustment gain":"Stock shrinkage expense",delta>0?"revenue":"expense");await postSystemJournal(ctx,{scope,userId:user._id,date:args.adjustmentDate,reference:`STOCK-${String(id)}`,description:`Stock adjustment: ${p.name} — ${args.reason}`,sourceType:"stock_adjustment",sourceId:String(id),lines:delta>0?[{accountId:inventory,debit:value,credit:0,description:"Stock increase"},{accountId:adjustment,debit:0,credit:value,description:"Stock adjustment gain"}]:[{accountId:adjustment,debit:value,credit:0,description:"Stock shrinkage"},{accountId:inventory,debit:0,credit:value,description:"Stock decrease"}]});}
+ await ctx.db.insert("auditLogs",{userId:user._id,userName:user.name??user.email??"user",action:"stock_adjustment",module:"inventory",referenceId:String(id),referenceType:"stockAdjustment",details:`${p.name}: ${p.currentQty} -> ${args.newQty}. ${args.reason}`,timestamp:new Date().toISOString(),result:"success"}); return id; } });
+
+
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+const round8 = (n: number) => Math.round((n + Number.EPSILON) * 1e8) / 1e8;
+const costOf = (p: any) => p.weightedAvgCost ?? p.lastPurchaseCost ?? 0;
+
+/**
+ * Single source of truth for every Stock screen and report.
+ * Quantities come from the product ledger (products.currentQty) and are cross-checked
+ * against the sum of stock movements, so differences are visible instead of hidden.
+ */
+export const stockRegisters = query({
+  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
+  handler: async (ctx, a) => {
+    const user = await requireActiveUser(ctx, "stock");
+    const inRange = (d: string) => (!a.startDate || d >= a.startDate) && (!a.endDate || d <= a.endDate);
+    const [productsRaw, groupsRaw, unitsRaw, movementsRaw, adjustmentsRaw, invoicesRaw] = await Promise.all([
+      scopedRows(ctx, user, "products"), scopedRows(ctx, user, "productGroups"), scopedRows(ctx, user, "unitsOfMeasure"),
+      scopedRows(ctx, user, "stockMovements"), scopedRows(ctx, user, "stockAdjustments"), scopedRows(ctx, user, "invoices"),
+    ]);
+    const products = filterScoped(user, productsRaw);
+    const groups = filterScoped(user, groupsRaw);
+    const units = filterScoped(user, unitsRaw);
+    const movements = filterScoped(user, movementsRaw).sort((x, y) => x.movementDate.localeCompare(y.movementDate) || x._creationTime - y._creationTime);
+    const groupName = new Map(groups.map((g) => [String(g._id), g.name]));
+    const unitName = new Map(units.map((u) => [String(u._id), u.name]));
+    const pById = new Map(products.map((p) => [String(p._id), p]));
+
+    // Per-product movement totals: before the period, inside the period, and all time.
+    const agg = new Map<string, { before: number; inQty: number; outQty: number; all: number; running: number }>();
+    for (const p of products) agg.set(String(p._id), { before: 0, inQty: 0, outQty: 0, all: 0, running: 0 });
+    for (const m of movements) {
+      const g = agg.get(String(m.productId)); if (!g) continue;
+      const net = m.qtyIn - m.qtyOut;
+      g.all += net;
+      if (a.startDate && m.movementDate < a.startDate) g.before += net;
+      else if (inRange(m.movementDate)) { g.inQty += m.qtyIn; g.outQty += m.qtyOut; }
+    }
+    for (const g of agg.values()) g.running = g.before;
+
+    // Resolve document numbers for the movements shown.
+    const refCache = new Map<string, string>();
+    const refOf = async (m: any) => {
+      const key = `${m.referenceType}:${m.referenceId}`;
+      if (refCache.has(key)) return refCache.get(key)!;
+      let label = m.notes ?? "";
+      try {
+        if (m.referenceType === "invoice") { const id = ctx.db.normalizeId("invoices", m.referenceId); const d = id ? await ctx.db.get(id) : null; label = (d as any)?.invoiceNo ?? label; }
+        else if (m.referenceType === "purchase") { const id = ctx.db.normalizeId("purchases", m.referenceId); const d = id ? await ctx.db.get(id) : null; label = (d as any)?.invoiceNo ? `Purchase #${(d as any).invoiceNo}` : (d as any)?.internalRef ?? label; }
+        else if (m.referenceType === "goodsReceivedNote" || m.referenceType === "purchaseReturn") label = m.notes ?? label;
+        else if (m.referenceType === "stockAdjustment") label = m.notes ?? "Adjustment";
+      } catch { /* keep fallback label */ }
+      refCache.set(key, label); return label;
+    };
+    const rows: Array<Record<string, any>> = [];
+    for (const m of movements) {
+      const g = agg.get(String(m.productId)); const p = pById.get(String(m.productId)); if (!g || !p) continue;
+      g.running = round8(g.running + m.qtyIn - m.qtyOut);
+      if (!inRange(m.movementDate)) continue;
+      rows.push({ _id: m._id, date: m.movementDate, productId: m.productId, itemCode: p.itemCode, productName: p.name, type: m.movementType, qtyIn: m.qtyIn, qtyOut: m.qtyOut, balance: g.running, unitCost: m.unitCost ?? 0, reference: await refOf(m), notes: m.notes ?? "" });
+    }
+
+    const productRows = products.map((p) => {
+      const g = agg.get(String(p._id))!; const cost = costOf(p);
+      return {
+        _id: p._id, itemCode: p.itemCode, partNumber: p.partNumber ?? "", name: p.name, description: p.description ?? "", barcode: p.barcode ?? "",
+        groupId: p.groupId, groupName: p.groupId ? groupName.get(String(p.groupId)) ?? "—" : "—", unitId: p.unitId, unitName: p.unitId ? unitName.get(String(p.unitId)) ?? "Unit" : "Unit",
+        openingQty: p.openingQty, currentQty: p.currentQty, sellingPrice: p.sellingPrice, cost, lastPurchaseCost: p.lastPurchaseCost ?? 0, lastPurchaseDate: p.lastPurchaseDate ?? "",
+        stockValue: round2(p.currentQty * cost), retailValue: round2(p.currentQty * p.sellingPrice),
+        reorderLevel: p.reorderLevel ?? null, minStockLevel: p.minStockLevel ?? null, isActive: p.isActive,
+        trackExpiry: !!p.trackExpiry, trackSerialNumbers: !!p.trackSerialNumbers, trackBatchNumbers: !!p.trackBatchNumbers,
+        qtyBefore: round8(g.before), qtyIn: round8(g.inQty), qtyOut: round8(g.outQty), qtyEnd: round8(g.before + g.inQty - g.outQty),
+        movementBalance: round8(g.all), difference: round8(p.currentQty - g.all),
+      };
+    }).sort((x, y) => x.name.localeCompare(y.name));
+
+    // Earnings per item from posted invoices (invoice-level discount is spread across lines; tax excluded).
+    const invoices = filterScoped(user, invoicesRaw).filter((i) => i.status === "posted" && inRange(i.invoiceDate));
+    const earn = new Map<string, { qty: number; sales: number; cost: number; invoices: Set<string> }>();
+    for (const inv of invoices) {
+      const lines = await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", inv._id)).collect();
+      const factor = inv.subtotal > 0 ? (inv.subtotal - inv.discount) / inv.subtotal : 1;
+      for (const l of lines) {
+        const e = earn.get(String(l.productId)) ?? { qty: 0, sales: 0, cost: 0, invoices: new Set<string>() };
+        e.qty += l.qty; e.sales += l.lineTotal * factor; e.cost += l.qty * l.costAtSale; e.invoices.add(String(inv._id));
+        earn.set(String(l.productId), e);
+      }
+    }
+    const earnings = [...earn.entries()].map(([id, e]) => {
+      const p = pById.get(id); const profit = e.sales - e.cost;
+      return { productId: id, itemCode: p?.itemCode ?? "—", productName: p?.name ?? "Bidhaa iliyofutwa", qtySold: round8(e.qty), invoices: e.invoices.size, sales: round2(e.sales), cost: round2(e.cost), profit: round2(profit), marginPct: e.sales > 0 ? round2((profit / e.sales) * 100) : 0 };
+    }).sort((x, y) => y.profit - x.profit);
+
+    const adjustments = filterScoped(user, adjustmentsRaw).filter((x) => inRange(x.adjustmentDate)).sort((x, y) => y.adjustmentDate.localeCompare(x.adjustmentDate))
+      .map((x) => ({ _id: x._id, date: x.adjustmentDate, productName: pById.get(String(x.productId))?.name ?? "Bidhaa", itemCode: pById.get(String(x.productId))?.itemCode ?? "—", qtyBefore: x.qtyBefore, counted: x.qtyAfter, difference: x.adjustmentQty, reason: x.reason, status: x.status, cost: costOf(pById.get(String(x.productId)) ?? {}) }));
+
+    const active = productRows.filter((p) => p.isActive);
+    return {
+      products: productRows, groups: groups.map((g) => ({ _id: g._id, code: g.code, name: g.name, description: g.description ?? "", isActive: g.isActive })), units: units.map((u) => ({ _id: u._id, code: u.code, name: u.name, isActive: u.isActive })),
+      movements: rows, adjustments, earnings,
+      totals: {
+        items: active.length, stockValue: round2(active.reduce((n, p) => n + p.stockValue, 0)), retailValue: round2(active.reduce((n, p) => n + p.retailValue, 0)),
+        outOfStock: active.filter((p) => p.currentQty <= 0).length, belowReorder: active.filter((p) => p.reorderLevel !== null && p.currentQty <= p.reorderLevel).length,
+        mismatches: productRows.filter((p) => Math.abs(p.difference) > 1e-6).length,
+      },
+    };
+  },
+});
+
+/** Repairs old products whose movement history does not add up to the current quantity (e.g. opening stock saved before movements existed). */
+export const reconcileMovements = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const user = await requireManager(ctx, "stock"); const scope = await resolveWriteScope(ctx, user);
+    const products = (await scopedRows(ctx, user, "products"));
+    const movements = (await scopedRows(ctx, user, "stockMovements"));
+    const today = new Date().toISOString().slice(0, 10);
+    let fixed = 0;
+    for (const p of products) {
+      const mine = movements.filter((m) => m.productId === p._id);
+      const net = round8(mine.reduce((n, m) => n + m.qtyIn - m.qtyOut, 0));
+      const diff = round8(p.currentQty - net);
+      if (Math.abs(diff) <= 1e-6) continue;
+      const firstDate = mine.length ? mine.map((m) => m.movementDate).sort()[0] : today;
+      const isOpening = mine.length === 0 || (mine.every((m) => m.movementType !== "opening") && diff > 0);
+      await ctx.db.insert("stockMovements", { ...scope, movementDate: isOpening ? firstDate : today, productId: p._id, movementType: isOpening ? "opening" : "adjustment", referenceId: String(p._id), referenceType: "reconcile", qtyIn: Math.max(diff, 0), qtyOut: Math.max(-diff, 0), runningBalance: p.currentQty, unitCost: costOf(p), notes: isOpening ? "Opening stock (reconciled)" : "Reconciliation to system quantity", createdBy: user._id });
+      fixed++;
+    }
+    await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "reconcile_stock_movements", module: "inventory", details: `${fixed} product(s) reconciled`, timestamp: new Date().toISOString(), result: "success" });
+    return { fixed };
+  },
+});

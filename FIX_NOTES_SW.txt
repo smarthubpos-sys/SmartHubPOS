@@ -1,0 +1,28 @@
+SMART HUB POS - MAREKEBISHO (2026-10-11)
+
+KAZI 1: "Forbidden: manager permission required" wakati wa kusave supplier
+---------------------------------------------------------------------------
+Chanzo halisi:
+ - Convex Auth huweka session id ndani ya tokenIdentifier, kwa hiyo tokenIdentifier hubadilika kila unapoingia (login).
+   Mfumo ulikuwa unatafuta profile kwa tokenIdentifier, hivyo kila login mpya iliunda profile mpya yenye role ya
+   kawaida "viewer" -> supplier save ikakataliwa.
+ - Pia suppliers.ts ilikuwa na regex yenye makosa (/[\\s-]+/) iliyobadilisha herufi "s" kwenye role.
+
+Marekebisho:
+ - Profile sasa ni document ya Convex Auth user yenyewe (haibadiliki kila login). access.ts: getCurrentProfile.
+ - users.updateCurrentUser: username iliyo kwenye SUPER_ADMIN_USERNAME huwa Super Admin siku zote; profile za zamani
+   zenye username hiyo hiyo huhamishiwa (role/ofisi/branch); kama hakuna Super Admin, akaunti ya kwanza huwa Super Admin.
+ - Super Admin anaweza kusave supplier hata kabla ofisi haijaundwa (resolveWriteScope).
+ - suppliers.upsert sasa inatumia ruhusa "suppliers.manage" (Admin/Manager wanayo kwa default) na inaandika Audit Trail.
+
+KAZI 2: Maintenance (zote 14 zimekamilika)
+---------------------------------------------------------------------------
+Angalia MAINTENANCE_SW.md kwa maelezo ya kila skrini na mipaka yake.
+
+HATUA ZA KUTUMIA
+ 1. Hifadhi nakala ya mradi/database ya sasa.
+ 2. Extract ZIP, nakili .env.local yako ndani ya folder jipya.
+ 3. npm install
+ 4. npx convex env set SUPER_ADMIN_USERNAME <username-yako-ya-admin>
+ 5. npx convex dev      (huregenerate convex/_generated na kuongeza table mpya appSettings)
+ 6. npm run dev  -> toka (logout) kisha ingia tena mara moja ili profile ihamishwe.

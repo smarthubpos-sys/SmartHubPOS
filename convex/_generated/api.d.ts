@@ -1,0 +1,113 @@
+/* eslint-disable */
+/**
+ * Generated `api` utility.
+ *
+ * THIS CODE IS AUTOMATICALLY GENERATED.
+ *
+ * To regenerate, run `npx convex dev`.
+ * @module
+ */
+
+import type * as access from "../access.js";
+import type * as accounting from "../accounting.js";
+import type * as announcements from "../announcements.js";
+import type * as auth from "../auth.js";
+import type * as plans from "../plans.js";
+import type * as subscriptions from "../subscriptions.js";
+import type * as attendance from "../attendance.js";
+import type * as biometric from "../biometric.js";
+import type * as bills from "../bills.js";
+import type * as capital from "../capital.js";
+import type * as hr from "../hr.js";
+import type * as notifications from "../notifications.js";
+import type * as support from "../support.js";
+import type * as clients from "../clients.js";
+import type * as customerBills from "../customerBills.js";
+import type * as dashboard from "../dashboard.js";
+import type * as http from "../http.js";
+import type * as inventory from "../inventory.js";
+import type * as ledger from "../ledger.js";
+import type * as maintenance from "../maintenance.js";
+import type * as permissions from "../permissions.js";
+import type * as paymentMethods from "../paymentMethods.js";
+import type * as payroll from "../payroll.js";
+import type * as products from "../products.js";
+import type * as purchaseReports from "../purchaseReports.js";
+import type * as purchasing from "../purchasing.js";
+import type * as reportEmails from "../reportEmails.js";
+import type * as sales from "../sales.js";
+import type * as settings from "../settings.js";
+import type * as stats from "../stats.js";
+import type * as suppliers from "../suppliers.js";
+import type * as tenants from "../tenants.js";
+import type * as users from "../users.js";
+
+import type {
+  ApiFromModules,
+  FilterApi,
+  FunctionReference,
+} from "convex/server";
+
+declare const fullApi: ApiFromModules<{
+  access: typeof access;
+  accounting: typeof accounting;
+  announcements: typeof announcements;
+  auth: typeof auth;
+  plans: typeof plans;
+  subscriptions: typeof subscriptions;
+  attendance: typeof attendance;
+  biometric: typeof biometric;
+  bills: typeof bills;
+  capital: typeof capital;
+  hr: typeof hr;
+  notifications: typeof notifications;
+  support: typeof support;
+  clients: typeof clients;
+  customerBills: typeof customerBills;
+  dashboard: typeof dashboard;
+  http: typeof http;
+  inventory: typeof inventory;
+  ledger: typeof ledger;
+  maintenance: typeof maintenance;
+  permissions: typeof permissions;
+  paymentMethods: typeof paymentMethods;
+  payroll: typeof payroll;
+  products: typeof products;
+  purchaseReports: typeof purchaseReports;
+  purchasing: typeof purchasing;
+  reportEmails: typeof reportEmails;
+  sales: typeof sales;
+  settings: typeof settings;
+  stats: typeof stats;
+  suppliers: typeof suppliers;
+  tenants: typeof tenants;
+  users: typeof users;
+}>;
+
+/**
+ * A utility for referencing Convex functions in your app's public API.
+ *
+ * Usage:
+ * ```js
+ * const myFunctionReference = api.myModule.myFunction;
+ * ```
+ */
+export declare const api: FilterApi<
+  typeof fullApi,
+  FunctionReference<any, "public">
+>;
+
+/**
+ * A utility for referencing Convex functions in your app's internal API.
+ *
+ * Usage:
+ * ```js
+ * const myFunctionReference = internal.myModule.myFunction;
+ * ```
+ */
+export declare const internal: FilterApi<
+  typeof fullApi,
+  FunctionReference<any, "internal">
+>;
+
+export declare const components: {};

@@ -1,0 +1,201 @@
+import { SYSTEM_ROLES, effectiveModules } from "./permissions";
+import { planStatus, tzToday } from "./plans";
+
+/**
+ * ROOT CAUSE NOTE (supplier "manager permission required" error):
+ * Convex Auth's tokenIdentifier contains the *session id*, so it changes at every sign-in.
+ * Profiles keyed by tokenIdentifier were re-created as default "viewer" on each login.
+ * The profile is now the Convex Auth user document itself (stable across sessions).
+ * Legacy tokenIdentifier lookup is kept only as a fallback for old data.
+ */
+export async function getCurrentProfile(ctx: any) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) return null;
+  const authUserId = ctx.db.normalizeId("users", String(identity.subject ?? "").split("|")[0]);
+  if (authUserId) {
+    const doc = await ctx.db.get(authUserId);
+    if (doc) return doc;
+  }
+  return await ctx.db.query("users").withIndex("by_token", (q: any) => q.eq("tokenIdentifier", identity.tokenIdentifier)).unique();
+}
+
+/**
+ * `module` (optional) = the sidebar module the call belongs to ("payroll", "purchasing" ...). The call is refused when the
+ * business did not pay for that module or the user's menu does not include it, so hiding a menu is also enforced on the server.
+ */
+export async function requireActiveUser(ctx: any, module?: string) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) throw new Error("Unauthenticated");
+  const user = await getCurrentProfile(ctx);
+  if (!user || user.isActive === false) throw new Error("Forbidden: active user account required");
+  // Users of a stopped business cannot use the system (Super Admin is never blocked).
+  if (!isSuperAdmin(user) && user.tenantId) {
+    const tenant = await ctx.db.get(user.tenantId);
+    if (tenant && tenant.isActive === false) throw new Error("Forbidden: business suspended");
+    if (tenant && planStatus(tenant, tzToday()).expired) throw new Error("Forbidden: subscription expired");
+    if (module) {
+      const allowed = effectiveModules(tenant?.modules, user.menuAccess);
+      if (allowed && !allowed.includes(module)) throw new Error("Forbidden: module not available for your account");
+    }
+  }
+  return user;
+}
+
+/**
+ * Staff mode: the user sees only his own sales/bills and a personal dashboard.
+ * Managers/admins are never limited by this flag, whatever is stored on the account.
+ */
+export function isOwnDataOnly(user: any) {
+  return user?.ownDataOnly === true && !isSuperAdmin(user) && !MANAGER_ROLES.includes(normalizeRole(user?.role));
+}
+
+/** Normalize role labels coming from older deployments/imported users (e.g. "Super Admin"). */
+export function normalizeRole(role: unknown) {
+  return String(role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+export function isSuperAdmin(user: any) {
+  return ["super_admin", "superadmin"].includes(normalizeRole(user?.role));
+}
+
+const MANAGER_ROLES = ["super_admin", "superadmin", "admin", "administrator", "manager", "owner", "business_owner"];
+/** Non-throwing manager check (built-in manager roles or a custom role with "system.manager"). */
+export async function isManagerRole(ctx: any, user: any) {
+  if (MANAGER_ROLES.includes(normalizeRole(user?.role))) return true;
+  return await roleHasPermission(ctx, user, "system.manager");
+}
+
+export async function requireManager(ctx: any, module?: string) {
+  const user = await requireActiveUser(ctx, module);
+  const role = normalizeRole(user.role);
+  if (!["super_admin", "superadmin", "admin", "administrator", "manager", "owner", "business_owner"].includes(role)) {
+    // Custom roles created in Maintenance > Role Management may carry the "system.manager" permission.
+    if (await roleHasPermission(ctx, user, "system.manager")) return user;
+    throw new Error("Forbidden: manager permission required");
+  }
+  return user;
+}
+
+/** Built-in permission defaults used until an administrator customizes a role. */
+const ALL_PERMISSIONS_FOR_ADMIN = "*";
+const BUILTIN_ROLE_PERMISSIONS: Record<string, string[]> = {
+  ...Object.fromEntries(SYSTEM_ROLES.map((r) => [r.name, r.permissions])),
+  administrator: SYSTEM_ROLES[0].permissions,
+  owner: [ALL_PERMISSIONS_FOR_ADMIN],
+  business_owner: [ALL_PERMISSIONS_FOR_ADMIN],
+};
+
+export async function roleHasPermission(ctx: any, user: any, permission: string) {
+  if (isSuperAdmin(user)) return true;
+  const name = normalizeRole(user?.role);
+  const row = await ctx.db.query("roles").withIndex("by_name", (q: any) => q.eq("name", name)).first();
+  const perms: string[] = row ? row.permissions : BUILTIN_ROLE_PERMISSIONS[name] ?? [];
+  return perms.includes(ALL_PERMISSIONS_FOR_ADMIN) || perms.includes(permission);
+}
+
+export async function requirePermission(ctx: any, permission: string, module?: string) {
+  const user = await requireActiveUser(ctx, module);
+  if (!(await roleHasPermission(ctx, user, permission))) throw new Error(`Forbidden: permission "${permission}" required`);
+  return user;
+}
+
+export async function requireSuperAdminUser(ctx: any) {
+  const user = await requireActiveUser(ctx);
+  if (!isSuperAdmin(user)) throw new Error("Forbidden: Super Admin only");
+  return user;
+}
+
+/**
+ * Scope for writes. Normal users use their own office/branch. A Super Admin has no
+ * fixed office, so the first active office/branch is used (or none during initial setup).
+ */
+export async function resolveWriteScope(ctx: any, user: any, opts: { tenantWide?: boolean } = {}): Promise<{ tenantId?: any; branchId?: any }> {
+  if (!isSuperAdmin(user)) return await withDepartment(ctx, user, requireBusinessScope(user), opts);
+  if (user.tenantId) return await withDepartment(ctx, user, user.branchId ? { tenantId: user.tenantId, branchId: user.branchId } : { tenantId: user.tenantId }, opts);
+  const tenants = await ctx.db.query("tenants").withIndex("by_active", (q: any) => q.eq("isActive", true)).collect();
+  if (!tenants.length) return {};
+  const tenant = tenants[0];
+  const branches = await ctx.db.query("branches").withIndex("by_tenant", (q: any) => q.eq("tenantId", tenant._id)).collect();
+  const branch = branches.find((b: any) => b.isActive);
+  return branch ? { tenantId: tenant._id, branchId: branch._id } : { tenantId: tenant._id };
+}
+
+/**
+ * A business WITHOUT departments works exactly as before (no branch needed).
+ * A business WITH departments (e.g. Bar, Lounge, Kitchen) keeps separate figures per department, so a user
+ * who is not tied to one department must first choose where they are working before saving anything.
+ */
+async function withDepartment(ctx: any, user: any, scope: { tenantId?: any; branchId?: any }, opts: { tenantWide?: boolean }) {
+  if (scope.branchId || opts.tenantWide || !scope.tenantId) return scope;
+  const departments = await activeDepartments(ctx, scope.tenantId);
+  if (departments.length > 0) throw new Error("Chagua idara (sehemu) unayofanyia kazi kwenye menyu ya juu kabla ya kuhifadhi.");
+  return scope;
+}
+
+export async function logAudit(ctx: any, user: any, entry: { action: string; module: string; details?: string; referenceId?: string; referenceType?: string; result?: string }) {
+  await ctx.db.insert("auditLogs", {
+    tenantId: user?.tenantId,
+    userId: user?._id,
+    userName: user?.name ?? user?.username ?? user?.email ?? "user",
+    action: entry.action,
+    module: entry.module,
+    referenceId: entry.referenceId,
+    referenceType: entry.referenceType,
+    details: entry.details,
+    timestamp: new Date().toISOString(),
+    result: entry.result ?? "success",
+  });
+}
+
+export function canAccessRecord(user: any, record: any) {
+  if (!record) return false;
+  // Super Admin with a selected business only sees that business; with none selected (business picker) sees all.
+  if (isSuperAdmin(user) && !user.tenantId) return true;
+  if (!user.tenantId || record.tenantId !== user.tenantId) return false;
+  if (user.branchId && record.branchId !== user.branchId) return false;
+  return true;
+}
+
+export function filterScoped(user: any, records: any[]) {
+  if (isSuperAdmin(user) && !user.tenantId) return records;
+  if (!user.tenantId) return [];
+  return records.filter((record) => record.tenantId === user.tenantId && (!user.branchId || record.branchId === user.branchId));
+}
+
+export function requireBusinessScope(user: any) {
+  const superAdmin = isSuperAdmin(user);
+  if (!user.tenantId) {
+    throw new Error(superAdmin ? "Super Admin lazima achague biashara kwa shughuli za biashara." : "Akaunti haijaunganishwa na ofisi (tenant).");
+  }
+  return user.branchId === undefined ? { tenantId: user.tenantId } : { tenantId: user.tenantId, branchId: user.branchId };
+}
+
+/**
+ * Fast replacement for `filterScoped(user, await ctx.db.query(table).collect())`.
+ * Reads ONLY the rows of the user's business (and of the chosen department when one is selected)
+ * through the `by_scope` index, instead of loading every business's rows and filtering in memory.
+ * This is what keeps the system light when many businesses and users share one database.
+ */
+export async function scopedRows(ctx: any, user: any, table: string): Promise<any[]> {
+  if (isSuperAdmin(user) && !user.tenantId) return await ctx.db.query(table).collect();
+  if (!user.tenantId) return [];
+  const byBranch = !!user.branchId && table !== "auditLogs";
+  return await ctx.db.query(table).withIndex("by_scope", (q: any) => (byBranch ? q.eq("tenantId", user.tenantId).eq("branchId", user.branchId) : q.eq("tenantId", user.tenantId))).collect();
+}
+
+/** Departments (locations such as Bar / Lounge / Kitchen) of a business. A business may have none. */
+export async function activeDepartments(ctx: any, tenantId: any): Promise<any[]> {
+  if (!tenantId) return [];
+  const rows = await ctx.db.query("branches").withIndex("by_tenant", (q: any) => q.eq("tenantId", tenantId)).collect();
+  return rows.filter((b: any) => b.isActive);
+}
+
+/**
+ * Company settings are business-wide; a department may override them. Prefer the department's own row,
+ * otherwise fall back to the business-wide row.
+ */
+export async function getCompanySettings(ctx: any, user: any) {
+  if (!user.tenantId) return null;
+  const rows = await ctx.db.query("companySettings").withIndex("by_tenant", (q: any) => q.eq("tenantId", user.tenantId)).collect();
+  return rows.find((r: any) => user.branchId && r.branchId === user.branchId) ?? rows.find((r: any) => !r.branchId) ?? rows[0] ?? null;
+}
