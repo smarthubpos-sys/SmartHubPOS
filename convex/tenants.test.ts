@@ -31,7 +31,7 @@ describe("Super Admin business picker", () => {
     expect(cur?.needsPicker).toBe(false);
     expect(cur?.tenant?.name).toBe("Duka A");
     const clients = await asAdmin.query(api.clients.list, {});
-    expect(clients.map((c: any) => c.name)).toEqual(["Client A"]);
+    expect(clients.map((c) => c.name)).toEqual(["Client A"]);
     await asAdmin.mutation(api.tenants.exitBusiness, {});
     expect((await asAdmin.query(api.tenants.current, {}))?.needsPicker).toBe(true);
   });
@@ -65,12 +65,12 @@ describe("Departments (Bar / Lounge / Kitchen inside one business)", () => {
     await expect(asAdmin.mutation(api.tenants.create, { name: "Dup", code: "dup", departments: ["Bar", "bar"] })).rejects.toThrow(/yasijirudie/);
     await asAdmin.mutation(api.tenants.selectBusiness, { tenantId: r.tenantId });
     const cur = await asAdmin.query(api.tenants.current, {});
-    expect(cur?.departments.map((d: any) => d.name)).toEqual(["Bar", "Lounge", "Jiko"]);
+    expect(cur?.departments.map((d) => d.name)).toEqual(["Bar", "Lounge", "Jiko"]);
     // working without choosing a department is refused, so nothing lands "nowhere"
-    await expect(asAdmin.mutation(api.clients.upsert, { code: "C1", name: "Mteja", openingBalance: 0, creditPolicy: "allow", isActive: true } as any)).rejects.toThrow(/Chagua idara/);
+    await expect(asAdmin.mutation(api.clients.upsert, { code: "C1", name: "Mteja", openingBalance: 0, creditPolicy: "allow", isActive: true })).rejects.toThrow(/Chagua idara/);
     const [bar, lounge] = cur!.departments;
     await asAdmin.mutation(api.tenants.switchDepartment, { branchId: bar._id });
-    await asAdmin.mutation(api.clients.upsert, { code: "C1", name: "Mteja wa Bar", openingBalance: 0, creditPolicy: "allow", isActive: true } as any);
+    await asAdmin.mutation(api.clients.upsert, { code: "C1", name: "Mteja wa Bar", openingBalance: 0, creditPolicy: "allow", isActive: true });
     await asAdmin.mutation(api.tenants.switchDepartment, { branchId: lounge._id });
     expect(await asAdmin.query(api.clients.list, {})).toHaveLength(0); // Lounge does not see Bar's customers
     await asAdmin.mutation(api.tenants.switchDepartment, {});
@@ -104,13 +104,13 @@ describe("Department accounts and removal", () => {
     await asAdmin.mutation(api.tenants.switchDepartment, { branchId: jiko._id });
     await asAdmin.mutation(api.bills.create, { vendor: "Gesi", category: "other", billDate: "2026-03-01", dueDate: "2026-03-15", amount: 20000 });
     const jikoTb = await asAdmin.query(api.accounting.trialBalance, {});
-    expect(jikoTb.reduce((n: number, a: any) => n + a.debit, 0)).toBe(20000);
+    expect(jikoTb.reduce((n: number, a) => n + a.debit, 0)).toBe(20000);
     await asAdmin.mutation(api.tenants.switchDepartment, { branchId: bar._id });
     const barTb = await asAdmin.query(api.accounting.trialBalance, {});
-    expect(barTb.reduce((n: number, a: any) => n + a.debit, 0)).toBe(50000);
+    expect(barTb.reduce((n: number, a) => n + a.debit, 0)).toBe(50000);
     await asAdmin.mutation(api.tenants.switchDepartment, {});
     const allTb = await asAdmin.query(api.accounting.trialBalance, {});
-    expect(allTb.reduce((n: number, a: any) => n + a.debit, 0)).toBe(70000); // owner sees the combined figures
+    expect(allTb.reduce((n: number, a) => n + a.debit, 0)).toBe(70000); // owner sees the combined figures
     await expect(asAdmin.mutation(api.tenants.removeDepartment, { branchId: bar._id })).rejects.toThrow(/ina rekodi/);
     const r2 = await asAdmin.mutation(api.tenants.create, { name: "Empty", code: "e", departments: ["Zamani"] });
     await asAdmin.mutation(api.tenants.exitBusiness, {});

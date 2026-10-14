@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { canAccessRecord, filterScoped, requireActiveUser, resolveWriteScope, requireManager, scopedRows } from "./access";
 import { getSystemAccount, postSystemJournal, roundMoney } from "./ledger";
 const validQty = (n: number) => Number.isFinite(n) && n >= 0;
@@ -12,7 +13,7 @@ export const adjust = mutation({ args: { productId: v.id("products"), newQty: v.
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const round8 = (n: number) => Math.round((n + Number.EPSILON) * 1e8) / 1e8;
-const costOf = (p: any) => p.weightedAvgCost ?? p.lastPurchaseCost ?? 0;
+const costOf = (p: Pick<Doc<"products">, "weightedAvgCost" | "lastPurchaseCost"> | undefined) => p?.weightedAvgCost ?? p?.lastPurchaseCost ?? 0;
 
 /**
  * Single source of truth for every Stock screen and report.
@@ -31,12 +32,12 @@ export const stockRegisters = query({
     const inRange = (d: string) => (!a.startDate || d >= a.startDate) && (!a.endDate || d <= a.endDate);
     const [productsRaw, groupsRaw, unitsRaw, movementsRaw, adjustmentsRaw, invoicesRaw] = await Promise.all([
       scopedRows(ctx, user, "products"), scopedRows(ctx, user, "productGroups"), scopedRows(ctx, user, "unitsOfMeasure"),
-      !needMovements ? Promise.resolve([] as any[]) : partial
-        ? ctx.db.query("stockMovements").withIndex("by_tenant_date", (q: any) => q.eq("tenantId", user.tenantId).gte("movementDate", a.startDate!)).collect()
+      !needMovements ? Promise.resolve([] as Doc<"stockMovements">[]) : partial
+        ? ctx.db.query("stockMovements").withIndex("by_tenant_date", (q) => q.eq("tenantId", user.tenantId!).gte("movementDate", a.startDate!)).collect()
         : scopedRows(ctx, user, "stockMovements"),
       scopedRows(ctx, user, "stockAdjustments"),
       user.tenantId
-        ? ctx.db.query("invoices").withIndex("by_tenant_date", (q: any) => { let r = q.eq("tenantId", user.tenantId); if (a.startDate) r = r.gte("invoiceDate", a.startDate); if (a.endDate) r = r.lte("invoiceDate", a.endDate); return r; }).collect()
+        ? ctx.db.query("invoices").withIndex("by_tenant_date", (q) => { const b = q.eq("tenantId", user.tenantId!); if (a.startDate && a.endDate) return b.gte("invoiceDate", a.startDate).lte("invoiceDate", a.endDate); if (a.startDate) return b.gte("invoiceDate", a.startDate); if (a.endDate) return b.lte("invoiceDate", a.endDate); return b; }).collect()
         : scopedRows(ctx, user, "invoices"),
     ]);
     const products = filterScoped(user, productsRaw);
@@ -63,19 +64,19 @@ export const stockRegisters = query({
 
     // Resolve document numbers for the movements shown.
     const refCache = new Map<string, string>();
-    const refOf = async (m: any) => {
+    const refOf = async (m: Doc<"stockMovements">) => {
       const key = `${m.referenceType}:${m.referenceId}`;
       if (refCache.has(key)) return refCache.get(key)!;
       let label = m.notes ?? "";
       try {
-        if (m.referenceType === "invoice") { const id = ctx.db.normalizeId("invoices", m.referenceId); const d = id ? await ctx.db.get("invoices", id) : null; label = (d as any)?.invoiceNo ?? label; }
-        else if (m.referenceType === "purchase") { const id = ctx.db.normalizeId("purchases", m.referenceId); const d = id ? await ctx.db.get("purchases", id) : null; label = (d as any)?.invoiceNo ? `Purchase #${(d as any).invoiceNo}` : (d as any)?.internalRef ?? label; }
+        if (m.referenceType === "invoice") { const id = ctx.db.normalizeId("invoices", m.referenceId ?? ""); const d = id ? await ctx.db.get("invoices", id) : null; label = d?.invoiceNo ?? label; }
+        else if (m.referenceType === "purchase") { const id = ctx.db.normalizeId("purchases", m.referenceId ?? ""); const d = id ? await ctx.db.get("purchases", id) : null; label = d?.invoiceNo ? `Purchase #${d.invoiceNo}` : d?.internalRef ?? label; }
         else if (m.referenceType === "goodsReceivedNote" || m.referenceType === "purchaseReturn") label = m.notes ?? label;
         else if (m.referenceType === "stockAdjustment") label = m.notes ?? "Adjustment";
       } catch { /* keep fallback label */ }
       refCache.set(key, label); return label;
     };
-    const rows: Array<Record<string, any>> = [];
+    const rows: Array<{ _id: Doc<"stockMovements">["_id"]; date: string; productId: Doc<"stockMovements">["productId"]; itemCode: string; productName: string; type: string; qtyIn: number; qtyOut: number; balance: number; unitCost: number; reference: string; notes: string }> = [];
     for (const m of movements) {
       const g = agg.get(String(m.productId)); const p = pById.get(String(m.productId)); if (!g || !p) continue;
       g.running = round8(g.running + m.qtyIn - m.qtyOut);
@@ -115,7 +116,7 @@ export const stockRegisters = query({
     }).sort((x, y) => y.profit - x.profit);
 
     const adjustments = filterScoped(user, adjustmentsRaw).filter((x) => inRange(x.adjustmentDate)).sort((x, y) => y.adjustmentDate.localeCompare(x.adjustmentDate))
-      .map((x) => ({ _id: x._id, date: x.adjustmentDate, productName: pById.get(String(x.productId))?.name ?? "Bidhaa", itemCode: pById.get(String(x.productId))?.itemCode ?? "—", qtyBefore: x.qtyBefore, counted: x.qtyAfter, difference: x.adjustmentQty, reason: x.reason, status: x.status, cost: costOf(pById.get(String(x.productId)) ?? {}) }));
+      .map((x) => ({ _id: x._id, date: x.adjustmentDate, productName: pById.get(String(x.productId))?.name ?? "Bidhaa", itemCode: pById.get(String(x.productId))?.itemCode ?? "—", qtyBefore: x.qtyBefore, counted: x.qtyAfter, difference: x.adjustmentQty, reason: x.reason, status: x.status, cost: costOf(pById.get(String(x.productId))) }));
 
     const active = productRows.filter((p) => p.isActive);
     return {

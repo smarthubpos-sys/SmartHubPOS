@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireActiveUser, requireManager, canAccessRecord, filterScoped, resolveWriteScope, scopedRows } from "./access";
 import { getSystemAccount, postSystemJournal, roundMoney } from "./ledger";
 
@@ -204,13 +205,13 @@ export const importBatch = mutation({
     const scope = await resolveWriteScope(ctx, user);
     if (args.rows.length > 400) throw new Error("Pakia hadi bidhaa 400 kwa mara moja.");
     // Read only THIS business (and department) through the by_scope index - never every business's products.
-    const inScope = (r: any) => r.tenantId === scope.tenantId && r.branchId === scope.branchId;
-    const byScope = (q: any) => (scope.branchId ? q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId) : q.eq("tenantId", scope.tenantId));
-    const products = (await ctx.db.query("products").withIndex("by_scope", byScope).collect()).filter(inScope);
-    const groups = (await ctx.db.query("productGroups").withIndex("by_scope", byScope).collect()).filter(inScope);
-    const units = (await ctx.db.query("unitsOfMeasure").withIndex("by_scope", byScope).collect()).filter(inScope);
-    const byCode = new Map(products.map((p) => [norm(p.itemCode), p]));
-    const byBarcode = new Map(products.filter((p) => p.barcode).map((p) => [norm(p.barcode), p]));
+    const inScope = (r: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }) => r.tenantId === scope.tenantId && r.branchId === scope.branchId;
+    const products = (await ctx.db.query("products").withIndex("by_scope", (q) => (scope.branchId ? q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId) : q.eq("tenantId", scope.tenantId))).collect()).filter(inScope);
+    const groups = (await ctx.db.query("productGroups").withIndex("by_scope", (q) => (scope.branchId ? q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId) : q.eq("tenantId", scope.tenantId))).collect()).filter(inScope);
+    const units = (await ctx.db.query("unitsOfMeasure").withIndex("by_scope", (q) => (scope.branchId ? q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId) : q.eq("tenantId", scope.tenantId))).collect()).filter(inScope);
+    type KnownProduct = Partial<Doc<"products">> & { _id: Id<"products"> };
+    const byCode = new Map<string, KnownProduct>(products.map((p) => [norm(p.itemCode), p]));
+    const byBarcode = new Map<string, KnownProduct>(products.filter((p) => p.barcode).map((p) => [norm(p.barcode), p]));
     const byName = new Map(products.map((p) => [norm(p.name), p]));
     const groupByName = new Map(groups.flatMap((g) => [[norm(g.name), g._id], [norm(g.code), g._id]] as const));
     const unitByName = new Map(units.flatMap((u) => [[norm(u.name), u._id], [norm(u.code), u._id]] as const));
@@ -286,8 +287,8 @@ export const importBatch = mutation({
         sellingPrice: r.sellingPrice ?? 0, reorderLevel: r.reorderLevel,
         openingQty: qty, currentQty: qty, weightedAvgCost: cost, lastPurchaseCost: cost > 0 ? cost : undefined, isActive: true,
       });
-      byCode.set(norm(itemCode), { _id: productId, itemCode } as any);
-      if (barcode) byBarcode.set(norm(barcode), { _id: productId } as any);
+      byCode.set(norm(itemCode), { _id: productId, itemCode });
+      if (barcode) byBarcode.set(norm(barcode), { _id: productId });
       if (qty > 0) {
         await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId, movementType: "opening", referenceId: String(productId), referenceType: "product", qtyIn: qty, qtyOut: 0, runningBalance: qty, unitCost: cost, notes: "Opening stock (Excel import)", createdBy: user._id });
         openingValue += qty * cost;

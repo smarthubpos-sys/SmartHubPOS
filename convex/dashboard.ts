@@ -1,7 +1,9 @@
 import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireActiveUser, isOwnDataOnly, getCompanySettings, filterScoped } from "./access";
+import type { UserLike } from "./access";
 import { daysBetween } from "./plans";
 
 /**
@@ -10,14 +12,16 @@ import { daysBetween } from "./plans";
  */
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
-const sum = (rows: any[], k: string) => round2(rows.reduce((s, r) => s + (r[k] ?? 0), 0));
+const sum = <K extends string>(rows: Array<Partial<Record<K, number>>>, k: K) => round2(rows.reduce((s: number, r) => s + (r[k] ?? 0), 0));
 
-async function scopedStats(ctx: QueryCtx, user: any) {
-  const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect();
+async function scopedStats(ctx: QueryCtx, user: UserLike) {
+  const tenantId = user.tenantId;
+  if (!tenantId) return [];
+  const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).collect();
   return user.branchId ? rows.filter((r) => r.branchId === user.branchId) : rows;
 }
 
-function forbidOwnDataOnly(user: any) {
+function forbidOwnDataOnly(user: UserLike) {
   if (isOwnDataOnly(user)) throw new Error("Forbidden: personal dashboard only");
 }
 
@@ -26,7 +30,7 @@ export const getMetrics = query({
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx, "dashboard");
     forbidOwnDataOnly(user);
-    const empty = { ready: false, todaySales: 0, todayCash: 0, todayPurchaseTotal: 0, totalOutstandingCustomer: 0, totalOutstandingSupplier: 0, lowStockItems: 0, outOfStockItems: 0, inventoryValue: 0, recentInvoices: [] as any[], recentPurchases: [] as any[], totalProducts: 0 };
+    const empty = { ready: false, todaySales: 0, todayCash: 0, todayPurchaseTotal: 0, totalOutstandingCustomer: 0, totalOutstandingSupplier: 0, lowStockItems: 0, outOfStockItems: 0, inventoryValue: 0, recentInvoices: [] as Doc<"invoices">[], recentPurchases: [] as Doc<"purchases">[], totalProducts: 0 };
     const tenantId = user.tenantId;
     if (!tenantId) return empty;
 
@@ -73,7 +77,7 @@ export const getCharts = query({
     const user = await requireActiveUser(ctx, "dashboard");
     forbidOwnDataOnly(user);
     const tenantId = user.tenantId;
-    const noData = { ready: false, daily: [] as any[], topProducts: [] as any[], stockHealth: { ok: 0, low: 0, out: 0 }, receivable: 0, payable: 0, billsDue: 0, totals: { sales: 0, purchases: 0, invoices: 0 } };
+    const noData = { ready: false, daily: [] as Array<{ date: string; sales: number; purchases: number; collected: number; invoices: number }>, topProducts: [] as Array<{ name: string; total: number }>, stockHealth: { ok: 0, low: 0, out: 0 }, receivable: 0, payable: 0, billsDue: 0, totals: { sales: 0, purchases: 0, invoices: 0 } };
     if (!tenantId) return noData;
 
     const totals = await scopedStats(ctx, user);
@@ -94,7 +98,7 @@ export const getCharts = query({
 
     const range = span + 1 <= 7 ? "topD7" : span + 1 <= 30 ? "topD30" : "topD90";
     const merged = new Map<string, number>();
-    for (const t of totals) for (const p of (t as any)[range] as { name: string; total: number }[]) merged.set(p.name, (merged.get(p.name) ?? 0) + p.total);
+    for (const t of totals) for (const p of t[range]) merged.set(p.name, (merged.get(p.name) ?? 0) + p.total);
     const topProducts = [...merged.entries()].sort((x, y) => y[1] - x[1]).slice(0, 6).map(([name, total]) => ({ name, total: round2(total) }));
 
     const n = sum(totals, "productCount"), out = sum(totals, "outOfStock"), low = sum(totals, "lowStock");
@@ -121,7 +125,7 @@ export const getMyDashboard = query({
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "dashboard");
     const tenantId = user.tenantId;
-    const empty = { today: { sales: 0, collected: 0, outstanding: 0, invoices: 0 }, range: { sales: 0, collected: 0, outstanding: 0, invoices: 0 }, openBills: 0, daily: [] as any[], recent: [] as any[] };
+    const empty = { today: { sales: 0, collected: 0, outstanding: 0, invoices: 0 }, range: { sales: 0, collected: 0, outstanding: 0, invoices: 0 }, openBills: 0, daily: [] as Array<{ date: string; sales: number; collected: number }>, recent: [] as Array<{ _id: Id<"invoices">; invoiceNo: string; invoiceDate: string; total: number; outstanding: number; paymentStatus: Doc<"invoices">["paymentStatus"]; clientName: string }> };
     if (!tenantId) return empty;
 
     const mine = filterScoped(user, await ctx.db.query("invoices")

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import type { TestConvex } from "convex-test";
 import { modules } from "./tes.setup";
 
 async function setup() {
@@ -16,9 +17,9 @@ async function setup() {
   const as = t.withIdentity({ subject: ids.mgr, tokenIdentifier: "x|1" });
   return { t, as, ...ids };
 }
-const balances = async (t: any) => t.run(async (ctx: any) => {
+const balances = async (t: TestConvex<typeof schema>) => t.run(async (ctx) => {
   const out: Record<string, number> = {};
-  for (const l of await ctx.db.query("journalLines").collect()) { const a = await ctx.db.get("accounts", l.accountId); out[a.code] = (out[a.code] ?? 0) + l.debit - l.credit; }
+  for (const l of await ctx.db.query("journalLines").collect()) { const a = await ctx.db.get("accounts", l.accountId); if (!a) continue; out[a.code] = (out[a.code] ?? 0) + l.debit - l.credit; }
   return out;
 });
 

@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
+import type { Id } from "./_generated/dataModel";
+import type { QueryCtx } from "./_generated/server";
 import { canAccessRecord, filterScoped, requireBusinessScope } from "./access";
 
+const tenant = (s: string) => s as Id<"tenants">;
+const branch = (s: string) => s as Id<"branches">;
+
 describe("tenant and branch access helpers", () => {
-  const officeA = "office-A";
-  const officeB = "office-B";
-  const branchA1 = "branch-A1";
-  const branchA2 = "branch-A2";
+  const officeA = tenant("office-A");
+  const officeB = tenant("office-B");
+  const branchA1 = branch("branch-A1");
+  const branchA2 = branch("branch-A2");
   const records = [
     { _id: "1", tenantId: officeA, branchId: branchA1 },
     { _id: "2", tenantId: officeA, branchId: branchA2 },
-    { _id: "3", tenantId: officeB, branchId: "branch-B1" },
+    { _id: "3", tenantId: officeB, branchId: branch("branch-B1") },
     { _id: "4" }, // legacy unscoped data must not leak to tenant users
   ];
 
@@ -47,19 +52,20 @@ describe("tenant and branch access helpers", () => {
 
 import { isSuperAdmin, normalizeRole, resolveWriteScope, roleHasPermission } from "./access";
 
-const fakeCtx = (opts: { roles?: any[]; tenants?: any[]; branches?: any[] } = {}) => ({
+type FakeRow = Record<string, unknown>;
+const fakeCtx = (opts: { roles?: FakeRow[]; tenants?: FakeRow[]; branches?: FakeRow[] } = {}) => ({
   db: {
     query: (table: string) => ({
-      withIndex: (_name: string, cb?: (q: any) => any) => {
+      withIndex: (_name: string, cb?: (q: { eq: (f: string, v: unknown) => unknown }) => unknown) => {
         let field: string | undefined; let value: unknown;
         cb?.({ eq: (f: string, v: unknown) => { field = f; value = v; return { eq: (f2: string, v2: unknown) => { field = f2; value = v2; } }; } });
-        const rows = ({ roles: opts.roles, tenants: opts.tenants, branches: opts.branches } as any)[table] ?? [];
-        const filtered = field ? rows.filter((r: any) => r[field!] === value) : rows;
+        const rows = ({ roles: opts.roles, tenants: opts.tenants, branches: opts.branches } as Record<string, FakeRow[] | undefined>)[table] ?? [];
+        const filtered = field ? rows.filter((r) => r[field!] === value) : rows;
         return { first: async () => filtered[0] ?? null, collect: async () => filtered };
       },
     }),
   },
-});
+}) as unknown as QueryCtx;
 
 describe("role normalization and permissions", () => {
   it("normalizes labels like 'Super Admin' and 'super-admin'", () => {
@@ -95,6 +101,6 @@ describe("resolveWriteScope", () => {
   });
   it("still requires an office for normal users", async () => {
     await expect(resolveWriteScope(fakeCtx(), { role: "manager" })).rejects.toThrow(/haijaunganishwa na ofisi/);
-    expect(await resolveWriteScope(fakeCtx(), { role: "manager", tenantId: "T1", branchId: "B2" })).toEqual({ tenantId: "T1", branchId: "B2" });
+    expect(await resolveWriteScope(fakeCtx(), { role: "manager", tenantId: tenant("T1"), branchId: branch("B2") })).toEqual({ tenantId: "T1", branchId: "B2" });
   });
 });

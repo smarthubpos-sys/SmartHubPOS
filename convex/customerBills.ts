@@ -1,20 +1,21 @@
 import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { activeDepartments, canAccessRecord, getCompanySettings, isOwnDataOnly, requireActiveUser, roleHasPermission, scopedRows } from "./access";
+import type { UserLike } from "./access";
 
 const money = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const MAX_INVOICES = 50;
 const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
 
 /** A user allowed to combine bills across departments sees the whole business (for bills only), not just one department. */
-async function crossAccess(ctx: QueryCtx, user: any) {
+async function crossAccess(ctx: QueryCtx, user: UserLike) {
   const allowed = !!user.tenantId && !isOwnDataOnly(user) && (await roleHasPermission(ctx, user, "bills.all_departments"));
   return { allowed, wide: allowed ? { ...user, branchId: undefined } : user };
 }
 /** Same customer in another department = same code or same name (customers are kept per department). */
-const sameCustomer = (a: any, b: any) => String(a._id) === String(b._id) || norm(a.name) === norm(b.name) || (!!a.code && norm(a.code) === norm(b.code));
+const sameCustomer = (a: Pick<Doc<"clients">, "_id" | "name" | "code">, b: Pick<Doc<"clients">, "_id" | "name" | "code">) => String(a._id) === String(b._id) || norm(a.name) === norm(b.name) || (!!a.code && norm(a.code) === norm(b.code));
 
 /** What the signed-in user may do on the Bills screen. */
 export const access = query({

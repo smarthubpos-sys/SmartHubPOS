@@ -4,7 +4,7 @@ import { SYSTEM_ROLES, effectiveModules } from "./permissions";
 import { planStatus, tzToday } from "./plans";
 
 /** The parts of a user the access helpers read. A real user (Doc<"users">) fits; tests may pass a lighter object. */
-export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "ownDataOnly">>;
+export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "ownDataOnly" | "branchPicked">>;
 /** A user that may be missing (signed out / not found). */
 export type MaybeUser = UserLike | null | undefined;
 /** Any stored row that belongs to a business (and optionally a department). */

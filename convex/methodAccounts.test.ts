@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import type { TestConvex } from "convex-test";
 import { modules } from "./tes.setup";
 
 const date = new Date().toISOString().slice(0, 10);
@@ -13,7 +14,7 @@ async function setup() {
     const tenantId = await ctx.db.insert("tenants", { name: "Duka", code: "DK", isActive: true, createdByToken: "t", createdAt: now, modules: ["sales", "purchasing", "stock", "accounts", "payroll"] });
     const mgr = await ctx.db.insert("users", { name: "Mgr", username: "mgr", role: "admin", tenantId, isActive: true });
     const clientId = await ctx.db.insert("clients", { tenantId, code: "C1", name: "Mteja", openingBalance: 0, creditPolicy: "allow", isActive: true });
-    const productId = await ctx.db.insert("products", { tenantId, itemCode: "ITM-1", name: "Sukari", sellingPrice: 10000, openingQty: 100, currentQty: 100, isActive: true } as any);
+    const productId = await ctx.db.insert("products", { tenantId, itemCode: "ITM-1", name: "Sukari", sellingPrice: 10000, openingQty: 100, currentQty: 100, isActive: true });
     const supplierId = await ctx.db.insert("suppliers", { tenantId, code: "S1", name: "Acme Traders", openingBalance: 0, isActive: true });
     return { tenantId, mgr, clientId, productId, supplierId };
   });
@@ -22,11 +23,12 @@ async function setup() {
 }
 
 /** debit - credit of every journal line, per account name. */
-async function ledger(t: any) {
-  return await t.run(async (ctx: any) => {
+async function ledger(t: TestConvex<typeof schema>) {
+  return await t.run(async (ctx) => {
     const out: Record<string, { code: string; net: number }> = {};
     for (const l of await ctx.db.query("journalLines").collect()) {
       const a = await ctx.db.get("accounts", l.accountId);
+      if (!a) continue;
       out[a.name] = { code: a.code, net: (out[a.name]?.net ?? 0) + l.debit - l.credit };
     }
     return out;

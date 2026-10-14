@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
+import type { TestConvex } from "convex-test";
 import { modules } from "./tes.setup";
 import { addDays, addMonths, tzToday } from "./plans";
 
@@ -21,7 +23,7 @@ async function setup() {
   const asB = t.withIdentity({ subject: ids.mgrB, tokenIdentifier: "x|3" });
   return { t, asAdmin, asA, asB, ...ids };
 }
-const setEnd = (t: any, id: any, plan: string, endsAt: string) => t.run(async (ctx: any) => { await ctx.db.patch("tenants", id, { plan, planEndsAt: endsAt }); });
+const setEnd = (t: TestConvex<typeof schema>, id: Id<"tenants">, plan: string, endsAt: string) => t.run(async (ctx) => { await ctx.db.patch("tenants", id, { plan, planEndsAt: endsAt }); });
 
 describe("date helpers", () => {
   it("adds months without overflowing short months", () => {
@@ -96,7 +98,7 @@ describe("announcements", () => {
     const today = tzToday();
     await asAdmin.mutation(api.announcements.create, { kind: "message", title: "Matengenezo", body: "Mfumo utazimwa saa 6 usiku." });
     await asAdmin.mutation(api.announcements.create, { kind: "message", title: "Kwa A tu", body: "Habari A", tenantId: a });
-    const titles = async (c: any) => (await c.query(api.notifications.feed, { today })).items.filter((i: any) => i.code === "announcement").map((i: any) => i.params.title).sort();
+    const titles = async (c: ReturnType<TestConvex<typeof schema>["withIdentity"]>) => (await c.query(api.notifications.feed, { today })).items.filter((i) => i.code === "announcement").map((i) => i.params.title).sort();
     expect(await titles(asA)).toEqual(["Kwa A tu", "Matengenezo"]);
     expect(await titles(asB)).toEqual(["Matengenezo"]);
     const list = await asAdmin.query(api.announcements.list, {});

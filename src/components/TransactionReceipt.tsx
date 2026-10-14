@@ -17,7 +17,7 @@ export default function TransactionReceipt({ title, reference, date, partyLabel,
   const symbol = company?.currencySymbol ?? "TSh";
   const places = company?.decimalPlaces ?? 0;
   const money = (n: number) => `${symbol} ${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: places, maximumFractionDigits: places })}`;
-  const footer = String(settings?.app?.system?.receiptFooter ?? "Asante kwa kutumia huduma zetu!");
+  const footer = String((settings?.app?.system as { receiptFooter?: unknown } | undefined)?.receiptFooter ?? "Asante kwa kutumia huduma zetu!");
   const print = () => printElement(articleRef.current, paper);
   return <section className="space-y-3">
     <div className="flex flex-wrap items-center gap-2 print:hidden">

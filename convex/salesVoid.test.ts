@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
 import { modules } from "./tes.setup";
 
 const date = new Date().toISOString().slice(0, 10);
@@ -14,10 +15,10 @@ async function setup(policy = "allow", creditLimit?: number) {
     const mgr = await ctx.db.insert("users", { name: "Mgr", username: "mgr", role: "admin", tenantId, isActive: true });
     const cashier = await ctx.db.insert("users", { name: "Asha", username: "asha", role: "cashier", tenantId, isActive: true });
     const clientId = await ctx.db.insert("clients", { tenantId, code: "C1", name: "Mteja", openingBalance: 0, creditPolicy: policy, creditLimit, isActive: true });
-    const productId = await ctx.db.insert("products", { tenantId, itemCode: "ITM-1", name: "Sukari", sellingPrice: 10000, openingQty: 100, currentQty: 100, isActive: true } as any);
+    const productId = await ctx.db.insert("products", { tenantId, itemCode: "ITM-1", name: "Sukari", sellingPrice: 10000, openingQty: 100, currentQty: 100, isActive: true });
     return { tenantId, mgr, cashier, clientId, productId };
   });
-  const as = (id: any, n: number) => t.withIdentity({ subject: id, tokenIdentifier: `x|${n}` });
+  const as = (id: Id<"users">, n: number) => t.withIdentity({ subject: id, tokenIdentifier: `x|${n}` });
   return { t, ...ids, asMgr: as(ids.mgr, 1), asCashier: as(ids.cashier, 2) };
 }
 

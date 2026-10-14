@@ -1,7 +1,9 @@
 import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
+import type { Doc, Id } from "./_generated/dataModel";
 import { businessRows, canAccessRecord, filterBusiness, filterScoped, getCompanySettings, requireActiveUser, scopedRows } from "./access";
+import type { UserLike } from "./access";
 
 const round = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const DAY = 86400000;
@@ -40,17 +42,17 @@ export const purchaseDocument = query({
     const u = await requireActiveUser(ctx, "purchasing");
     const purchase = await ctx.db.get("purchases", a.purchaseId);
     if (!purchase || !canAccessRecord(u, purchase)) throw new Error("Purchase invoice haipatikani.");
-    const supplier: any = await ctx.db.get("suppliers", purchase.supplierId);
+    const supplier = await ctx.db.get("suppliers", purchase.supplierId);
     const lines = [];
     for (const l of await ctx.db.query("purchaseLines").withIndex("by_purchase", (q) => q.eq("purchaseId", purchase._id)).collect()) {
-      const product: any = await ctx.db.get("products", l.productId);
-      const unit: any = product?.unitId ? await ctx.db.get("unitsOfMeasure", product.unitId) : null;
+      const product = await ctx.db.get("products", l.productId);
+      const unit = product?.unitId ? await ctx.db.get("unitsOfMeasure", product.unitId) : null;
       lines.push({ name: product?.name ?? "Product", itemCode: product?.itemCode ?? "", unit: unit?.name ?? "", qty: l.qty, unitCost: l.unitCost, discount: l.discount, total: l.lineTotal });
     }
     const payments = (await ctx.db.query("supplierPayments").withIndex("by_purchase", (q) => q.eq("purchaseId", purchase._id)).collect())
       .sort((x, y) => x.paymentDate.localeCompare(y.paymentDate))
       .map((p) => ({ date: p.paymentDate, method: p.paymentMethod, reference: p.reference ?? "", amount: p.amount }));
-    const creator: any = await ctx.db.get("users", purchase.createdBy);
+    const creator = await ctx.db.get("users", purchase.createdBy);
     const dueDate = addDays(purchase.purchaseDate, termsDays(supplier));
     return {
       header: await letterhead(ctx, u),
@@ -74,7 +76,7 @@ export const payablesAgeing = query({
     const purchases = filterScoped(u, await scopedRows(ctx, u, "purchases")).filter((p) => p.status === "posted" && p.outstanding > 0.004 && p.purchaseDate <= a.asOf);
     const suppliers = new Map(filterBusiness(u, await businessRows(ctx, u, "suppliers")).map((s) => [String(s._id), s]));
     const rows = purchases.map((p) => {
-      const s: any = suppliers.get(String(p.supplierId));
+      const s = suppliers.get(String(p.supplierId));
       const dueDate = addDays(p.purchaseDate, termsDays(s));
       return { purchaseId: p._id, invoiceNo: p.invoiceNo ?? p.internalRef, supplierId: p.supplierId, supplierName: s?.name ?? "Supplier", purchaseDate: p.purchaseDate, dueDate, daysOverdue: toDay(a.asOf) - toDay(dueDate), total: p.total, paid: p.amountPaid, outstanding: p.outstanding };
     }).sort((x, y) => y.daysOverdue - x.daysOverdue);
@@ -82,18 +84,18 @@ export const payablesAgeing = query({
   },
 });
 
-type Movement = { date: string; type: "purchase" | "payment" | "return"; reference: string; description: string; charge: number; credit: number; purchaseId?: any };
+type Movement = { date: string; type: "purchase" | "payment" | "return"; reference: string; description: string; charge: number; credit: number; purchaseId?: Id<"purchases"> };
 
-async function movementsOf(ctx: QueryCtx, u: any) {
+async function movementsOf(ctx: QueryCtx, u: UserLike) {
   const [purchases, payments, returns, suppliers] = await Promise.all([
     scopedRows(ctx, u, "purchases"), scopedRows(ctx, u, "supplierPayments"), scopedRows(ctx, u, "purchaseReturns"), businessRows(ctx, u, "suppliers"),
   ]);
   const by = new Map<string, Movement[]>();
-  const push = (id: any, m: Movement) => { const k = String(id); const list = by.get(k) ?? []; list.push(m); by.set(k, list); };
-  for (const p of filterScoped(u, purchases).filter((x: any) => x.status === "posted")) push(p.supplierId, { date: p.purchaseDate, type: "purchase", reference: p.invoiceNo ?? p.internalRef, description: p.supplierInvoiceNo && p.supplierInvoiceNo !== p.invoiceNo ? `Supplier inv. ${p.supplierInvoiceNo}` : "Purchase invoice", charge: p.total, credit: 0, purchaseId: p._id });
+  const push = (id: Id<"suppliers">, m: Movement) => { const k = String(id); const list = by.get(k) ?? []; list.push(m); by.set(k, list); };
+  for (const p of filterScoped(u, purchases).filter((x) => x.status === "posted")) push(p.supplierId, { date: p.purchaseDate, type: "purchase", reference: p.invoiceNo ?? p.internalRef, description: p.supplierInvoiceNo && p.supplierInvoiceNo !== p.invoiceNo ? `Supplier inv. ${p.supplierInvoiceNo}` : "Purchase invoice", charge: p.total, credit: 0, purchaseId: p._id });
   for (const p of filterScoped(u, payments)) push(p.supplierId, { date: p.paymentDate, type: "payment", reference: p.reference ?? `PAY-${String(p._id).slice(-6)}`, description: p.notes ?? `Payment (${p.paymentMethod})`, charge: 0, credit: p.amount });
-  for (const r of filterScoped(u, returns).filter((x: any) => x.status === "posted")) push(r.supplierId, { date: r.returnDate, type: "return", reference: r.returnRef, description: r.reason ?? "Purchase return", charge: 0, credit: r.total });
-  return { by, suppliers: filterBusiness(u, suppliers) as any[] };
+  for (const r of filterScoped(u, returns).filter((x) => x.status === "posted")) push(r.supplierId, { date: r.returnDate, type: "return", reference: r.returnRef, description: r.reason ?? "Purchase return", charge: 0, credit: r.total });
+  return { by, suppliers: filterBusiness(u, suppliers) as Doc<"suppliers">[] };
 }
 
 /** Per supplier: balance brought forward at the start date, movements in the period and closing balance (positive = we owe). */
@@ -120,7 +122,7 @@ export const supplierLedger = query({
   args: { supplierId: v.id("suppliers"), startDate: v.string(), endDate: v.string() },
   handler: async (ctx, a) => {
     const u = await requireActiveUser(ctx, "purchasing");
-    const supplier: any = await ctx.db.get("suppliers", a.supplierId);
+    const supplier = await ctx.db.get("suppliers", a.supplierId);
     if (!supplier || !canAccessRecord(u, supplier)) throw new Error("Supplier hayupo kwenye scope yako.");
     const { by } = await movementsOf(ctx, u);
     const list = (by.get(String(a.supplierId)) ?? []).sort((x, y) => x.date.localeCompare(y.date) || x.type.localeCompare(y.type));

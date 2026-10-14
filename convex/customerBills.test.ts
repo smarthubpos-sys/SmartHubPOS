@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
 import { modules } from "./tes.setup";
 
 async function setup() {
@@ -13,10 +14,10 @@ async function setup() {
     const scope = { tenantId, branchId: bar };
     const client = await ctx.db.insert("clients", { ...scope, code: "C1", name: "Mteja Mmoja", openingBalance: 0, creditPolicy: "allow", isActive: true });
     const other = await ctx.db.insert("clients", { ...scope, code: "C2", name: "Mwingine", openingBalance: 0, creditPolicy: "allow", isActive: true });
-    const group = await ctx.db.insert("productGroups", { ...scope, code: "G", name: "Vinywaji", isActive: true } as any);
+    const group = await ctx.db.insert("productGroups", { ...scope, code: "G", name: "Vinywaji", isActive: true });
     void group;
-    const product = await ctx.db.insert("products", { ...scope, itemCode: "ITM-1", name: "Bia", sellingPrice: 2000, openingQty: 100, currentQty: 100, isActive: true } as any);
-    const mk = async (c: any, no: string, total: number, paid: number) => {
+    const product = await ctx.db.insert("products", { ...scope, itemCode: "ITM-1", name: "Bia", sellingPrice: 2000, openingQty: 100, currentQty: 100, isActive: true });
+    const mk = async (c: Id<"clients">, no: string, total: number, paid: number) => {
       const id = await ctx.db.insert("invoices", { ...scope, invoiceNo: no, invoiceDate: "2026-03-0" + no.slice(-1), clientId: c, subtotal: total, discount: 0, taxAmount: 0, total, amountPaid: paid, outstanding: total - paid, paymentStatus: paid ? "partial" : "unpaid", status: "posted", createdBy: mgr });
       await ctx.db.insert("invoiceLines", { invoiceId: id, productId: product, qty: 2, qtyStr: "2", unitPrice: total / 2, unitPriceStr: String(total / 2), lineTotal: total, lineTotalStr: String(total), costAtSale: 0, discount: 0 });
       return id;
@@ -34,10 +35,10 @@ describe("customer bills built from sales invoices", () => {
   it("lists a customer's invoices and prints a bill only for the ones picked", async () => {
     const { as, client, i1, i2 } = await setup();
     const all = await as.query(api.customerBills.invoicesForClient, { clientId: client });
-    expect(all.map((i: any) => i.invoiceNo).sort()).toEqual(["INV-1", "INV-2", "INV-3"]);
-    expect((await as.query(api.customerBills.invoicesForClient, { clientId: client, onlyOpen: true })).map((i: any) => i.invoiceNo).sort()).toEqual(["INV-1", "INV-2"]);
+    expect(all.map((i) => i.invoiceNo).sort()).toEqual(["INV-1", "INV-2", "INV-3"]);
+    expect((await as.query(api.customerBills.invoicesForClient, { clientId: client, onlyOpen: true })).map((i) => i.invoiceNo).sort()).toEqual(["INV-1", "INV-2"]);
     const bill = await as.query(api.customerBills.billData, { invoiceIds: [i2, i1] });
-    expect(bill.invoices.map((i: any) => i.invoiceNo)).toEqual(["INV-1", "INV-2"]);
+    expect(bill.invoices.map((i) => i.invoiceNo)).toEqual(["INV-1", "INV-2"]);
     expect(bill.totals).toMatchObject({ total: 10000, paid: 1000, outstanding: 9000 });
     expect(bill.department).toBe("Bar");
     expect(bill.invoices[0].lines[0].name).toBe("Bia");
@@ -59,11 +60,11 @@ describe("bills across departments", () => {
       const jiko = await ctx.db.insert("branches", { tenantId, name: "Jiko", code: "C-D2", isActive: true, createdAt: "x" });
       const waiter = await ctx.db.insert("users", { name: "Hawa", username: "hawa", role: "waiter", tenantId, branchId: bar, isActive: true });
       const plain = await ctx.db.insert("users", { name: "Neema", username: "neema", role: "cashier", tenantId, branchId: bar, isActive: true });
-      await ctx.db.insert("roles", { name: "waiter", displayName: "Waiter", permissions: ["sales.manage", "bills.all_departments"], isSystem: false } as any);
-      const mk = async (branchId: any, no: string, total: number) => {
+      await ctx.db.insert("roles", { name: "waiter", displayName: "Waiter", permissions: ["sales.manage", "bills.all_departments"], isSystem: false });
+      const mk = async (branchId: Id<"branches">, no: string, total: number) => {
         const scope = { tenantId, branchId };
         const c = await ctx.db.insert("clients", { ...scope, code: "M5", name: "Meza 5", openingBalance: 0, creditPolicy: "allow", isActive: true });
-        const p = await ctx.db.insert("products", { ...scope, itemCode: "I" + no, name: "Bidhaa " + no, sellingPrice: total, openingQty: 1, currentQty: 1, isActive: true } as any);
+        const p = await ctx.db.insert("products", { ...scope, itemCode: "I" + no, name: "Bidhaa " + no, sellingPrice: total, openingQty: 1, currentQty: 1, isActive: true });
         const id = await ctx.db.insert("invoices", { ...scope, invoiceNo: no, invoiceDate: "2026-03-01", clientId: c, subtotal: total, discount: 0, taxAmount: 0, total, amountPaid: 0, outstanding: total, paymentStatus: "unpaid", status: "posted", createdBy: waiter });
         await ctx.db.insert("invoiceLines", { invoiceId: id, productId: p, qty: 1, qtyStr: "1", unitPrice: total, unitPriceStr: String(total), lineTotal: total, lineTotalStr: String(total), costAtSale: 0, discount: 0 });
         return { c, id };
@@ -75,16 +76,16 @@ describe("bills across departments", () => {
 
     expect((await asWaiter.query(api.customerBills.access, {})).allDepartments).toBe(true);
     const own = await asWaiter.query(api.customerBills.invoicesForClient, { clientId: d.bar.c });
-    expect(own.map((i: any) => i.invoiceNo)).toEqual(["BAR-1"]);
+    expect(own.map((i) => i.invoiceNo)).toEqual(["BAR-1"]);
     const both = await asWaiter.query(api.customerBills.invoicesForClient, { clientId: d.bar.c, allDepartments: true });
-    expect(both.map((i: any) => i.department).sort()).toEqual(["Bar", "Jiko"]);
+    expect(both.map((i) => i.department).sort()).toEqual(["Bar", "Jiko"]);
     const bill = await asWaiter.query(api.customerBills.billData, { invoiceIds: [d.bar.id, d.jiko.id] });
     expect(bill.totals.total).toBe(10000);
     expect(bill.department).toBe("Bar + Jiko");
 
     // no permission: sees only own department and cannot add the other one
     expect((await asPlain.query(api.customerBills.access, {})).allDepartments).toBe(false);
-    expect((await asPlain.query(api.customerBills.invoicesForClient, { clientId: d.bar.c, allDepartments: true })).map((i: any) => i.invoiceNo)).toEqual(["BAR-1"]);
+    expect((await asPlain.query(api.customerBills.invoicesForClient, { clientId: d.bar.c, allDepartments: true })).map((i) => i.invoiceNo)).toEqual(["BAR-1"]);
     await expect(asPlain.query(api.customerBills.billData, { invoiceIds: [d.bar.id, d.jiko.id] })).rejects.toThrow(/haipatikani/);
   });
 });

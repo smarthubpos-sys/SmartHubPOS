@@ -7,6 +7,7 @@ import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAc
 import {
   filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
   requireSuperAdminUser, resolveWriteScope, roleHasPermission, scopedRows } from "./access";
+import type { UserLike } from "./access";
 import { ALL_PERMISSION_KEYS, SETTING_KEYS, SYSTEM_ROLES, cleanModules } from "./permissions";
 
 const LOGIN_DOMAIN = "login.smarthub.invalid";
@@ -33,14 +34,19 @@ interface DynamicDb {
 }
 const dynamicDb = (db: unknown): DynamicDb => db as DynamicDb;
 
+/** JSON setting value: an object whose members are plain values, lists or small nested objects (3 levels is all the screens use). */
+const jsonPrim = v.union(v.string(), v.number(), v.boolean(), v.null());
+const jsonLeaf = v.union(jsonPrim, v.array(jsonPrim), v.record(v.string(), jsonPrim));
+const settingValue = v.record(v.string(), v.union(jsonPrim, v.array(jsonLeaf), v.record(v.string(), jsonLeaf)));
+type SettingsMap = Record<string, unknown> & { security?: Partial<typeof DEFAULT_SECURITY> };
 async function readSettingsMap(ctx: QueryCtx, scope: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }) {
   const rows = (await ctx.db.query("appSettings").withIndex("by_scope", (q) => q.eq("tenantId", scope.tenantId)).collect()).filter((r) => r.branchId === scope.branchId);
-  const out: Record<string, any> = {};
+  const out: SettingsMap = {};
   for (const r of rows) { try { out[r.key] = JSON.parse(r.value); } catch { /* ignore corrupt value */ } }
   return out;
 }
 
-async function securityPolicy(ctx: QueryCtx, user: any) {
+async function securityPolicy(ctx: QueryCtx, user: UserLike) {
   const scope = await resolveWriteScope(ctx, user, { tenantWide: true }).catch(() => ({} as Awaited<ReturnType<typeof resolveWriteScope>>));
   const map = await readSettingsMap(ctx, scope);
   return { ...DEFAULT_SECURITY, ...(map.security ?? {}) };
@@ -93,7 +99,7 @@ export const saveCompany = mutation({
 });
 
 export const saveSetting = mutation({
-  args: { key: v.string(), value: v.any() },
+  args: { key: v.string(), value: settingValue },
   handler: async (ctx, args) => {
     const permission = SETTING_KEYS[args.key];
     if (!permission) throw new Error("Setting key haitambuliki.");
@@ -279,7 +285,7 @@ export const listOffices = query({
   },
 });
 
-async function assertCanAssign(ctx: QueryCtx, actor: any, target: { role?: string; tenantId?: any; branchId?: any }, existing?: any) {
+async function assertCanAssign(ctx: QueryCtx, actor: UserLike, target: { role?: string; tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, existing?: UserLike | null) {
   const role = target.role === undefined ? undefined : normalizeRole(target.role);
   if (role && ["super_admin", "superadmin"].includes(role) && !isSuperAdmin(actor)) throw new Error("Super Admin pekee ndiye anaweza kutoa role ya Super Admin.");
   if (existing && isSuperAdmin(existing) && !isSuperAdmin(actor)) throw new Error("Huwezi kubadilisha akaunti ya Super Admin.");

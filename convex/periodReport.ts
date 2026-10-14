@@ -1,7 +1,9 @@
 import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { activeDepartments, isSuperAdmin, logAudit, requireActiveUser } from "./access";
+import type { UserLike } from "./access";
 import { accRows, entryRows, isDate, round2, summarize, type JEntry, type Row } from "./reportCore";
 
 /**
@@ -18,7 +20,7 @@ const MAX_SNAPSHOT = 900_000; // bytes of JSON kept per saved report (a document
 const bkey = (branchId: unknown) => (branchId ? String(branchId) : "none");
 
 /** Departments the user may report on: a user tied to one department sees only that one; others see all (or one they choose). */
-async function reportScope(ctx: QueryCtx, user: any, requested: string | undefined) {
+async function reportScope(ctx: QueryCtx, user: UserLike, requested: string | undefined) {
   if (!user.tenantId) return { tenantId: null, departments: [] as Array<{ id: string; name: string }>, only: null as string | null, hasDepartments: false };
   const departments = (await activeDepartments(ctx, user.tenantId)).map((b) => ({ id: String(b._id), name: b.name }));
   // Same rule as the top-bar department switch (tenants.current): a user tied to one department cannot look at the others.
@@ -48,7 +50,7 @@ export const chunk = query({
     const entries = await ctx.db.query("journalEntries").withIndex("by_tenant_date", (q) => q.eq("tenantId", sc.tenantId).gte("entryDate", a.from).lte("entryDate", a.to)).take(MAX_ENTRIES + 1);
     if (entries.length > MAX_ENTRIES) return { tooBig: true, sections: [] as Array<{ bk: string; rows: Row[] }> };
 
-    const accounts = new Map<string, any>();
+    const accounts = new Map<string, Doc<"accounts"> | null>();
     const byBranch = new Map<string, Map<string, Row>>();
     for (const e of entries) {
       if (e.status !== "posted") continue;
@@ -76,8 +78,8 @@ export const header = query({
     if (!user.tenantId) return null;
     const tenant = await ctx.db.get("tenants", user.tenantId);
     const rows = await ctx.db.query("companySettings").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect();
-    const c: any = rows.find((r) => !r.branchId) ?? rows[0] ?? null;
-    return { businessName: c?.companyName || (tenant as any)?.name || "", address: c?.address ?? "", phone: c?.phone ?? "", email: c?.email ?? "", tin: c?.tin ?? c?.taxId ?? "", currencySymbol: c?.currencySymbol ?? "TSh", decimalPlaces: c?.decimalPlaces ?? 0, preparedBy: user.name ?? user.username ?? user.email ?? "" };
+    const c = rows.find((r) => !r.branchId) ?? rows[0] ?? null;
+    return { businessName: c?.companyName || tenant?.name || "", address: c?.address ?? "", phone: c?.phone ?? "", email: c?.email ?? "", tin: c?.taxId ?? "", currencySymbol: c?.currencySymbol ?? "TSh", decimalPlaces: c?.decimalPlaces ?? 0, preparedBy: user.name ?? user.username ?? user.email ?? "" };
   },
 });
 
@@ -111,9 +113,10 @@ export const history = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "accounts");
-    if (!user.tenantId) return [];
+    const tenantId = user.tenantId;
+    if (!tenantId) return [];
     const sc = await reportScope(ctx, user, undefined);
-    const rows = await ctx.db.query("reportRuns").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).order("desc").take(Math.min(Math.max(Math.floor(a.limit ?? 30), 1), 100));
+    const rows = await ctx.db.query("reportRuns").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).order("desc").take(Math.min(Math.max(Math.floor(a.limit ?? 30), 1), 100));
     return rows.filter((r) => !sc.only || r.scope === sc.only).map((r) => ({ _id: r._id, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scopeLabel: r.scopeLabel, netSales: r.netSales, totalExpenses: r.totalExpenses, netProfit: r.netProfit, createdByName: r.createdByName, createdAt: r.createdAt }));
   },
 });

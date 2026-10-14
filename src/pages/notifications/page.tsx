@@ -31,8 +31,8 @@ export default function NotificationsPage() {
               const text = notificationText(i.code, i.params);
               return (
                 <li key={i.key}>
-                  <button onClick={() => { void markRead({ keys: [i.key] }); navigate(i.link); }} className="flex w-full cursor-pointer items-start gap-3 rounded-xl p-3 text-left hover:bg-muted/50">
-                    <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${tone(i.level)}`}>{icon(i.level, i.code)}</span>
+                  <button onClick={() => { void markRead({ keys: [i.key] }); navigate(i.link); }} className={`flex w-full cursor-pointer items-start gap-3 rounded-xl p-3 text-left hover:bg-muted/50 ${i.read ? "opacity-60" : ""}`}>
+                    <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${i.read ? "bg-muted text-muted-foreground" : tone(i.level)}`}>{icon(i.level, i.code)}</span>
                     <span className="min-w-0 flex-1">
                       <span className={`block text-sm ${i.read ? "" : "font-semibold"}`}>{text.title}</span>
                       <span className="block text-xs text-muted-foreground">{text.body}</span>

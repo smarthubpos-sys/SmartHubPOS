@@ -36,11 +36,10 @@ export default defineConfig([
     },
   },
   {
-    // Convex backend + its tests work with run-time chosen tables, dynamic ctx and convex-test mocks,
-    // where `any` is intentional. Keep the rule strict for the frontend (src/).
+    // Backend (convex/) is now fully typed: no explicit `any` anywhere. Keep it that way.
     files: ["convex/**/*.{ts,tsx}"],
     rules: {
-      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-explicit-any": "error",
     },
   },
   {

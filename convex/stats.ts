@@ -2,6 +2,7 @@ import { internalMutation, mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import type { Infer } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { requireActiveUser, requireSuperAdminUser } from "./access";
 import { addDays, tzToday } from "./plans";
@@ -60,10 +61,11 @@ export async function bumpStats(
   }
 
   if (d.date && (d.sales || d.purchases || d.collected || d.invoices)) {
+    const date = d.date;
     // Spread the day's counters over DAILY_SHARDS rows: cashiers selling at the same moment update different rows instead of
     // fighting over one. The dashboard simply adds the rows up; the nightly rebuild merges them again.
     const shard = Math.floor(Math.random() * DAILY_SHARDS);
-    const days = await ctx.db.query("statsDaily").withIndex("by_tenant_date_shard", (q) => q.eq("tenantId", tenantId).eq("date", d.date).eq("shard", shard)).collect();
+    const days = await ctx.db.query("statsDaily").withIndex("by_tenant_date_shard", (q) => q.eq("tenantId", tenantId).eq("date", date).eq("shard", shard)).collect();
     const day = days.find((r) => sameBranch(r.branchId, scope.branchId));
     if (day) {
       await ctx.db.patch("statsDaily", day._id, {
@@ -82,14 +84,17 @@ export async function bumpStats(
 /* ───────────────────────── background refresh ───────────────────────── */
 
 type Day = { bk: string; date: string; sales: number; purchases: number; collected: number; invoices: number };
-type Acc = {
-  recv: Record<string, number>;
-  pay: Record<string, number>;
-  daily: Record<string, Day>;
-  stock: Record<string, { n: number; low: number; out: number; value: number }>;
-  bills: Record<string, number>;
-  top: Record<string, { d7: { name: string; total: number }[]; d30: { name: string; total: number }[]; d90: { name: string; total: number }[] }>;
-};
+const topList = v.array(v.object({ name: v.string(), total: v.number() }));
+/** Running totals carried from one rebuild step to the next (passed through the scheduler). */
+const accValidator = v.object({
+  recv: v.record(v.string(), v.number()),
+  pay: v.record(v.string(), v.number()),
+  daily: v.record(v.string(), v.object({ bk: v.string(), date: v.string(), sales: v.number(), purchases: v.number(), collected: v.number(), invoices: v.number() })),
+  stock: v.record(v.string(), v.object({ n: v.number(), low: v.number(), out: v.number(), value: v.number() })),
+  bills: v.record(v.string(), v.number()),
+  top: v.record(v.string(), v.object({ d7: topList, d30: topList, d90: topList })),
+});
+type Acc = Infer<typeof accValidator>;
 const emptyAcc = (): Acc => ({ recv: {}, pay: {}, daily: {}, stock: {}, bills: {}, top: {} });
 
 /** Decides whether this business needs a (re)calculation and queues it. Cheap when everything is fresh. */
@@ -160,9 +165,9 @@ export const reconcileAll = internalMutation({
  * mode "stock" skips invoices/purchases and only refreshes stock figures + top products.
  */
 export const rebuild = internalMutation({
-  args: { tenantId: v.id("tenants"), mode: v.string(), phase: v.string(), cursor: v.union(v.string(), v.null()), acc: v.any() },
+  args: { tenantId: v.id("tenants"), mode: v.string(), phase: v.string(), cursor: v.union(v.string(), v.null()), acc: accValidator },
   handler: async (ctx, a): Promise<unknown> => {
-    const acc = a.acc as Acc;
+    const acc: Acc = a.acc;
     const tenantId = a.tenantId;
     const today = tzToday();
     const windowStart = addDays(today, -WINDOW_DAYS);

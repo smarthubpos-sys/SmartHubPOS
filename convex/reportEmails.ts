@@ -12,9 +12,9 @@ export const reportEmailContext = internalQuery({
     if (!tenant || tenant.isActive === false) throw new Error("Biashara haipo au imesimamishwa.");
     const rows = await ctx.db.query("appSettings").withIndex("by_scope", (q) => q.eq("tenantId", user.tenantId).eq("branchId", undefined)).collect();
     const setting = rows.find((r) => r.key === "system");
-    let system: any = {};
+    let system: Record<string, unknown> = {};
     try { system = setting ? JSON.parse(setting.value) : {}; } catch { /* invalid settings */ }
-    const company = (await ctx.db.query("companySettings").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).first()) as any;
+    const company = (await ctx.db.query("companySettings").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).first());
     return {
       recipients: String(system.reportEmailRecipients ?? "").split(/[;,\n]/).map((x: string) => x.trim()).filter(Boolean),
       companyName: company?.companyName ?? tenant.name ?? "SmartHubPOS",
@@ -24,7 +24,7 @@ export const reportEmailContext = internalQuery({
 });
 
 export const sendReport = action({
-  args: { title: v.string(), rows: v.array(v.any()), startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
+  args: { title: v.string(), rows: v.array(v.record(v.string(), v.union(v.string(), v.number(), v.boolean(), v.null()))), startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
   handler: async (ctx, args): Promise<{ sent: boolean; recipients: number }> => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Ingia kwanza kutuma ripoti.");

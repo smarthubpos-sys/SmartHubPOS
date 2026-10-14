@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import type { TestConvex } from "convex-test";
+import type { Id } from "./_generated/dataModel";
 import { modules } from "./tes.setup";
 import { summarize, accRows, type Row } from "./reportCore";
 
@@ -15,18 +17,18 @@ async function setup() {
     const mgr = await ctx.db.insert("users", { name: "Mgr", username: "mgr", role: "admin", tenantId, isActive: true });
     const cashier = await ctx.db.insert("users", { name: "Asha", username: "asha", role: "cashier", tenantId, isActive: true });
     const clientId = await ctx.db.insert("clients", { tenantId, code: "C1", name: "Mteja", openingBalance: 0, creditPolicy: "allow", isActive: true });
-    const productId = await ctx.db.insert("products", { tenantId, itemCode: "ITM-1", name: "Sukari", sellingPrice: 10000, openingQty: 100, currentQty: 100, weightedAvgCost: 6000, isActive: true } as any);
+    const productId = await ctx.db.insert("products", { tenantId, itemCode: "ITM-1", name: "Sukari", sellingPrice: 10000, openingQty: 100, currentQty: 100, weightedAvgCost: 6000, isActive: true });
     return { tenantId, mgr, cashier, clientId, productId };
   });
-  const as = (id: any, n: number) => t.withIdentity({ subject: id, tokenIdentifier: `x|${n}` });
+  const as = (id: Id<"users">, n: number) => t.withIdentity({ subject: id, tokenIdentifier: `x|${n}` });
   return { t, ...ids, asMgr: as(ids.mgr, 1), asCashier: as(ids.cashier, 2) };
 }
 
-const cashNet = async (t: any) => t.run(async (ctx: any) => {
-  const cash = (await ctx.db.query("accounts").collect()).find((a: any) => a.code === "1000");
-  return (await ctx.db.query("journalLines").collect()).filter((l: any) => l.accountId === cash?._id).reduce((n: number, l: any) => n + l.debit - l.credit, 0);
+const cashNet = async (t: TestConvex<typeof schema>) => t.run(async (ctx) => {
+  const cash = (await ctx.db.query("accounts").collect()).find((a) => a.code === "1000");
+  return (await ctx.db.query("journalLines").collect()).filter((l) => l.accountId === cash?._id).reduce((n: number, l) => n + l.debit - l.credit, 0);
 });
-const allBalanced = async (t: any) => t.run(async (ctx: any) => { for (const e of await ctx.db.query("journalEntries").collect()) expect(Math.abs(e.totalDebit - e.totalCredit)).toBeLessThan(0.01); });
+const allBalanced = async (t: TestConvex<typeof schema>) => t.run(async (ctx) => { for (const e of await ctx.db.query("journalEntries").collect()) expect(Math.abs(e.totalDebit - e.totalCredit)).toBeLessThan(0.01); });
 
 describe("partial sales return", () => {
   it("on a credit sale: stock back, the debt shrinks first, nothing is paid out, invoice and reports follow", async () => {

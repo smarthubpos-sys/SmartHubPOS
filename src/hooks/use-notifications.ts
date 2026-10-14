@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
 import { localDate } from "@/lib/format.ts";
@@ -22,4 +23,20 @@ export function useMarkRead() {
     const ordered = [...items.filter((i) => !i.read), ...items.filter((i) => i.read)];
     store.setQuery(query, queryArgs, { items: ordered, unread: items.filter((i) => !i.read).length });
   });
+}
+
+/**
+ * When the user opens the screen an alert points to (from the menu, a link or the bell), that alert counts as opened:
+ * it turns "read" and the red counter goes down. Each key is sent once, so a failed request cannot loop.
+ */
+export function useAutoReadOnVisit(pathname: string) {
+  const { items } = useNotifications();
+  const markRead = useMarkRead();
+  const sent = useRef(new Set<string>());
+  useEffect(() => {
+    const keys = items.filter((i) => !i.read && i.link === pathname && !sent.current.has(i.key)).map((i) => i.key);
+    if (!keys.length) return;
+    for (const k of keys) sent.current.add(k);
+    void markRead({ keys });
+  }, [items, pathname, markRead]);
 }

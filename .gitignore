@@ -29,4 +29,5 @@ tsconfig.tsbuildinfo
 # Environment variables
 .env*
 
+# Private keys — never commit
 jwt_private_key.pem

@@ -3,6 +3,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireActiveUser, requireManager, canAccessRecord, filterScoped, resolveWriteScope, scopedRows, logAudit } from "./access";
+import type { UserLike } from "./access";
 import { isMoneyAccount, methodAccount } from "./ledger";
 
 export const KINDS = ["cash", "bank", "mobile", "cheque", "card", "other"] as const;
@@ -95,7 +96,7 @@ export const splitValidator = v.object({ method: v.string(), methodId: v.optiona
 
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 /** Validate and normalise the lines of ONE receipt (e.g. 10,000 phone + 10,000 bank + 10,000 cash). */
-export async function normaliseSplits(ctx: MutationCtx, user: any, splits: PaymentSplitInput[]) {
+export async function normaliseSplits(ctx: MutationCtx, user: UserLike, splits: PaymentSplitInput[]) {
   if (!splits.length) throw new Error("Weka angalau njia moja ya malipo.");
   if (splits.length > 20) throw new Error("Njia za malipo zimezidi (upeo 20 kwa risiti moja).");
   const known = filterScoped(user, await scopedRows(ctx, user, "paymentMethods"));
@@ -168,16 +169,16 @@ export const repairOldPayments = mutation({
     const entryOf = async (scope: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, reference: string, sourceId: string) =>
       (await ctx.db.query("journalEntries").withIndex("by_tenant_ref", (q) => q.eq("tenantId", scope.tenantId).eq("reference", reference)).collect())
         .find((e) => e.branchId === scope.branchId && e.sourceId === sourceId && e.status === "posted");
-    const scopeOf = (row: any) => ({ tenantId: row.tenantId, branchId: row.branchId });
+    const scopeOf = (row: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }) => ({ tenantId: row.tenantId, branchId: row.branchId });
     let moved = 0;
-    const fix = async (scope: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, reference: string, sourceId: string, side: "debit" | "credit", desired: Array<{ accountId: any; amount: number }>) => {
+    const fix = async (scope: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, reference: string, sourceId: string, side: "debit" | "credit", desired: Array<{ accountId: Id<"accounts">; amount: number }>) => {
       const entry = await entryOf(scope, reference, sourceId);
       if (entry && (await reallocate(ctx, entry, side, desired))) moved++;
     };
     const INITIAL = "Malipo ya awali ya invoice", ON_RECEIPT = "Malipo wakati wa kupokea bidhaa";
 
     // customer payments: one journal per payment, except the payment made while the invoice was created (inside the SALE journal)
-    const initialByInvoice = new Map<string, any[]>();
+    const initialByInvoice = new Map<string, Doc<"customerPayments">[]>();
     for (const p of await scopedRows(ctx, user, "customerPayments")) {
       if (p.notes === INITIAL && p.invoiceId) { const k = String(p.invoiceId); initialByInvoice.set(k, [...(initialByInvoice.get(k) ?? []), p]); continue; }
       const scope = scopeOf(p);
@@ -190,7 +191,7 @@ export const repairOldPayments = mutation({
     }
 
     // supplier payments: same idea (payments made when goods were received sit inside the PUR journal)
-    const onReceipt = new Map<string, any[]>();
+    const onReceipt = new Map<string, Doc<"supplierPayments">[]>();
     for (const p of await scopedRows(ctx, user, "supplierPayments")) {
       if (p.notes === ON_RECEIPT && p.purchaseId) { const k = String(p.purchaseId); onReceipt.set(k, [...(onReceipt.get(k) ?? []), p]); continue; }
       const scope = scopeOf(p);

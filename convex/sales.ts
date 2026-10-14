@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { UserLike } from "./access";
 import { canAccessRecord, filterScoped, isOwnDataOnly, isManagerRole, normalizeRole, requireActiveUser, resolveWriteScope, scopedRows, getCompanySettings } from "./access";
 import { bumpStats } from "./stats";
 import { getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
@@ -9,7 +10,7 @@ import { normaliseSplits, splitValidator } from "./paymentMethods";
 const lineValidator = v.object({ productId: v.id("products"), qty: v.number(), unitPrice: v.number(), discount: v.optional(v.number()) });
 const money = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 /** Staff mode (users.ownDataOnly): only invoices this user created. */
-const mine = (user: any, rows: any[]) => (isOwnDataOnly(user) ? rows.filter((r) => r.createdBy === user._id) : rows);
+const mine = <T extends { createdBy?: Id<"users"> }>(user: UserLike, rows: T[]): T[] => (isOwnDataOnly(user) ? rows.filter((r) => r.createdBy === user._id) : rows);
 
 /** Newest invoices first through an index (default 200, max 1000) - never the whole history. Returned oldest -> newest. */
 export const listInvoices = query({
@@ -97,7 +98,7 @@ export const createInvoice = mutation({
     const revenue = await getSystemAccount(ctx, scope, "4000", "Sales revenue", "revenue");
     const cogs = await getSystemAccount(ctx, scope, "5000", "Cost of goods sold", "expense");
     const costTotal = roundMoney(prepared.reduce((n, l) => n + l.qty * l.cost, 0));
-    const journalLines: Array<{accountId:any;debit:number;credit:number;description:string}> = [
+    const journalLines: Array<{ accountId: Id<"accounts">; debit: number; credit: number; description: string }> = [
       { accountId: cash, debit: paid, credit: 0, description: `Payment received for sale${initialPay ? ` - ${initialPay.method}` : ""}` },
       { accountId: receivable, debit: money(total-paid), credit: 0, description: "Customer receivable" },
       { accountId: revenue, debit: 0, credit: money(total-taxAmount), description: "Sales revenue" },
@@ -150,7 +151,7 @@ export const voidInvoice = mutation({
     const cogs = await getSystemAccount(ctx, scope, "5000", "Cost of goods sold", "expense");
     const costTotal = roundMoney(lines.reduce((n, l) => n + stillSold(l) * l.costAtSale, 0));
     const stillOwed = money(invoice.total - refunded);
-    const journalLines: Array<{ accountId: any; debit: number; credit: number; description: string }> = [
+    const journalLines: Array<{ accountId: Id<"accounts">; debit: number; credit: number; description: string }> = [
       { accountId: revenue, debit: money(invoice.total - invoice.taxAmount), credit: 0, description: "Sales revenue reversed" },
       { accountId: taxPayable, debit: invoice.taxAmount, credit: 0, description: "Tax reversed" },
       { accountId: inventory, debit: costTotal, credit: 0, description: "Inventory restored" },
@@ -280,7 +281,7 @@ export const returnItems = mutation({
     const taxPayable = await getSystemAccount(ctx, scope, "2150", "Tax payable", "liability");
     const salesReturns = await getSystemAccount(ctx, scope, "4100", "Sales returns and allowances", "revenue");
     const cogs = await getSystemAccount(ctx, scope, "5000", "Cost of goods sold", "expense");
-    const journalLines: Array<{ accountId: any; debit: number; credit: number; description: string }> = [
+    const journalLines: Array<{ accountId: Id<"accounts">; debit: number; credit: number; description: string }> = [
       { accountId: salesReturns, debit: netReturned, credit: 0, description: "Sales returned by customer" },
       { accountId: taxPayable, debit: taxReturned, credit: 0, description: "Tax on returned goods" },
       { accountId: receivable, debit: 0, credit: credit, description: "Customer receivable reduced" },
@@ -351,18 +352,18 @@ export const salesRegisters = query({
     const tenantId = user.tenantId;
     // Only product-level reports need the invoice lines; every other screen skips reading them (much faster).
     const wantLines = a.withLines !== false;
+    const endDate = a.endDate;
     const inRange = (d: string) => (!a.startDate || d >= a.startDate) && (!a.endDate || d <= a.endDate);
-    const between = (q: any, field: string) => { let r = q; if (a.startDate) r = r.gte(field, a.startDate); if (a.endDate) r = r.lte(field, a.endDate); return r; };
 
     const clients = tenantId ? filterScoped(user, await scopedRows(ctx, user, "clients")) : [];
-    const invRaw: any[] = tenantId ? await ctx.db.query("invoices").withIndex("by_tenant_date", (q: any) => between(q.eq("tenantId", tenantId), "invoiceDate")).order("desc").take(REG_CAP + 1) : [];
-    const payRaw: any[] = tenantId ? await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q: any) => between(q.eq("tenantId", tenantId), "paymentDate")).order("desc").take(REG_CAP + 1) : [];
-    const openRaw: any[] = tenantId ? await ctx.db.query("invoices").withIndex("by_tenant_outstanding", (q: any) => q.eq("tenantId", tenantId).gt("outstanding", 0)).take(OPEN_CAP + 1) : [];
-    const afterInvRaw: any[] = tenantId && a.endDate ? await ctx.db.query("invoices").withIndex("by_tenant_date", (q: any) => q.eq("tenantId", tenantId).gt("invoiceDate", a.endDate)).take(REG_CAP + 1) : [];
-    const afterPayRaw: any[] = tenantId && a.endDate ? await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q: any) => q.eq("tenantId", tenantId).gt("paymentDate", a.endDate)).take(REG_CAP + 1) : [];
+    const invRaw: Doc<"invoices">[] = tenantId ? await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => { const b = q.eq("tenantId", tenantId); if (a.startDate && a.endDate) return b.gte("invoiceDate", a.startDate).lte("invoiceDate", a.endDate); if (a.startDate) return b.gte("invoiceDate", a.startDate); if (a.endDate) return b.lte("invoiceDate", a.endDate); return b; }).order("desc").take(REG_CAP + 1) : [];
+    const payRaw: Doc<"customerPayments">[] = tenantId ? await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => { const b = q.eq("tenantId", tenantId); if (a.startDate && a.endDate) return b.gte("paymentDate", a.startDate).lte("paymentDate", a.endDate); if (a.startDate) return b.gte("paymentDate", a.startDate); if (a.endDate) return b.lte("paymentDate", a.endDate); return b; }).order("desc").take(REG_CAP + 1) : [];
+    const openRaw: Doc<"invoices">[] = tenantId ? await ctx.db.query("invoices").withIndex("by_tenant_outstanding", (q) => q.eq("tenantId", tenantId).gt("outstanding", 0)).take(OPEN_CAP + 1) : [];
+    const afterInvRaw: Doc<"invoices">[] = tenantId && endDate ? await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gt("invoiceDate", endDate)).take(REG_CAP + 1) : [];
+    const afterPayRaw: Doc<"customerPayments">[] = tenantId && endDate ? await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gt("paymentDate", endDate)).take(REG_CAP + 1) : [];
     const truncated = invRaw.length > REG_CAP || payRaw.length > REG_CAP || openRaw.length > OPEN_CAP || afterInvRaw.length > REG_CAP || afterPayRaw.length > REG_CAP;
 
-    const posted = (rows: any[], cap: number) => mine(user, filterScoped(user, rows.slice(0, cap))).filter((i) => i.status === "posted");
+    const posted = (rows: Doc<"invoices">[], cap: number) => mine(user, filterScoped(user, rows.slice(0, cap))).filter((i) => i.status === "posted");
     const invoices = posted(invRaw, REG_CAP).sort((x, y) => y.invoiceDate.localeCompare(x.invoiceDate) || y._creationTime - x._creationTime);
     const openInvoicesRaw = posted(openRaw, OPEN_CAP).filter((i) => i.outstanding > 0);
     const afterInvoices = posted(afterInvRaw, REG_CAP);
@@ -385,8 +386,8 @@ export const salesRegisters = query({
       const u = await getUser(id); const name = u?.name ?? u?.username ?? u?.email ?? "Mtumiaji"; staffCache.set(key, name); return name;
     };
 
-    const invoiceRows = [] as Array<{ _id: any; invoiceNo: string; date: string; clientId: any; clientName: string; subtotal: number; discount: number; taxAmount: number; total: number; amountPaid: number; outstanding: number; paymentStatus: string; staff: string; source: string; notes: string }>;
-    const lines = [] as Array<{ invoiceId: any; invoiceNo: string; date: string; clientId: any; clientName: string; staff: string; source: string; productId: any; itemCode: string; productName: string; groupName: string; unit: string; supplierName: string; qty: number; unitPrice: number; discount: number; net: number; cost: number; profit: number }>;
+    const invoiceRows = [] as Array<{ _id: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; subtotal: number; discount: number; taxAmount: number; total: number; amountPaid: number; outstanding: number; paymentStatus: string; staff: string; source: string; notes: string }>;
+    const lines = [] as Array<{ invoiceId: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; staff: string; source: string; productId: Id<"products">; itemCode: string; productName: string; groupName: string; unit: string; supplierName: string; qty: number; unitPrice: number; discount: number; net: number; cost: number; profit: number }>;
     for (const inv of invoices) {
       const staff = await staffOf(inv.salespersonId ?? inv.createdBy);
       invoiceRows.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, paymentStatus: inv.paymentStatus, staff, source: inv.salesSource ?? "—", notes: inv.notes ?? "" });
@@ -404,7 +405,7 @@ export const salesRegisters = query({
 
     const invNoCache = new Map<string, string>();
     for (const i of [...invoices, ...openInvoicesRaw]) invNoCache.set(String(i._id), i.invoiceNo);
-    const payments = [] as Array<{ _id: any; date: string; clientId: any; clientName: string; invoiceNo: string; amount: number; method: string; reference: string; notes: string }>;
+    const payments = [] as Array<{ _id: Id<"customerPayments">; date: string; clientId: Id<"clients">; clientName: string; invoiceNo: string; amount: number; method: string; reference: string; notes: string }>;
     for (const p of periodPayments.filter((x) => inRange(x.paymentDate)).sort((x, y) => y.paymentDate.localeCompare(x.paymentDate) || y._creationTime - x._creationTime)) {
       let invoiceNo = "—";
       if (p.invoiceId) { const k = String(p.invoiceId); if (!invNoCache.has(k)) invNoCache.set(k, (await getInvoice(p.invoiceId))?.invoiceNo ?? "—"); invoiceNo = invNoCache.get(k)!; }
@@ -413,7 +414,7 @@ export const salesRegisters = query({
 
     // Client balances: opening balance + invoices - payments, split into before / inside the selected period.
     // Today's balance = opening + what is still unpaid; the period's closing = today's balance minus anything dated after the period.
-    const sumBy = (rows: any[], f: (r: any) => number) => { const m = new Map<string, number>(); for (const r of rows) m.set(String(r.clientId), (m.get(String(r.clientId)) ?? 0) + f(r)); return m; };
+    const sumBy = <R extends { clientId: Id<"clients"> }>(rows: R[], f: (r: R) => number) => { const m = new Map<string, number>(); for (const r of rows) m.set(String(r.clientId), (m.get(String(r.clientId)) ?? 0) + f(r)); return m; };
     const unpaidBy = sumBy(openInvoicesRaw, (i) => i.outstanding);
     const afterBilledBy = sumBy(afterInvoices, (i) => i.total);
     const afterPaidBy = sumBy(afterPayments, (p) => p.amount);

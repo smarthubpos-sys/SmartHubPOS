@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
+import type { TestConvex } from "convex-test";
 import { modules } from "./tes.setup";
 
 async function setup() {
@@ -25,7 +27,7 @@ async function setup() {
   return { t, ...ids };
 }
 
-async function runCategory(t: any, actorId: any, tenantId: any, category: string, steps: number) {
+async function runCategory(t: TestConvex<typeof schema>, actorId: Id<"users">, tenantId: Id<"tenants">, category: string, steps: number) {
   for (let step = 0; step < steps; step++) {
     for (let i = 0; i < 20; i++) {
       const r = await t.mutation(internal.maintenance.clearStepBatch, { actorId, tenantId, category, step });
