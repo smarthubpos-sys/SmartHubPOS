@@ -1,9 +1,12 @@
+import type { MutationCtx } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
 /** Shared idempotent ledger posting helpers for business workflows. */
 const roundMoney = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+type Scope = { tenantId?: Id<"tenants">; branchId?: Id<"branches"> };
 
-export async function getSystemAccount(ctx: any, scope: any, code: string, name: string, type: string) {
-  const accounts = await ctx.db.query("accounts").withIndex("by_tenant_code", (q: any) => q.eq("tenantId", scope.tenantId).eq("code", code)).collect();
-  const account = accounts.find((a: any) => a.branchId === scope.branchId && a.isActive);
+export async function getSystemAccount(ctx: MutationCtx, scope: Scope, code: string, name: string, type: string) {
+  const accounts = await ctx.db.query("accounts").withIndex("by_tenant_code", (q) => q.eq("tenantId", scope.tenantId).eq("code", code)).collect();
+  const account = accounts.find((a) => a.branchId === scope.branchId && a.isActive);
   if (account) return account._id;
   return await ctx.db.insert("accounts", { ...scope, code, name, type, subtype: "system", balance: 0, isActive: true, isSystem: true, description: "System account created for automatic posting" });
 }
@@ -16,7 +19,7 @@ const LEGACY_METHOD_ACCOUNT: Record<string, [string, string]> = {
 };
 
 /** An account that holds money: Cash / Bank / Mobile money or the account of one payment method. */
-export const isMoneyAccount = (a: any) => !!a && a.type === "asset" && (["1000", "1010", "1020"].includes(a.code) || a.subtype === "payment_method");
+export const isMoneyAccount = (a: Doc<"accounts"> | null | undefined) => !!a && a.type === "asset" && (["1000", "1010", "1020"].includes(a.code) || a.subtype === "payment_method");
 
 /**
  * The ledger account a payment must be posted to.
@@ -25,17 +28,17 @@ export const isMoneyAccount = (a: any) => !!a && a.type === "asset" && (["1000",
  *  - no method id (old fixed names)   -> Cash 1000 / Bank 1010 / Mobile money 1020
  * Renaming a method renames its account (see paymentMethods.upsert), so the account always follows the method.
  */
-export async function methodAccount(ctx: any, scope: any, pay: { methodId?: any; method?: string }) {
+export async function methodAccount(ctx: MutationCtx, scope: Scope, pay: { methodId?: Id<"paymentMethods">; method?: string }) {
   if (pay.methodId) {
-    const row = await ctx.db.get(pay.methodId);
+    const row = await ctx.db.get("paymentMethods", pay.methodId);
     if (row) {
       if (row.kind === "cash") return await getSystemAccount(ctx, scope, "1000", "Cash and equivalents", "asset");
-      const own = row.accountId ? await ctx.db.get(row.accountId) : null;
+      const own = row.accountId ? await ctx.db.get("accounts", row.accountId) : null;
       if (own && own.isActive && own.tenantId === scope.tenantId && own.branchId === scope.branchId) return own._id;
-      const used = new Set((await ctx.db.query("accounts").withIndex("by_scope", (q: any) => q.eq("tenantId", scope.tenantId)).collect()).filter((a: any) => a.branchId === scope.branchId).map((a: any) => a.code));
+      const used = new Set((await ctx.db.query("accounts").withIndex("by_scope", (q) => q.eq("tenantId", scope.tenantId)).collect()).filter((a) => a.branchId === scope.branchId).map((a) => a.code));
       let n = 1300; while (used.has(String(n))) n++;
       const id = await ctx.db.insert("accounts", { ...scope, code: String(n), name: row.name, type: "asset", subtype: "payment_method", balance: 0, isActive: true, isSystem: true, description: `Account of payment method: ${row.name}` });
-      await ctx.db.patch(row._id, { accountId: id });
+      await ctx.db.patch("paymentMethods", row._id, { accountId: id });
       return id;
     }
   }
@@ -43,10 +46,22 @@ export async function methodAccount(ctx: any, scope: any, pay: { methodId?: any;
   return await getSystemAccount(ctx, scope, code, name, "asset");
 }
 
-export async function postSystemJournal(ctx: any, input: { scope: any; userId: any; date: string; reference: string; description: string; sourceType: string; sourceId: string; lines: Array<{ accountId: any; debit: number; credit: number; description?: string }> }) {
-  const existing = (await ctx.db.query("journalEntries").withIndex("by_tenant_ref", (q: any) => q.eq("tenantId", input.scope.tenantId).eq("reference", input.reference)).collect())
-    .find((e: any) => e.branchId === input.scope.branchId && e.sourceId === input.sourceId && e.status === "posted");
+/**
+ * A closed / locked financial period (Maintenance > Periods) must not receive new postings: every sale, payment, purchase,
+ * bill and payroll goes through postSystemJournal, so checking here protects all of them. A period without a branch covers the whole business.
+ */
+export async function assertPeriodOpen(ctx: MutationCtx, scope: Scope, date: string) {
+  if (!scope?.tenantId || !date) return;
+  const periods = await ctx.db.query("financialPeriods").withIndex("by_scope", (q) => q.eq("tenantId", scope.tenantId)).collect();
+  const shut = periods.find((p) => p.status !== "open" && p.startDate <= date && date <= p.endDate && (!p.branchId || p.branchId === scope.branchId));
+  if (shut) throw new Error(`Kipindi cha hesabu "${shut.name}" kimefungwa (${shut.startDate} hadi ${shut.endDate}); huwezi kuweka miamala ya tarehe ${date}. Mwombe meneja afungue kipindi kwanza.`);
+}
+
+export async function postSystemJournal(ctx: MutationCtx, input: { scope: Scope; userId: Id<"users">; date: string; reference: string; description: string; sourceType: string; sourceId: string; lines: Array<{ accountId: Id<"accounts">; debit: number; credit: number; description?: string }> }) {
+  const existing = (await ctx.db.query("journalEntries").withIndex("by_tenant_ref", (q) => q.eq("tenantId", input.scope.tenantId).eq("reference", input.reference)).collect())
+    .find((e) => e.branchId === input.scope.branchId && e.sourceId === input.sourceId && e.status === "posted");
   if (existing) return existing._id;
+  await assertPeriodOpen(ctx, input.scope, input.date);
   const lines = input.lines.filter((l) => roundMoney(l.debit) !== 0 || roundMoney(l.credit) !== 0);
   const debit = roundMoney(lines.reduce((n, l) => n + l.debit, 0));
   const credit = roundMoney(lines.reduce((n, l) => n + l.credit, 0));

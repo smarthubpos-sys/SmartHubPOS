@@ -15,7 +15,7 @@ export const create = mutation({
   args: { subject: v.string(), message: v.string(), category: v.string() },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx);
-    const scope = await resolveWriteScope(ctx, user).catch(() => ({} as any));
+    const scope = await resolveWriteScope(ctx, user).catch(() => ({} as Awaited<ReturnType<typeof resolveWriteScope>>));
     if (!a.subject.trim() || !a.message.trim()) throw new Error("Mada na maelezo vinahitajika.");
     if (!["question", "problem", "request", "other"].includes(a.category)) throw new Error("Aina ya ombi si sahihi.");
     if (a.subject.length > 140 || a.message.length > 4000) throw new Error("Maandishi ni marefu mno.");
@@ -29,11 +29,11 @@ export const respond = mutation({
   args: { id: v.id("supportTickets"), reply: v.optional(v.string()), close: v.boolean() },
   handler: async (ctx, a) => {
     const user = await requireManager(ctx);
-    const t = await ctx.db.get(a.id);
+    const t = await ctx.db.get("supportTickets", a.id);
     if (!t || !canAccessRecord(user, t)) throw new Error("Ombi halipatikani.");
     const patch: Record<string, unknown> = { status: a.close ? "closed" : t.status };
     if (a.reply?.trim()) Object.assign(patch, { reply: a.reply.trim(), repliedBy: user.name ?? user.username ?? "user", repliedAt: new Date().toISOString() });
-    await ctx.db.patch(a.id, patch);
+    await ctx.db.patch("supportTickets", a.id, patch);
     return a.id;
   },
 });
@@ -42,9 +42,9 @@ export const close = mutation({
   args: { id: v.id("supportTickets") },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx);
-    const t = await ctx.db.get(a.id);
+    const t = await ctx.db.get("supportTickets", a.id);
     if (!t || (String(t.createdBy) !== String(user._id) && !((await isManagerRole(ctx, user)) && canAccessRecord(user, t)))) throw new Error("Ombi halipatikani.");
-    await ctx.db.patch(a.id, { status: "closed" });
+    await ctx.db.patch("supportTickets", a.id, { status: "closed" });
     return a.id;
   },
 });

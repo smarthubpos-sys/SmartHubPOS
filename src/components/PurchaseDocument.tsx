@@ -7,10 +7,11 @@ import { Button } from "@/components/ui/button.tsx";
 import { formatDate, formatNumber } from "@/lib/format.ts";
 import { printElement } from "@/lib/print-area.ts";
 import { tr, trValue } from "@/lib/i18n.ts";
+import { statusKey } from "@/lib/purchase-document-utils.ts";
 
 const KEEP_COLORS = "[print-color-adjust:exact] [-webkit-print-color-adjust:exact]";
 
-export const STATUS_STYLE: Record<string, { label: string; bg: string; text: string }> = {
+const STATUS_STYLE: Record<string, { label: string; bg: string; text: string }> = {
   paid: { label: "Paid", bg: "bg-emerald-500", text: "text-white" },
   partial: { label: "Partially paid", bg: "bg-amber-500", text: "text-white" },
   unpaid: { label: "Unpaid", bg: "bg-rose-500", text: "text-white" },
@@ -18,7 +19,6 @@ export const STATUS_STYLE: Record<string, { label: string; bg: string; text: str
   draft: { label: "Draft", bg: "bg-slate-400", text: "text-white" },
 };
 
-export const statusKey = (p: { status: string; paymentStatus: string }) => (p.status === "cancelled" || p.status === "draft" ? p.status : p.paymentStatus);
 
 /** Small coloured status label used in the report tables. */
 export function StatusBadge({ status }: { status: string }) {

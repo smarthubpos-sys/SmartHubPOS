@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { Plus, X, Pencil } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
+import type { FunctionReturnType } from "convex/server";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { tr, errorText } from "@/lib/i18n.ts";
@@ -9,6 +10,8 @@ import PlanFields, { SubscriptionBadge } from "./PlanFields.tsx";
 import EditBusinessPanel from "./EditBusinessPanel.tsx";
 import ErrorBoundary from "@/components/error-boundary.tsx";
 import { emptyPlan, planArgs, type PlanValue } from "./plan-utils.ts";
+
+type Office = FunctionReturnType<typeof api.tenants.list>[number];
 
 export default function SuperAdminPage() {
   const offices = useQuery(api.tenants.list, {});
@@ -65,7 +68,7 @@ export default function SuperAdminPage() {
         <table className="w-full text-sm">
           <thead className="bg-muted/50"><tr><th className="p-3 text-left">{tr("Ofisi")}</th><th className="p-3 text-left">{tr("Code")}</th><th className="p-3 text-left">{tr("Hali")}</th><th className="p-3 text-left">{tr("Usajili")}</th><th className="p-3 text-left">{tr("Idara")}</th></tr></thead>
           <tbody>
-            {offices?.map((o: any) => <OfficeRow key={o._id} office={o} />)}
+            {offices?.map((o) => <OfficeRow key={o._id} office={o} />)}
             {offices?.length === 0 && <tr><td colSpan={5} className="p-4 text-muted-foreground">{tr("Bado hakuna ofisi. Unda ya kwanza hapo juu.")}</td></tr>}
             {offices === undefined && <tr><td colSpan={5} className="p-4">{tr("Inapakia…")}</td></tr>}
           </tbody>
@@ -76,7 +79,7 @@ export default function SuperAdminPage() {
   );
 }
 
-function OfficeRow({ office }: { office: any }) {
+function OfficeRow({ office }: { office: Office }) {
   const branches = useQuery(api.tenants.listBranches, { tenantId: office._id });
   const add = useMutation(api.tenants.addDepartment);
   const remove = useMutation(api.tenants.removeDepartment);
@@ -94,7 +97,7 @@ function OfficeRow({ office }: { office: any }) {
       <td className="p-3"><SubscriptionBadge sub={office.subscription} /></td>
       <td className="p-3">
         <div className="mb-1 flex flex-wrap gap-1 text-xs">
-          {branches === undefined ? "…" : branches.filter((b: any) => b.isActive).length === 0 ? <span className="text-muted-foreground">{tr("Hakuna idara")}</span> : branches.filter((b: any) => b.isActive).map((b: any) => (
+          {branches === undefined ? "…" : branches.filter((b) => b.isActive).length === 0 ? <span className="text-muted-foreground">{tr("Hakuna idara")}</span> : branches.filter((b) => b.isActive).map((b) => (
             <span key={b._id} className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5">{b.name}
               <button type="button" className="cursor-pointer text-muted-foreground hover:text-destructive" aria-label={tr("Ondoa")} onClick={async () => { setError(""); try { await remove({ branchId: b._id }); } catch (err) { setError(errorText(err, "Imeshindikana kuondoa idara.")); } }}><X className="h-3 w-3" /></button>
             </span>

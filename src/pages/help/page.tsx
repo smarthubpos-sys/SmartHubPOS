@@ -1,3 +1,4 @@
+import { useSubmit } from "@/components/use-submit.ts";
 import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate } from "react-router-dom";
@@ -5,7 +6,7 @@ import { ChevronDown, LifeBuoy, Search, Send } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, useSubmit } from "@/components/page-kit.tsx";
+import { Empty, FormField, PageHeader, Panel, Pill, SelectBox } from "@/components/page-kit.tsx";
 import { formatDate } from "@/lib/format.ts";
 import { tr } from "@/lib/i18n.ts";
 

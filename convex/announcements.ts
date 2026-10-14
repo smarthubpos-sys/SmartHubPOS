@@ -72,7 +72,7 @@ export const create = mutation({
     const startsAt = a.startsAt?.trim() || tzToday(); const endsAt = a.endsAt?.trim() || undefined;
     if (!DATE.test(startsAt) || (endsAt && !DATE.test(endsAt))) throw new Error("Tarehe si sahihi.");
     if (endsAt && endsAt < startsAt) throw new Error("Tarehe ya mwisho iwe baada ya ya kuanza.");
-    if (a.tenantId && !(await ctx.db.get(a.tenantId))) throw new Error("Biashara haipo");
+    if (a.tenantId && !(await ctx.db.get("tenants", a.tenantId))) throw new Error("Biashara haipo");
     const id = await ctx.db.insert("announcements", { kind: a.kind, title, body, imageUrl, linkUrl, theme, tenantId: a.tenantId, startsAt, endsAt, isActive: true, createdBy: user._id, createdAt: new Date().toISOString() });
     await logAudit(ctx, user, { action: "create_announcement", module: "super-admin", referenceId: String(id), details: `${a.kind}: ${title}` });
     return id;
@@ -81,10 +81,10 @@ export const create = mutation({
 
 export const setActive = mutation({
   args: { id: v.id("announcements"), isActive: v.boolean() },
-  handler: async (ctx, a) => { await requireSuperAdminUser(ctx); await ctx.db.patch(a.id, { isActive: a.isActive }); return a.isActive; },
+  handler: async (ctx, a) => { await requireSuperAdminUser(ctx); await ctx.db.patch("announcements", a.id, { isActive: a.isActive }); return a.isActive; },
 });
 
 export const remove = mutation({
   args: { id: v.id("announcements") },
-  handler: async (ctx, a) => { await requireSuperAdminUser(ctx); await ctx.db.delete(a.id); return true; },
+  handler: async (ctx, a) => { await requireSuperAdminUser(ctx); await ctx.db.delete("announcements", a.id); return true; },
 });

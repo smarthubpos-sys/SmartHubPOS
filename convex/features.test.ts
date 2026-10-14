@@ -18,7 +18,7 @@ async function setup() {
 }
 const balances = async (t: any) => t.run(async (ctx: any) => {
   const out: Record<string, number> = {};
-  for (const l of await ctx.db.query("journalLines").collect()) { const a = await ctx.db.get(l.accountId); out[a.code] = (out[a.code] ?? 0) + l.debit - l.credit; }
+  for (const l of await ctx.db.query("journalLines").collect()) { const a = await ctx.db.get("accounts", l.accountId); out[a.code] = (out[a.code] ?? 0) + l.debit - l.credit; }
   return out;
 });
 
@@ -87,7 +87,7 @@ describe("attendance, leave and payroll", () => {
     const r1 = await as.mutation(api.attendance.recordManual, { employeeId: hourly, kind: "in", tzOffset: 0 });
     await expect(as.mutation(api.attendance.recordManual, { employeeId: hourly, kind: "in", tzOffset: 0 })).rejects.toThrow(/Tayari/);
     await as.mutation(api.attendance.recordManual, { employeeId: hourly, kind: "out", tzOffset: 0 });
-    await t.run(async (ctx) => { const rec = (await ctx.db.query("attendance").collect())[0]; await ctx.db.patch(rec._id, { hoursWorked: 8 }); });
+    await t.run(async (ctx) => { const rec = (await ctx.db.query("attendance").collect())[0]; await ctx.db.patch("attendance", rec._id, { hoursWorked: 8 }); });
     const date = r1.date;
     await as.mutation(api.payroll.processPayroll, { name: "Test", startDate: date, endDate: date, deductionRatePercent: 0 });
     const recs = await as.query(api.payroll.listRecords, {});

@@ -1,11 +1,15 @@
+import { useSubmit } from "@/components/use-submit.ts";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { AlertTriangle, CheckCircle2, Plus, Receipt, Wallet, X } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
+import { useNavigate } from "react-router-dom";
+import { FileBarChart } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
+import { Switch } from "@/components/ui/switch.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, Stat, Table, useSubmit } from "@/components/page-kit.tsx";
+import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, Stat, Table } from "@/components/page-kit.tsx";
 import { useMoney } from "@/hooks/use-money.ts";
 import { formatDate, localDate } from "@/lib/format.ts";
 import { methodArgs, pickMethodKey, usePaymentMethods } from "@/hooks/use-payment-methods.ts";
@@ -23,6 +27,8 @@ export default function ExpensesPage() {
   const { money } = useMoney();
   const methods = usePaymentMethods();
   const { busy, run } = useSubmit();
+  const navigate = useNavigate();
+  const [dayDone, setDayDone] = useState(false); // "I finished entering today's expenses" -> offers the day report
   const today = localDate();
   const [filter, setFilter] = useState<"open" | "overdue" | "paid" | "all">("open");
   const [showForm, setShowForm] = useState(false);
@@ -32,7 +38,7 @@ export default function ExpensesPage() {
   const [p, setP] = useState({ amount: "", method: "cash", date: today, reference: "" });
   const payments = useQuery(api.bills.payments, payFor ? { billId: payFor } : "skip");
 
-  const list = bills ?? [];
+  const list = useMemo(() => bills ?? [], [bills]);
   const status = (b: (typeof list)[number]) => b.status === "void" ? "void" : b.status === "paid" ? "paid" : b.dueDate < today ? "overdue" : b.status;
   const open = list.filter((b) => ["unpaid", "partial"].includes(b.status));
   const owed = open.reduce((s, b) => s + b.amount - b.paidAmount, 0);
@@ -48,6 +54,16 @@ export default function ExpensesPage() {
     <div className="mx-auto max-w-6xl space-y-4">
       <PageHeader icon={Receipt} title={tr("Matumizi ya kawaida (Expenses)")} subtitle={tr("Matumizi ya biashara: pango, umeme, maji, kodi na nyinginezo. Malipo yanaingia kwenye hesabu kiotomatiki.")}
         actions={<Button onClick={() => setShowForm((v) => !v)}><Plus className="mr-1 h-4 w-4" />{tr("Matumizi mapya")}</Button>} />
+
+      <Panel title={tr("Maliza siku")}>
+        <div className="flex flex-wrap items-center gap-3">
+          <Switch id="day-done" checked={dayDone} onCheckedChange={setDayDone} />
+          <label htmlFor="day-done" className="cursor-pointer text-sm font-medium">{tr("Nimemaliza kuingiza matumizi ya siku")}</label>
+          {dayDone && <Button onClick={() => navigate(`/accounts/period-report?period=day&date=${today}&auto=1`)}><FileBarChart className="mr-1 h-4 w-4" />{tr("Unda ripoti ya siku")}</Button>}
+          <Button variant="outline" onClick={() => navigate("/accounts/period-report")}>{tr("Ripoti ya mwezi / mwaka")}</Button>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">{tr("Washa kitufe hiki ukimaliza kuingiza matumizi ya leo, kisha bonyeza kuunda ripoti ya siku (mauzo, marejesho, matumizi na faida). Unaweza pia kuchagua mwezi au mwaka, na idara moja au zote.")}</p>
+      </Panel>
 
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
         <Stat label={tr("Deni la bili")} value={money(owed)} icon={Wallet} tone="amber" />

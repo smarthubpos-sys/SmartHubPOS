@@ -31,11 +31,11 @@ export const feed = query({
     }
     if (manager) {
       const emps = new Map((await scopedRows(ctx, user, "employees")).map((e) => [String(e._id), e.name]));
-      for (const l of (await scopedRows(ctx, user, "leaveRequests")).filter((l: any) => l.status === "pending"))
+      for (const l of (await scopedRows(ctx, user, "leaveRequests")).filter((l) => l.status === "pending"))
         items.push({ key: `leave:${l._id}`, code: "leave_pending", level: "info", params: { name: emps.get(String(l.employeeId)) ?? "-", from: l.startDate, to: l.endDate }, link: "/hr", at: l.startDate });
-      for (const p of (await scopedRows(ctx, user, "payrollPeriods")).filter((p: any) => p.status === "draft"))
+      for (const p of (await scopedRows(ctx, user, "payrollPeriods")).filter((p) => p.status === "draft"))
         items.push({ key: `payroll:${p._id}`, code: "payroll_draft", level: "info", params: { name: p.name }, link: "/payroll/process", at: p.endDate });
-      for (const t of (await scopedRows(ctx, user, "supportTickets")).filter((t: any) => t.status === "open"))
+      for (const t of (await scopedRows(ctx, user, "supportTickets")).filter((t) => t.status === "open"))
         items.push({ key: `ticket:${t._id}`, code: "ticket_open", level: "info", params: { subject: t.subject, name: t.createdByName }, link: "/help", at: t.createdAt.slice(0, 10) });
     }
     for (const t of await ctx.db.query("supportTickets").withIndex("by_user", (q) => q.eq("createdBy", user._id)).collect())
@@ -43,7 +43,7 @@ export const feed = query({
 
     // Subscription reminder: business managers are told every day, from 7 days before the end (demo or paid).
     if (manager && user.tenantId && !isSuperAdmin(user)) {
-      const tenant = await ctx.db.get(user.tenantId as Id<"tenants">);
+      const tenant = await ctx.db.get("tenants", user.tenantId as Id<"tenants">);
       const st = planStatus(tenant, tzToday());
       if (tenant && st.expiringSoon)
         items.push({ key: `sub:${st.endsAt}:${st.daysLeft}`, code: st.plan === "demo" ? "demo_expiring" : "sub_expiring", level: (st.daysLeft ?? 0) <= 2 ? "danger" : "warning", params: { days: st.daysLeft ?? 0, date: st.endsAt ?? "" }, link: "/help", at: a.today });

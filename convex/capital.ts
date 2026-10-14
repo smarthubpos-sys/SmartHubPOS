@@ -65,7 +65,7 @@ export const receive = mutation({
       description: `Capital received: ${source.name} - ${a.sourceName.trim()}`, sourceType: "capital", sourceId: String(id),
       lines: [{ accountId: dep, debit: amount, credit: 0, description: "Funds received" }, { accountId: src, debit: 0, credit: amount, description: a.sourceName.trim() }],
     });
-    await ctx.db.patch(id, { journalId });
+    await ctx.db.patch("capitalReceipts", id, { journalId });
     await logAudit(ctx, user, { action: "receive_capital", module: "accounts", referenceId: String(id), details: `${a.sourceType} ${amount} (${a.sourceName.trim()})` });
     return id;
   },

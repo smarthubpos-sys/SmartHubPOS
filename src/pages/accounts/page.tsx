@@ -4,6 +4,7 @@ import { BookOpen, Edit, ArrowLeftRight, FileText, RefreshCw, DollarSign, List, 
 import ModuleWorkspace from "@/pages/layout/_components/ModuleWorkspace.tsx";
 import CapitalPage from "@/pages/accounts/CapitalPage.tsx";
 import ExpensesPage from "@/pages/accounts/ExpensesPage.tsx";
+import PeriodReportPage from "@/pages/accounts/PeriodReportPage.tsx";
 import { tr } from "@/lib/i18n.ts";
 
 const accountsMenuItems = [
@@ -22,6 +23,7 @@ const accountsMenuItems = [
   {
     section: tr("Reports"),
     items: [
+      { label: tr("Ripoti ya Siku / Mwezi / Mwaka"), icon: BarChart2, path: "/accounts/period-report", description: tr("Mauzo, matumizi na faida kwa idara") },
       { label: tr("General Ledger"), icon: BookOpen, path: "/accounts/reports/ledger", description: tr("Full account ledger") },
       { label: tr("Trial Balance"), icon: BarChart2, path: "/accounts/reports/trial-balance", description: tr("Debit/credit balance") },
       { label: tr("Balance Sheet"), icon: FileText, path: "/accounts/reports/balance-sheet", description: tr("Assets vs liabilities") },
@@ -52,6 +54,7 @@ export default function AccountsPage() {
       />
       <Route path="capital" element={<CapitalPage />} />
       <Route path="expenses" element={<ExpensesPage />} />
+      <Route path="period-report" element={<PeriodReportPage />} />
       <Route path="*" element={<ModuleWorkspace module="accounts" />} />
     </Routes>
   );

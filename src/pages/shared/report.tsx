@@ -1,30 +1,13 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAction } from "convex/react";
 import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { tr } from "@/lib/i18n.ts";
+import { printElement, readPaper, savePaper, type Paper } from "@/lib/print-area.ts";
 
-export type Row = Record<string, string | number>;
-
-export const today = () => new Date().toISOString().slice(0, 10);
-export const monthStart = () => `${today().slice(0, 8)}01`;
-export const fmt = (n: number, digits = 2) => n.toLocaleString("en-US", { maximumFractionDigits: digits });
-export const num = (v: string | number | undefined) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-export const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
-
-/** Group items by one or more keys and fold them into rows. */
-export function groupRows<T, R extends Row>(items: T[], key: (item: T) => string, init: (item: T) => R, add: (acc: R, item: T) => void): R[] {
-  const map = new Map<string, R>();
-  for (const item of items) {
-    const k = key(item);
-    let acc = map.get(k);
-    if (!acc) { acc = init(item); map.set(k, acc); }
-    add(acc, item);
-  }
-  return [...map.values()];
-}
+import { fmt, num, round2, today, type Row } from "./report-utils.ts";
 
 function downloadCsv(name: string, rows: Row[]) {
   if (!rows.length) return;
@@ -56,10 +39,14 @@ export function Stat({ label, value }: { label: string; value: string | number }
 }
 
 /** Report table with automatic number formatting, optional totals row, CSV export and print. */
-export function ReportTable({ title, rows, sumCols = [], note }: { title: string; rows: Row[]; sumCols?: string[]; note?: string }) {
+export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { title: string; rows: Row[]; sumCols?: string[]; note?: string; onPrintRow?: (row: Row, copies: number, paper: Paper) => void }) {
   const cols = Object.keys(rows[0] ?? {});
   const sendReport = useAction(api.reportEmails.sendReport);
   const [sending, setSending] = useState(false);
+  const sectionRef = useRef<HTMLElement>(null);
+  const [picked, setPicked] = useState<number | null>(null);
+  const [copies, setCopies] = useState(1);
+  const [paper, setPaper] = useState<Paper>(readPaper());
   const emailReport = async () => {
     setSending(true);
     try {
@@ -69,27 +56,41 @@ export function ReportTable({ title, rows, sumCols = [], note }: { title: string
       toast.error(error instanceof Error ? error.message : "Imeshindikana kutuma ripoti kwa email.");
     } finally { setSending(false); }
   };
-  const totals: Row | null = rows.length && sumCols.length ? Object.fromEntries(cols.map((c, i) => [c, sumCols.includes(c) ? round2(rows.reduce((n, r) => n + num(r[c]), 0)) : i === 0 ? tr("JUMLA") : ""])) : null;
+  // Row keys are written in Kiswahili but callers pass translated names, so match either form (otherwise totals vanish in English).
+  const isSum = (c: string) => sumCols.includes(c) || sumCols.includes(tr(c));
+  const totals: Row | null = rows.length && sumCols.length ? Object.fromEntries(cols.map((c, i) => [c, isSum(c) ? round2(rows.reduce((n, r) => n + num(r[c]), 0)) : i === 0 ? tr("JUMLA") : ""])) : null;
   const show = (v: string | number | undefined) => (typeof v === "number" ? fmt(v, 4) : String(v ?? ""));
   return (
-    <section className="overflow-hidden rounded-xl border">
+    <section ref={sectionRef} className="overflow-hidden rounded-xl border">
+      <div className="hidden border-b p-3 text-xs text-slate-600 print:block">{tr("Imechapishwa")}: {new Date().toLocaleString()}</div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
         <div className="font-semibold">{title} <span className="text-sm font-normal text-muted-foreground">({rows.length})</span></div>
-        <div className="flex gap-2 print:hidden">
+        <div className="flex flex-wrap items-center gap-2 print:hidden">
+          {onPrintRow && (
+            <>
+              <select className="h-9 rounded-md border bg-background px-2 text-sm" value={paper} aria-label={tr("Aina ya printer")} onChange={(e) => { const v = e.target.value as Paper; setPaper(v); savePaper(v); }}>
+                <option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option>
+              </select>
+              <label className="flex items-center gap-1 text-xs">{tr("Nakala")}
+                <Input type="number" min={1} max={10} className="h-9 w-16" value={copies} onChange={(e) => setCopies(Math.min(10, Math.max(1, Math.floor(Number(e.target.value) || 1))))} />
+              </label>
+              <Button size="sm" disabled={picked === null || !rows[picked]} onClick={() => { if (picked !== null && rows[picked]) onPrintRow(rows[picked], copies, paper); }}>{tr("Chapisha item iliyochaguliwa")}</Button>
+            </>
+          )}
           <Button size="sm" variant="outline" disabled={!rows.length} onClick={() => downloadCsv(title, rows)}>{tr("Export CSV")}</Button>
           <Button size="sm" variant="outline" disabled={!rows.length || sending} onClick={() => void emailReport()}>{sending ? tr("Inatuma…") : tr("Tuma kwa Email")}</Button>
-          <Button size="sm" variant="outline" onClick={() => window.print()}>{tr("Print")}</Button>
+          <Button size="sm" variant="outline" onClick={() => printElement(sectionRef.current, "A4", { landscape: cols.length > 6 })}>{tr("Print")}</Button>
         </div>
       </div>
       {note && <p className="border-b bg-muted/30 p-3 text-xs text-muted-foreground">{note}</p>}
       <div className="max-w-full overflow-x-auto">
         <table className="w-full min-w-full table-auto text-left text-sm">
-          <thead><tr>{cols.map((c) => <th key={c} className={`bg-muted/50 p-3 align-bottom font-semibold ${rows.some((r) => typeof r[c] === "number") ? "text-right" : "text-left"} break-words`}>{tr(c)}</th>)}</tr></thead>
+          <thead><tr>{onPrintRow && <th className="w-10 bg-muted/50 p-3 print:hidden" aria-label={tr("Chagua")} />}{cols.map((c) => <th key={c} className={`bg-muted/50 p-3 align-bottom font-semibold ${rows.some((r) => typeof r[c] === "number") ? "text-right" : "text-left"} break-words`}>{tr(c)}</th>)}</tr></thead>
           <tbody>
             {rows.map((r, i) => (
-              <tr key={i} className="border-t">{cols.map((c) => <td key={c} className={`max-w-xs p-3 align-top break-words ${typeof r[c] === "number" ? "text-right tabular-nums whitespace-nowrap" : "text-left"}`}>{show(r[c])}</td>)}</tr>
+              <tr key={i} onClick={onPrintRow ? () => setPicked(i) : undefined} className={`border-t ${onPrintRow ? "cursor-pointer" : ""} ${picked === i ? "bg-primary/10" : ""}`}>{onPrintRow && <td className="p-3 align-top print:hidden"><input type="radio" name="report-row" checked={picked === i} onChange={() => setPicked(i)} aria-label={tr("Chagua")} /></td>}{cols.map((c) => <td key={c} className={`max-w-xs p-3 align-top break-words ${typeof r[c] === "number" ? "text-right tabular-nums whitespace-nowrap" : "text-left"}`}>{show(r[c])}</td>)}</tr>
             ))}
-            {totals && <tr className="border-t-2 bg-muted/40 font-semibold">{cols.map((c) => <td key={c} className={`p-3 align-top ${sumCols.includes(c) ? "text-right tabular-nums whitespace-nowrap" : "text-left"}`}>{show(totals[c])}</td>)}</tr>}
+            {totals && <tr className="border-t-2 bg-muted/40 font-semibold">{onPrintRow && <td className="print:hidden" />}{cols.map((c) => <td key={c} className={`p-3 align-top ${isSum(c) ? "text-right tabular-nums whitespace-nowrap" : "text-left"}`}>{show(totals[c])}</td>)}</tr>}
           </tbody>
         </table>
         {!rows.length && <p className="p-5 text-sm text-muted-foreground">{tr("Hakuna taarifa kwa kipindi/chaguo hili.")}</p>}

@@ -6,15 +6,15 @@ export const reportEmailContext = internalQuery({
   args: { subject: v.string() },
   handler: async (ctx, { subject }) => {
     const userId = ctx.db.normalizeId("users", subject.split("|")[0]);
-    const user = userId ? await ctx.db.get(userId) : null;
+    const user = userId ? await ctx.db.get("users", userId) : null;
     if (!user || user.isActive === false || !user.tenantId) throw new Error("Akaunti haiwezi kutuma ripoti.");
-    const tenant = await ctx.db.get(user.tenantId);
+    const tenant = await ctx.db.get("tenants", user.tenantId);
     if (!tenant || tenant.isActive === false) throw new Error("Biashara haipo au imesimamishwa.");
     const rows = await ctx.db.query("appSettings").withIndex("by_scope", (q) => q.eq("tenantId", user.tenantId).eq("branchId", undefined)).collect();
     const setting = rows.find((r) => r.key === "system");
     let system: any = {};
     try { system = setting ? JSON.parse(setting.value) : {}; } catch { /* invalid settings */ }
-    const company = (await ctx.db.query("companySettings").withIndex("by_tenant", (q: any) => q.eq("tenantId", user.tenantId)).first()) as any;
+    const company = (await ctx.db.query("companySettings").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).first()) as any;
     return {
       recipients: String(system.reportEmailRecipients ?? "").split(/[;,\n]/).map((x: string) => x.trim()).filter(Boolean),
       companyName: company?.companyName ?? tenant.name ?? "SmartHubPOS",
@@ -36,7 +36,7 @@ export const sendReport = action({
     if (!key || !from) throw new Error("Email haijasanidiwa. Weka RESEND_API_KEY na REPORTS_FROM_EMAIL kwenye Convex environment variables.");
     const cols = Object.keys(args.rows[0] ?? {});
     const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-    const table = args.rows.length ? `<table style="border-collapse:collapse;width:100%"><thead><tr>${cols.map((c) => `<th style="border:1px solid #ddd;padding:8px;text-align:left">${escape(c)}</th>`).join("")}</tr></thead><tbody>${args.rows.map((row: any) => `<tr>${cols.map((c) => `<td style="border:1px solid #ddd;padding:8px">${escape(row?.[c])}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "<p>Hakuna taarifa kwenye ripoti hii.</p>";
+    const table = args.rows.length ? `<table style="border-collapse:collapse;width:100%"><thead><tr>${cols.map((c) => `<th style="border:1px solid #ddd;padding:8px;text-align:left">${escape(c)}</th>`).join("")}</tr></thead><tbody>${args.rows.map((row) => `<tr>${cols.map((c) => `<td style="border:1px solid #ddd;padding:8px">${escape(row?.[c])}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "<p>Hakuna taarifa kwenye ripoti hii.</p>";
     const period = args.startDate || args.endDate ? `<p>Kipindi: ${escape(args.startDate ?? "—")} hadi ${escape(args.endDate ?? "—")}</p>` : "";
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",

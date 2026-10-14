@@ -10,7 +10,62 @@ import { tr } from "./i18n.ts";
 export type DeviceKind = "usb" | "serial" | "bluetooth";
 export type DeviceInfo = { kind: DeviceKind; name: string; id?: string; vendorId?: number; productId?: number };
 
-const nav = () => navigator as any;
+/** Minimal typed browser-device interfaces. These APIs are not included in every DOM lib target. */
+type UsbEndpoint = { direction: "in" | "out"; type: string; endpointNumber: number };
+type UsbAlternate = { endpoints: UsbEndpoint[] };
+type UsbInterface = { interfaceNumber: number; alternates: UsbAlternate[] };
+type UsbConfiguration = { interfaces: UsbInterface[] };
+type UsbDevice = {
+  productName?: string;
+  vendorId: number;
+  productId: number;
+  configuration: UsbConfiguration | null;
+  open(): Promise<void>;
+  close(): Promise<void>;
+  selectConfiguration(configurationValue: number): Promise<void>;
+  claimInterface(interfaceNumber: number): Promise<void>;
+  releaseInterface(interfaceNumber: number): Promise<void>;
+  transferOut(endpointNumber: number, data: BufferSource): Promise<unknown>;
+};
+type UsbApi = { getDevices(): Promise<UsbDevice[]>; requestDevice(options: { filters: object[] }): Promise<UsbDevice> };
+type SerialInfo = { usbVendorId?: number; usbProductId?: number };
+type SerialWriter = { write(data: BufferSource): Promise<void>; releaseLock(): void };
+type SerialPort = {
+  getInfo?(): SerialInfo;
+  writable: { getWriter(): SerialWriter } | null;
+  open(options: { baudRate: number }): Promise<void>;
+  close(): Promise<void>;
+};
+type SerialApi = { getPorts(): Promise<SerialPort[]>; requestPort(): Promise<SerialPort> };
+type BluetoothCharacteristic = {
+  properties: { write: boolean; writeWithoutResponse: boolean };
+  writeValue(value: BufferSource): Promise<void>;
+  writeValueWithoutResponse(value: BufferSource): Promise<void>;
+};
+type BluetoothService = { getCharacteristics(): Promise<BluetoothCharacteristic[]> };
+type BluetoothServer = { getPrimaryServices(): Promise<BluetoothService[]> };
+type BluetoothDevice = {
+  id: string;
+  name?: string;
+  gatt: { connect(): Promise<BluetoothServer>; disconnect(): void } | null;
+};
+type BluetoothApi = {
+  getDevices?: () => Promise<BluetoothDevice[]>;
+  requestDevice(options: { acceptAllDevices: boolean; optionalServices: string[] }): Promise<BluetoothDevice>;
+};
+type DeviceNavigator = Navigator & { usb?: UsbApi; serial?: SerialApi; bluetooth?: BluetoothApi };
+type QzTrayApi = {
+  security: {
+    setCertificatePromise(callback: (resolve: (certificate?: string) => void) => void): void;
+    setSignaturePromise(callback: () => (resolve: (signature?: string) => void) => void): void;
+  };
+  websocket: { isActive(): boolean; connect(options: { retries: number; delay: number }): Promise<void> };
+  printers: { find(): Promise<string | string[]> };
+  configs: { create(name: string): unknown };
+  print(config: unknown, data: Array<{ type: string; format: string; data: string }>): Promise<void>;
+};
+
+const nav = (): DeviceNavigator => navigator as DeviceNavigator;
 export const deviceSupport = {
   usb: () => typeof navigator !== "undefined" && !!nav().usb,
   serial: () => typeof navigator !== "undefined" && !!nav().serial,
@@ -19,8 +74,8 @@ export const deviceSupport = {
 
 /* ───────── Installed printers (QZ Tray) ───────── */
 async function qzConnect() {
-  const mod: any = await import("qz-tray");
-  const qz = mod.default ?? mod;
+  const mod = await import("qz-tray") as unknown as { default?: QzTrayApi } & QzTrayApi;
+  const qz: QzTrayApi = mod.default ?? mod;
   qz.security.setCertificatePromise((resolve: () => void) => resolve());
   qz.security.setSignaturePromise(() => (resolve: () => void) => resolve());
   if (!qz.websocket.isActive()) await qz.websocket.connect({ retries: 0, delay: 0 });
@@ -46,48 +101,58 @@ const hex = (n?: number) => (n === undefined ? "" : n.toString(16).padStart(4, "
 
 export async function pairDevice(kind: DeviceKind): Promise<DeviceInfo> {
   if (kind === "usb") {
-    const d = await nav().usb.requestDevice({ filters: [] });
+    const usb = nav().usb;
+    if (!usb) throw new Error(tr("Kivinjari hiki hakiungi mkono USB printing."));
+    const d = await usb.requestDevice({ filters: [] });
     return { kind, name: d.productName || `USB ${hex(d.vendorId)}:${hex(d.productId)}`, vendorId: d.vendorId, productId: d.productId };
   }
   if (kind === "serial") {
-    const p = await nav().serial.requestPort();
+    const serial = nav().serial;
+    if (!serial) throw new Error(tr("Kivinjari hiki hakiungi mkono Serial printing."));
+    const p = await serial.requestPort();
     const i = p.getInfo?.() ?? {};
     return { kind, name: i.usbVendorId ? `Serial ${hex(i.usbVendorId)}:${hex(i.usbProductId)}` : "Serial / Bluetooth (SPP)", vendorId: i.usbVendorId, productId: i.usbProductId };
   }
-  const d = await nav().bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: BLE_SERVICES });
+  const bluetooth = nav().bluetooth;
+  if (!bluetooth) throw new Error(tr("Kivinjari hiki hakiungi mkono Bluetooth printing."));
+  const d = await bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: BLE_SERVICES });
   return { kind, name: d.name || "Bluetooth printer", id: d.id };
 }
 
 /** Devices the user has already authorized in this browser (so they can be picked without pairing again). */
 export async function authorizedDevices(kind: DeviceKind): Promise<DeviceInfo[]> {
   try {
-    if (kind === "usb" && deviceSupport.usb()) {
-      return (await nav().usb.getDevices()).map((d: any) => ({ kind, name: d.productName || `USB ${hex(d.vendorId)}:${hex(d.productId)}`, vendorId: d.vendorId, productId: d.productId }));
+    if (kind === "usb" && deviceSupport.usb() && nav().usb) {
+      return (await nav().usb!.getDevices()).map((d) => ({ kind, name: d.productName || `USB ${hex(d.vendorId)}:${hex(d.productId)}`, vendorId: d.vendorId, productId: d.productId }));
     }
-    if (kind === "serial" && deviceSupport.serial()) {
-      return (await nav().serial.getPorts()).map((p: any) => {
+    if (kind === "serial" && deviceSupport.serial() && nav().serial) {
+      return (await nav().serial!.getPorts()).map((p) => {
         const i = p.getInfo?.() ?? {};
         return { kind, name: i.usbVendorId ? `Serial ${hex(i.usbVendorId)}:${hex(i.usbProductId)}` : "Serial / Bluetooth (SPP)", vendorId: i.usbVendorId, productId: i.usbProductId };
       });
     }
-    if (kind === "bluetooth" && deviceSupport.bluetooth() && nav().bluetooth.getDevices) {
-      return (await nav().bluetooth.getDevices()).map((d: any) => ({ kind, name: d.name || "Bluetooth printer", id: d.id }));
+    if (kind === "bluetooth" && deviceSupport.bluetooth() && nav().bluetooth?.getDevices) {
+      return (await nav().bluetooth!.getDevices!()).map((d) => ({ kind, name: d.name || "Bluetooth printer", id: d.id }));
     }
   } catch { /* permission / unsupported */ }
   return [];
 }
 
 async function sendUsb(info: DeviceInfo, bytes: Uint8Array) {
-  const dev = (await nav().usb.getDevices()).find((d: any) => d.vendorId === info.vendorId && d.productId === info.productId) ?? (await nav().usb.requestDevice({ filters: [] }));
+  const usb = nav().usb;
+  if (!usb) throw new Error(tr("Kivinjari hiki hakiungi mkono USB printing."));
+  const dev = (await usb.getDevices()).find((d) => d.vendorId === info.vendorId && d.productId === info.productId) ?? (await usb.requestDevice({ filters: [] }));
   await dev.open();
   try {
     if (!dev.configuration) await dev.selectConfiguration(1);
-    for (const iface of dev.configuration.interfaces) {
+    const configuration = dev.configuration;
+    if (!configuration) throw new Error(tr("USB configuration ya printer haipatikani."));
+    for (const iface of configuration.interfaces) {
       const alt = iface.alternates[0];
-      const out = alt.endpoints.find((e: any) => e.direction === "out" && e.type === "bulk");
+      const out = alt.endpoints.find((e) => e.direction === "out" && e.type === "bulk");
       if (!out) continue;
       await dev.claimInterface(iface.interfaceNumber);
-      await dev.transferOut(out.endpointNumber, bytes);
+      await dev.transferOut(out.endpointNumber, new Uint8Array(bytes));
       await dev.releaseInterface(iface.interfaceNumber);
       return;
     }
@@ -96,33 +161,40 @@ async function sendUsb(info: DeviceInfo, bytes: Uint8Array) {
 }
 
 async function sendSerial(info: DeviceInfo, bytes: Uint8Array) {
-  const ports = await nav().serial.getPorts();
-  const port = ports.find((p: any) => { const i = p.getInfo?.() ?? {}; return i.usbVendorId === info.vendorId && i.usbProductId === info.productId; }) ?? ports[0] ?? (await nav().serial.requestPort());
+  const serial = nav().serial;
+  if (!serial) throw new Error(tr("Kivinjari hiki hakiungi mkono Serial printing."));
+  const ports = await serial.getPorts();
+  const port = ports.find((p) => { const i = p.getInfo?.() ?? {}; return i.usbVendorId === info.vendorId && i.usbProductId === info.productId; }) ?? ports[0] ?? (await serial.requestPort());
   await port.open({ baudRate: 9600 });
   try {
-    const writer = port.writable.getWriter();
-    await writer.write(bytes);
-    writer.releaseLock();
+    const writable = port.writable;
+    if (!writable) throw new Error(tr("Printer ya Serial haijafungua njia ya kuandika."));
+    const writer = writable.getWriter();
+    try { await writer.write(new Uint8Array(bytes)); } finally { writer.releaseLock(); }
   } finally { await port.close().catch(() => undefined); }
 }
 
 async function sendBluetooth(info: DeviceInfo, bytes: Uint8Array) {
-  let dev = nav().bluetooth.getDevices ? (await nav().bluetooth.getDevices()).find((d: any) => d.id === info.id) : undefined;
-  if (!dev) dev = await nav().bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: BLE_SERVICES });
-  const server = await dev.gatt.connect();
+  const bluetooth = nav().bluetooth;
+  if (!bluetooth) throw new Error(tr("Kivinjari hiki hakiungi mkono Bluetooth printing."));
+  let dev = bluetooth.getDevices ? (await bluetooth.getDevices()).find((d) => d.id === info.id) : undefined;
+  if (!dev) dev = await bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: BLE_SERVICES });
+  if (!dev.gatt) throw new Error(tr("Muunganisho wa Bluetooth haupatikani."));
+  const gatt = dev.gatt;
+  const server = await gatt.connect();
   try {
     for (const service of await server.getPrimaryServices()) {
       for (const ch of await service.getCharacteristics()) {
         if (!ch.properties.write && !ch.properties.writeWithoutResponse) continue;
         for (let i = 0; i < bytes.length; i += 100) {
           const chunk = bytes.slice(i, i + 100);
-          if (ch.properties.writeWithoutResponse) await ch.writeValueWithoutResponse(chunk); else await ch.writeValue(chunk);
+          if (ch.properties.writeWithoutResponse) await ch.writeValueWithoutResponse(new Uint8Array(chunk)); else await ch.writeValue(new Uint8Array(chunk));
         }
         return;
       }
     }
     throw new Error(tr("Haikupatikana njia ya kuandika kwenye printer ya Bluetooth."));
-  } finally { dev.gatt.disconnect(); }
+  } finally { gatt.disconnect(); }
 }
 
 /* ───────── Test print ───────── */

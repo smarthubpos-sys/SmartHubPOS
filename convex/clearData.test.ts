@@ -54,7 +54,7 @@ describe("Maintenance > Clear Data File", () => {
     const { t, tenantA, superId, a, b } = await setup();
     await t.run(async (ctx) => { await ctx.db.insert("stockMovements", { tenantId: tenantA, productId: a.productId, movementDate: "2026-10-01", movementType: "purchase", qtyIn: 5, qtyOut: 0, runningBalance: 5, createdBy: superId }); });
     await runCategory(t, superId, tenantA, "stock", 3);
-    const out = await t.run(async (ctx) => ({ pa: await ctx.db.get(a.productId), pb: await ctx.db.get(b.productId), mv: await ctx.db.query("stockMovements").collect() }));
+    const out = await t.run(async (ctx) => ({ pa: await ctx.db.get("products", a.productId), pb: await ctx.db.get("products", b.productId), mv: await ctx.db.query("stockMovements").collect() }));
     expect(out.pa?.currentQty).toBe(0);
     expect(out.pb?.currentQty).toBe(5);
     expect(out.mv).toHaveLength(0);

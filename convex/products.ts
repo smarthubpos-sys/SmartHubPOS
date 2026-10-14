@@ -23,7 +23,7 @@ export const getById = query({
   args: { id: v.id("products") },
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx);
-    const record = await ctx.db.get(args.id);
+    const record = await ctx.db.get("products", args.id);
     return canAccessRecord(user, record) ? record : null;
   },
 });
@@ -74,9 +74,9 @@ export const upsert = mutation({
     }
 
     if (id) {
-      const existingRecord = await ctx.db.get(id);
+      const existingRecord = await ctx.db.get("products", id);
       if (!existingRecord || !canAccessRecord(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
-      await ctx.db.patch(id, clean); // never touches currentQty / openingQty / cost
+      await ctx.db.patch("products", id, clean); // never touches currentQty / openingQty / cost
       const changes: string[] = [];
       if (existingRecord.sellingPrice !== clean.sellingPrice) changes.push(`bei ${existingRecord.sellingPrice} -> ${clean.sellingPrice}`);
       if (existingRecord.name !== clean.name) changes.push(`jina ${existingRecord.name} -> ${clean.name}`);
@@ -136,9 +136,9 @@ export const upsertGroup = mutation({
     const scope = await resolveWriteScope(ctx, user);
     const { id, ...data } = args;
     if (id) {
-      const existingRecord = await ctx.db.get(id);
+      const existingRecord = await ctx.db.get("productGroups", id);
       if (!canAccessRecord(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
-      await ctx.db.patch(id, data);
+      await ctx.db.patch("productGroups", id, data);
       return id;
     }
     return await ctx.db.insert("productGroups", { ...data, ...scope });
@@ -166,9 +166,9 @@ export const upsertUnit = mutation({
     const scope = await resolveWriteScope(ctx, user);
     const { id, ...data } = args;
     if (id) {
-      const existingRecord = await ctx.db.get(id);
+      const existingRecord = await ctx.db.get("unitsOfMeasure", id);
       if (!canAccessRecord(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
-      await ctx.db.patch(id, data);
+      await ctx.db.patch("unitsOfMeasure", id, data);
       return id;
     }
     return await ctx.db.insert("unitsOfMeasure", { ...data, ...scope });
@@ -270,7 +270,7 @@ export const importBatch = mutation({
           if (barcode) patch.barcode = barcode;
           if (groupId) patch.groupId = groupId;
           if (unitId) patch.unitId = unitId;
-          if (Object.keys(patch).length) await ctx.db.patch(existing._id, patch);
+          if (Object.keys(patch).length) await ctx.db.patch("products", existing._id, patch);
         }
         continue;
       }

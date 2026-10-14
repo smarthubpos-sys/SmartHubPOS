@@ -53,7 +53,7 @@ export function SectionTitle({ children }: { children: ReactNode }) {
   return <h3 className="mb-2 mt-6 border-l-4 border-blue-700 pl-2 text-sm font-bold uppercase tracking-wide text-slate-700">{children}</h3>;
 }
 
-export function downloadCsv(name: string, header: string[], data: (string | number)[][]) {
+function downloadCsv(name: string, header: string[], data: (string | number)[][]) {
   const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
   const csv = [header.map(esc).join(","), ...data.map((r) => r.map(esc).join(","))].join("\r\n");
   const url = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }));

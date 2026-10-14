@@ -32,7 +32,7 @@ export const payments = query({
   args: { billId: v.id("bills") },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "accounts");
-    const bill = await ctx.db.get(a.billId);
+    const bill = await ctx.db.get("bills", a.billId);
     if (!bill || !canAccessRecord(user, bill)) return [];
     return (await ctx.db.query("billPayments").withIndex("by_bill", (q) => q.eq("billId", a.billId)).collect()).sort((x, y) => y.paymentDate.localeCompare(x.paymentDate));
   },
@@ -66,7 +66,7 @@ export const pay = mutation({
   args: { billId: v.id("bills"), amount: v.number(), method: v.string(), methodId: v.optional(v.id("paymentMethods")), paymentDate: v.string(), reference: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "accounts");
-    const bill = await ctx.db.get(a.billId);
+    const bill = await ctx.db.get("bills", a.billId);
     if (!bill || !canAccessRecord(user, bill)) throw new Error("Bili haipatikani.");
     if (bill.status === "void") throw new Error("Bili hii imebatilishwa.");
     if (!a.methodId && !PAY[a.method]) throw new Error("Njia ya malipo si sahihi.");
@@ -77,7 +77,7 @@ export const pay = mutation({
     const scope = { tenantId: bill.tenantId, branchId: bill.branchId };
     const paymentId = await ctx.db.insert("billPayments", { ...scope, billId: a.billId, paymentDate: a.paymentDate, amount, method: chosen?.method ?? a.method, methodId: chosen?.methodId, reference: a.reference, createdBy: user._id });
     const paid = roundMoney(bill.paidAmount + amount);
-    await ctx.db.patch(a.billId, { paidAmount: paid, status: paid >= bill.amount ? "paid" : "partial" });
+    await ctx.db.patch("bills", a.billId, { paidAmount: paid, status: paid >= bill.amount ? "paid" : "partial" });
     const payable = await getSystemAccount(ctx, scope, "2100", "Accounts payable - bills", "liability");
     const cash = await methodAccount(ctx, scope, { methodId: chosen?.methodId, method: a.method }); // paid out of the chosen method's own account
     await postSystemJournal(ctx, { scope, userId: user._id, date: a.paymentDate, reference: `BILLPAY-${String(paymentId)}`, description: `Bill payment ${bill.billNumber}`, sourceType: "bill_payment", sourceId: String(paymentId), lines: [{ accountId: payable, debit: amount, credit: 0 }, { accountId: cash, debit: 0, credit: amount }] });
@@ -90,7 +90,7 @@ export const voidBill = mutation({
   args: { billId: v.id("bills") },
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "accounts");
-    const bill = await ctx.db.get(a.billId);
+    const bill = await ctx.db.get("bills", a.billId);
     if (!bill || !canAccessRecord(user, bill)) throw new Error("Bili haipatikani.");
     if (bill.paidAmount > 0) throw new Error("Bili iliyolipwa kiasi haiwezi kubatilishwa.");
     if (bill.status === "void") return a.billId;
@@ -99,7 +99,7 @@ export const voidBill = mutation({
     const expense = await getSystemAccount(ctx, scope, exp.code, exp.name, "expense");
     const payable = await getSystemAccount(ctx, scope, "2100", "Accounts payable - bills", "liability");
     await postSystemJournal(ctx, { scope, userId: user._id, date: today(), reference: `BILLVOID-${String(a.billId)}`, description: `Void bill ${bill.billNumber}`, sourceType: "bill_void", sourceId: String(a.billId), lines: [{ accountId: payable, debit: bill.amount, credit: 0 }, { accountId: expense, debit: 0, credit: bill.amount }] });
-    await ctx.db.patch(a.billId, { status: "void" });
+    await ctx.db.patch("bills", a.billId, { status: "void" });
     await logAudit(ctx, user, { action: "void_bill", module: "bills", referenceId: String(a.billId), details: bill.billNumber });
     return a.billId;
   },

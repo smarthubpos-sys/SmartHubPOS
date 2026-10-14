@@ -1,5 +1,12 @@
 /* Translations for: editable payment methods, split payments and supplier search. */
 export const PAYMENTS_DICT: Record<string, { sw: string; en: string }> = {
+  "Onyo: mteja huyu amevuka kikomo chake cha mkopo.": { sw: "Onyo: mteja huyu amevuka kikomo chake cha mkopo.", en: "Warning: this customer is over his credit limit." },
+  "Batilisha invoice iliyochaguliwa": { sw: "Batilisha invoice iliyochaguliwa", en: "Cancel selected invoice" },
+  "Batilisha invoice {0}? Stoo itarudi na malipo yaliyopokelewa yatarudishwa. Andika sababu (hiari) kisha bonyeza OK.": { sw: "Batilisha invoice {0}? Stoo itarudi na malipo yaliyopokelewa yatarudishwa. Andika sababu (hiari) kisha bonyeza OK.", en: "Cancel invoice {0}? Stock goes back and any money received is refunded. Type a reason (optional) then press OK." },
+  "Invoice {0} imebatilishwa. Yaliyorudishwa: {1}.": { sw: "Invoice {0} imebatilishwa. Yaliyorudishwa: {1}.", en: "Invoice {0} cancelled. Refunded: {1}." },
+  "Aina ya printer": { sw: "Aina ya printer", en: "Printer type" },
+  "Nakala": { sw: "Nakala", en: "Copies" },
+  "Chapisha item iliyochaguliwa": { sw: "Chapisha item iliyochaguliwa", en: "Print selected item" },
   "Njia za malipo": { sw: "Njia za malipo", en: "Payment methods" },
   "Njia ya malipo": { sw: "Njia ya malipo", en: "Payment method" },
   "Kiasi": { sw: "Kiasi", en: "Amount" },

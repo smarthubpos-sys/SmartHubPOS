@@ -29,7 +29,7 @@ const data: Record<string, unknown> = {
 };
 vi.mock("convex/react", () => ({
   useQuery: (ref: never, args: unknown) => (args === "skip" ? undefined : data[getFunctionName(ref)]),
-  useMutation: () => vi.fn(),
+  useMutation: () => Object.assign(vi.fn(), { withOptimisticUpdate: () => vi.fn() }),
   useAction: () => vi.fn(),
   useConvex: () => ({ query: vi.fn() }),
 }));

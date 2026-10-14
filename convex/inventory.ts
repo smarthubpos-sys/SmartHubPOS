@@ -4,7 +4,7 @@ import { canAccessRecord, filterScoped, requireActiveUser, resolveWriteScope, re
 import { getSystemAccount, postSystemJournal, roundMoney } from "./ledger";
 const validQty = (n: number) => Number.isFinite(n) && n >= 0;
 export const listMovements = query({ args: { productId: v.optional(v.id("products")) }, handler: async (ctx, args) => { const user = await requireActiveUser(ctx, "stock"); const all = args.productId ? await ctx.db.query("stockMovements").withIndex("by_product", q => q.eq("productId", args.productId!)).collect() : await scopedRows(ctx, user, "stockMovements"); return filterScoped(user, all).sort((a,b)=>b.movementDate.localeCompare(a.movementDate)); } });
-export const adjust = mutation({ args: { productId: v.id("products"), newQty: v.number(), reason: v.string(), adjustmentDate: v.string() }, handler: async (ctx,args) => { const user = await requireManager(ctx, "stock"); const scope = await resolveWriteScope(ctx, user); if (!validQty(args.newQty) || !args.reason.trim()) throw new Error("Weka stock halali na sababu ya marekebisho."); const p = await ctx.db.get(args.productId); if (!canAccessRecord(user,p) || !p) throw new Error("Bidhaa haipatikani kwenye branch yako."); const delta = Math.round((args.newQty - p.currentQty) * 1e8) / 1e8; if (delta === 0) throw new Error("Kiasi kipya ni sawa na kilichopo; hakuna cha kurekebisha."); await ctx.db.patch(args.productId,{currentQty:args.newQty}); const id = await ctx.db.insert("stockAdjustments",{...scope,adjustmentDate:args.adjustmentDate,productId:args.productId,qtyBefore:p.currentQty,adjustmentQty:delta,qtyAfter:args.newQty,reason:args.reason,status:"approved",requestedBy:user._id,approvedBy:user._id,approvedAt:new Date().toISOString()}); await ctx.db.insert("stockMovements",{...scope,movementDate:args.adjustmentDate,productId:args.productId,movementType:"adjustment",referenceId:String(id),referenceType:"stockAdjustment",qtyIn:Math.max(delta,0),qtyOut:Math.max(-delta,0),runningBalance:args.newQty,unitCost:p.weightedAvgCost??p.lastPurchaseCost??0,notes:args.reason,createdBy:user._id});
+export const adjust = mutation({ args: { productId: v.id("products"), newQty: v.number(), reason: v.string(), adjustmentDate: v.string() }, handler: async (ctx,args) => { const user = await requireManager(ctx, "stock"); const scope = await resolveWriteScope(ctx, user); if (!validQty(args.newQty) || !args.reason.trim()) throw new Error("Weka stock halali na sababu ya marekebisho."); const p = await ctx.db.get("products", args.productId); if (!canAccessRecord(user,p) || !p) throw new Error("Bidhaa haipatikani kwenye branch yako."); const delta = Math.round((args.newQty - p.currentQty) * 1e8) / 1e8; if (delta === 0) throw new Error("Kiasi kipya ni sawa na kilichopo; hakuna cha kurekebisha."); await ctx.db.patch("products", args.productId,{currentQty:args.newQty}); const id = await ctx.db.insert("stockAdjustments",{...scope,adjustmentDate:args.adjustmentDate,productId:args.productId,qtyBefore:p.currentQty,adjustmentQty:delta,qtyAfter:args.newQty,reason:args.reason,status:"approved",requestedBy:user._id,approvedBy:user._id,approvedAt:new Date().toISOString()}); await ctx.db.insert("stockMovements",{...scope,movementDate:args.adjustmentDate,productId:args.productId,movementType:"adjustment",referenceId:String(id),referenceType:"stockAdjustment",qtyIn:Math.max(delta,0),qtyOut:Math.max(-delta,0),runningBalance:args.newQty,unitCost:p.weightedAvgCost??p.lastPurchaseCost??0,notes:args.reason,createdBy:user._id});
  const value=roundMoney(Math.abs(delta)*(p.weightedAvgCost??p.lastPurchaseCost??0));
  if(value>0){const inventory=await getSystemAccount(ctx,scope,"1200","Inventory","asset");const adjustment=await getSystemAccount(ctx,scope,delta>0?"5100":"5200",delta>0?"Stock adjustment gain":"Stock shrinkage expense",delta>0?"revenue":"expense");await postSystemJournal(ctx,{scope,userId:user._id,date:args.adjustmentDate,reference:`STOCK-${String(id)}`,description:`Stock adjustment: ${p.name} — ${args.reason}`,sourceType:"stock_adjustment",sourceId:String(id),lines:delta>0?[{accountId:inventory,debit:value,credit:0,description:"Stock increase"},{accountId:adjustment,debit:0,credit:value,description:"Stock adjustment gain"}]:[{accountId:adjustment,debit:value,credit:0,description:"Stock shrinkage"},{accountId:inventory,debit:0,credit:value,description:"Stock decrease"}]});}
  await ctx.db.insert("auditLogs",{userId:user._id,userName:user.name??user.email??"user",action:"stock_adjustment",module:"inventory",referenceId:String(id),referenceType:"stockAdjustment",details:`${p.name}: ${p.currentQty} -> ${args.newQty}. ${args.reason}`,timestamp:new Date().toISOString(),result:"success"}); return id; } });
@@ -20,13 +20,24 @@ const costOf = (p: any) => p.weightedAvgCost ?? p.lastPurchaseCost ?? 0;
  * against the sum of stock movements, so differences are visible instead of hidden.
  */
 export const stockRegisters = query({
-  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
+  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()), light: v.optional(v.boolean()) },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "stock");
+    // Fast path: only the movements from the period start onwards are read (opening balance = stock now minus those movements).
+    // Screens that list products only read no movements at all. Callers that do not ask for `light` get the full, reconciled history.
+    const fullHistory = a.light !== true;
+    const needMovements = fullHistory || !!a.startDate || !!a.endDate;
+    const partial = needMovements && !fullHistory && !!a.startDate && !!user.tenantId;
     const inRange = (d: string) => (!a.startDate || d >= a.startDate) && (!a.endDate || d <= a.endDate);
     const [productsRaw, groupsRaw, unitsRaw, movementsRaw, adjustmentsRaw, invoicesRaw] = await Promise.all([
       scopedRows(ctx, user, "products"), scopedRows(ctx, user, "productGroups"), scopedRows(ctx, user, "unitsOfMeasure"),
-      scopedRows(ctx, user, "stockMovements"), scopedRows(ctx, user, "stockAdjustments"), scopedRows(ctx, user, "invoices"),
+      !needMovements ? Promise.resolve([] as any[]) : partial
+        ? ctx.db.query("stockMovements").withIndex("by_tenant_date", (q: any) => q.eq("tenantId", user.tenantId).gte("movementDate", a.startDate!)).collect()
+        : scopedRows(ctx, user, "stockMovements"),
+      scopedRows(ctx, user, "stockAdjustments"),
+      user.tenantId
+        ? ctx.db.query("invoices").withIndex("by_tenant_date", (q: any) => { let r = q.eq("tenantId", user.tenantId); if (a.startDate) r = r.gte("invoiceDate", a.startDate); if (a.endDate) r = r.lte("invoiceDate", a.endDate); return r; }).collect()
+        : scopedRows(ctx, user, "invoices"),
     ]);
     const products = filterScoped(user, productsRaw);
     const groups = filterScoped(user, groupsRaw);
@@ -46,6 +57,8 @@ export const stockRegisters = query({
       if (a.startDate && m.movementDate < a.startDate) g.before += net;
       else if (inRange(m.movementDate)) { g.inQty += m.qtyIn; g.outQty += m.qtyOut; }
     }
+    // Without the full history there is nothing to compare against, so no false "difference" is reported.
+    if (!fullHistory) for (const [id, g] of agg) { const cur = pById.get(id)?.currentQty ?? 0; if (partial) g.before = round8(cur - g.all); g.all = cur; }
     for (const g of agg.values()) g.running = g.before;
 
     // Resolve document numbers for the movements shown.
@@ -55,8 +68,8 @@ export const stockRegisters = query({
       if (refCache.has(key)) return refCache.get(key)!;
       let label = m.notes ?? "";
       try {
-        if (m.referenceType === "invoice") { const id = ctx.db.normalizeId("invoices", m.referenceId); const d = id ? await ctx.db.get(id) : null; label = (d as any)?.invoiceNo ?? label; }
-        else if (m.referenceType === "purchase") { const id = ctx.db.normalizeId("purchases", m.referenceId); const d = id ? await ctx.db.get(id) : null; label = (d as any)?.invoiceNo ? `Purchase #${(d as any).invoiceNo}` : (d as any)?.internalRef ?? label; }
+        if (m.referenceType === "invoice") { const id = ctx.db.normalizeId("invoices", m.referenceId); const d = id ? await ctx.db.get("invoices", id) : null; label = (d as any)?.invoiceNo ?? label; }
+        else if (m.referenceType === "purchase") { const id = ctx.db.normalizeId("purchases", m.referenceId); const d = id ? await ctx.db.get("purchases", id) : null; label = (d as any)?.invoiceNo ? `Purchase #${(d as any).invoiceNo}` : (d as any)?.internalRef ?? label; }
         else if (m.referenceType === "goodsReceivedNote" || m.referenceType === "purchaseReturn") label = m.notes ?? label;
         else if (m.referenceType === "stockAdjustment") label = m.notes ?? "Adjustment";
       } catch { /* keep fallback label */ }

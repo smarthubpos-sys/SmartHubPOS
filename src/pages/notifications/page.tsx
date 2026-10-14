@@ -1,18 +1,16 @@
 import { useState } from "react";
-import { useMutation } from "convex/react";
 import { useNavigate } from "react-router-dom";
 import { AlertTriangle, Bell, CheckCheck, Info, Megaphone, PackageX } from "lucide-react";
-import { api } from "@/convex/_generated/api.js";
 import { Button } from "@/components/ui/button.tsx";
 import { Empty, PageHeader, Panel } from "@/components/page-kit.tsx";
-import { useNotifications } from "@/hooks/use-notifications.ts";
+import { useMarkRead, useNotifications } from "@/hooks/use-notifications.ts";
 import { notificationText } from "@/lib/notify.ts";
 import { formatDate } from "@/lib/format.ts";
 import { tr } from "@/lib/i18n.ts";
 
 export default function NotificationsPage() {
   const { items, unread, loading } = useNotifications();
-  const markRead = useMutation(api.notifications.markRead);
+  const markRead = useMarkRead();
   const navigate = useNavigate();
   const [unreadOnly, setUnreadOnly] = useState(false);
   const shown = unreadOnly ? items.filter((i) => !i.read) : items;

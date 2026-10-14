@@ -28,3 +28,5 @@ tsconfig.tsbuildinfo
 
 # Environment variables
 .env*
+
+jwt_private_key.pem

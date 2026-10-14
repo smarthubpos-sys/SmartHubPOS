@@ -1,4 +1,5 @@
 import { internalMutation, mutation } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
@@ -36,20 +37,20 @@ const unkey = (bk: string) => (bk === "none" ? undefined : (bk as Id<"branches">
 /* ───────────────────────── incremental updates (called by sales / purchasing mutations) ───────────────────────── */
 
 export async function bumpStats(
-  ctx: any,
+  ctx: MutationCtx,
   scope: StatScope,
   d: { receivable?: number; payable?: number; date?: string; sales?: number; purchases?: number; collected?: number; invoices?: number },
-) {
+): Promise<void> {
   const tenantId = scope.tenantId;
   if (!tenantId) return;
-  const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q: any) => q.eq("tenantId", tenantId)).collect();
+  const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).collect();
   // Business not initialised yet: the first full rebuild reads the real records, so there is nothing to keep in step.
   if (!rows.length) return;
 
   if (d.receivable || d.payable) {
-    const row = rows.find((r: any) => sameBranch(r.branchId, scope.branchId));
+    const row = rows.find((r) => sameBranch(r.branchId, scope.branchId));
     if (row) {
-      await ctx.db.patch(row._id, { receivable: round2(row.receivable + (d.receivable ?? 0)), payable: round2(row.payable + (d.payable ?? 0)) });
+      await ctx.db.patch("statsTotals", row._id, { receivable: round2(row.receivable + (d.receivable ?? 0)), payable: round2(row.payable + (d.payable ?? 0)) });
     } else {
       await ctx.db.insert("statsTotals", {
         tenantId, branchId: scope.branchId, receivable: round2(d.receivable ?? 0), payable: round2(d.payable ?? 0),
@@ -62,10 +63,10 @@ export async function bumpStats(
     // Spread the day's counters over DAILY_SHARDS rows: cashiers selling at the same moment update different rows instead of
     // fighting over one. The dashboard simply adds the rows up; the nightly rebuild merges them again.
     const shard = Math.floor(Math.random() * DAILY_SHARDS);
-    const days = await ctx.db.query("statsDaily").withIndex("by_tenant_date_shard", (q: any) => q.eq("tenantId", tenantId).eq("date", d.date).eq("shard", shard)).collect();
-    const day = days.find((r: any) => sameBranch(r.branchId, scope.branchId));
+    const days = await ctx.db.query("statsDaily").withIndex("by_tenant_date_shard", (q) => q.eq("tenantId", tenantId).eq("date", d.date).eq("shard", shard)).collect();
+    const day = days.find((r) => sameBranch(r.branchId, scope.branchId));
     if (day) {
-      await ctx.db.patch(day._id, {
+      await ctx.db.patch("statsDaily", day._id, {
         sales: round2(day.sales + (d.sales ?? 0)), purchases: round2(day.purchases + (d.purchases ?? 0)),
         collected: round2(day.collected + (d.collected ?? 0)), invoices: day.invoices + (d.invoices ?? 0),
       });
@@ -92,14 +93,14 @@ type Acc = {
 const emptyAcc = (): Acc => ({ recv: {}, pay: {}, daily: {}, stock: {}, bills: {}, top: {} });
 
 /** Decides whether this business needs a (re)calculation and queues it. Cheap when everything is fresh. */
-export async function ensureFresh(ctx: any, tenantId: Id<"tenants">) {
+export async function ensureFresh(ctx: MutationCtx, tenantId: Id<"tenants">): Promise<"queued" | "fresh" | "refreshing" | "building"> {
   const now = Date.now();
-  const job = await ctx.db.query("statsJobs").withIndex("by_tenant", (q: any) => q.eq("tenantId", tenantId)).first();
+  const job = await ctx.db.query("statsJobs").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).first();
   if (job && now - job.queuedAt < QUEUE_GUARD_MS) return "queued";
-  const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q: any) => q.eq("tenantId", tenantId)).collect();
+  const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).collect();
   const initialised = rows.length > 0;
-  if (initialised && rows.every((r: any) => now - r.refreshedAt <= STALE_MS)) return "fresh";
-  if (job) await ctx.db.patch(job._id, { queuedAt: now }); else await ctx.db.insert("statsJobs", { tenantId, queuedAt: now });
+  if (initialised && rows.every((r) => now - r.refreshedAt <= STALE_MS)) return "fresh";
+  if (job) await ctx.db.patch("statsJobs", job._id, { queuedAt: now }); else await ctx.db.insert("statsJobs", { tenantId, queuedAt: now });
   await ctx.scheduler.runAfter(0, internal.stats.rebuild, { tenantId, mode: initialised ? "stock" : "full", phase: initialised ? "products" : "invoices", cursor: null, acc: emptyAcc() });
   return initialised ? "refreshing" : "building";
 }
@@ -120,7 +121,7 @@ export const rebuildBusiness = mutation({
   handler: async (ctx, a) => {
     await requireSuperAdminUser(ctx);
     const job = await ctx.db.query("statsJobs").withIndex("by_tenant", (q) => q.eq("tenantId", a.tenantId)).first();
-    if (job) await ctx.db.patch(job._id, { queuedAt: Date.now() }); else await ctx.db.insert("statsJobs", { tenantId: a.tenantId, queuedAt: Date.now() });
+    if (job) await ctx.db.patch("statsJobs", job._id, { queuedAt: Date.now() }); else await ctx.db.insert("statsJobs", { tenantId: a.tenantId, queuedAt: Date.now() });
     await ctx.scheduler.runAfter(0, internal.stats.rebuild, { tenantId: a.tenantId, mode: "full", phase: "invoices", cursor: null, acc: emptyAcc() });
     return true;
   },
@@ -131,7 +132,7 @@ export const requestRebuild = internalMutation({
   args: { tenantId: v.id("tenants") },
   handler: async (ctx, a) => {
     const job = await ctx.db.query("statsJobs").withIndex("by_tenant", (q) => q.eq("tenantId", a.tenantId)).first();
-    if (job) await ctx.db.patch(job._id, { queuedAt: Date.now() }); else await ctx.db.insert("statsJobs", { tenantId: a.tenantId, queuedAt: Date.now() });
+    if (job) await ctx.db.patch("statsJobs", job._id, { queuedAt: Date.now() }); else await ctx.db.insert("statsJobs", { tenantId: a.tenantId, queuedAt: Date.now() });
     await ctx.scheduler.runAfter(0, internal.stats.rebuild, { tenantId: a.tenantId, mode: "full", phase: "invoices", cursor: null, acc: emptyAcc() });
     return true;
   },
@@ -230,7 +231,7 @@ export const rebuild = internalMutation({
       }
       const names = new Map<string, string>();
       const nameOf = async (id: string) => {
-        if (!names.has(id)) names.set(id, (await ctx.db.get(id as Id<"products">))?.name ?? "-");
+        if (!names.has(id)) names.set(id, (await ctx.db.get("products", id as Id<"products">))?.name ?? "-");
         return names.get(id)!;
       };
       const best = async (m: Map<string, number>) => {
@@ -257,21 +258,21 @@ export const rebuild = internalMutation({
       const fields = { productCount: s.n, lowStock: s.low, outOfStock: s.out, inventoryValue: round2(s.value), billsDue: round2(acc.bills[bk] ?? 0), topD7: t.d7, topD30: t.d30, topD90: t.d90, refreshedAt: now };
       if (full) {
         const money = { receivable: round2(acc.recv[bk] ?? 0), payable: round2(acc.pay[bk] ?? 0) };
-        if (row) await ctx.db.patch(row._id, { ...money, ...fields }); else await ctx.db.insert("statsTotals", { tenantId, branchId, ...money, ...fields });
+        if (row) await ctx.db.patch("statsTotals", row._id, { ...money, ...fields }); else await ctx.db.insert("statsTotals", { tenantId, branchId, ...money, ...fields });
       } else if (row) {
-        await ctx.db.patch(row._id, fields); // receivable / payable are exact already: leave them alone
+        await ctx.db.patch("statsTotals", row._id, fields); // receivable / payable are exact already: leave them alone
       } else {
         await ctx.db.insert("statsTotals", { tenantId, branchId, receivable: 0, payable: 0, ...fields });
       }
     }
     if (full) {
-      for (const d of await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).take(4000)) await ctx.db.delete(d._id);
+      for (const d of await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).take(4000)) await ctx.db.delete("statsDaily", d._id);
       for (const d of Object.values(acc.daily)) {
         await ctx.db.insert("statsDaily", { tenantId, branchId: unkey(d.bk), date: d.date, sales: d.sales, purchases: d.purchases, collected: d.collected, invoices: d.invoices });
       }
     }
     const job = await ctx.db.query("statsJobs").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).first();
-    if (job) await ctx.db.delete(job._id);
+    if (job) await ctx.db.delete("statsJobs", job._id);
     return null;
   },
 });

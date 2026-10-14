@@ -6,7 +6,8 @@ import { FileText } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Button } from "@/components/ui/button.tsx";
-import { PurchaseDocumentDialog, StatusBadge, statusKey } from "@/components/PurchaseDocument.tsx";
+import { PurchaseDocumentDialog, StatusBadge } from "@/components/PurchaseDocument.tsx";
+import { statusKey } from "@/lib/purchase-document-utils.ts";
 import { formatDate, formatNumber, localDate } from "@/lib/format.ts";
 import { tr, trValue } from "@/lib/i18n.ts";
 import ReportSheet, { DataTable, SectionTitle, type Column, type Header } from "./ReportSheet.tsx";
@@ -150,9 +151,9 @@ function SupplierStatement({ header, startDate, endDate, data, openDoc }: R) {
 /* ───────── Summary / Analysis ───────── */
 function Summary({ header, startDate, endDate, data, detailed }: R & { detailed: boolean }) {
   const m = useMoney(header);
-  const live = data.purchases.filter((p) => p.status === "posted");
-  const liveIds = new Set(live.map((p) => String(p._id)));
-  const returns = data.returns.filter((r) => r.status === "posted");
+  const live = useMemo(() => data.purchases.filter((p) => p.status === "posted"), [data.purchases]);
+  const liveIds = useMemo(() => new Set(live.map((p) => String(p._id))), [live]);
+  const returns = useMemo(() => data.returns.filter((r) => r.status === "posted"), [data.returns]);
   const total = sum(live, (p) => p.total), paid = sum(live, (p) => p.amountPaid), out = sum(live, (p) => p.outstanding), ret = sum(returns, (r) => r.total);
   const months = useMemo(() => {
     const map = new Map<string, { month: string; invoices: number; purchases: number; payments: number; returns: number }>();
@@ -161,7 +162,7 @@ function Summary({ header, startDate, endDate, data, detailed }: R & { detailed:
     for (const p of data.payments) get(p.paymentDate).payments += p.amount;
     for (const r of returns) get(r.returnDate).returns += r.total;
     return [...map.values()].sort((a, b) => a.month.localeCompare(b.month));
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [live, returns, data.payments]);
   const maxMonth = Math.max(1, ...months.map((x) => x.purchases));
   const monthCols: Column<(typeof months)[number] & { change: string }>[] = [
     { key: "month", label: "Month", render: (r) => formatDate(`${r.month}-01`).replace(/^\d+\s/, "") },
@@ -175,17 +176,17 @@ function Summary({ header, startDate, endDate, data, detailed }: R & { detailed:
   ];
   const monthRows = months.map((r, i) => ({ ...r, change: i === 0 || months[i - 1].purchases === 0 ? "—" : `${r.purchases >= months[i - 1].purchases ? "+" : ""}${formatNumber(((r.purchases - months[i - 1].purchases) / months[i - 1].purchases) * 100, 1)}%` }));
 
-  const supplierName = (id: unknown) => data.suppliers.find((s) => s._id === id)?.name ?? tr("Supplier");
   const topSuppliers = useMemo(() => {
     const map = new Map<string, { name: string; invoices: number; total: number }>();
-    for (const p of live) { const k = String(p.supplierId); const r = map.get(k) ?? { name: supplierName(p.supplierId), invoices: 0, total: 0 }; r.invoices++; r.total += p.total; map.set(k, r); }
+    const nameOf = (id: unknown) => data.suppliers.find((s) => s._id === id)?.name ?? tr("Supplier");
+    for (const p of live) { const k = String(p.supplierId); const r = map.get(k) ?? { name: nameOf(p.supplierId), invoices: 0, total: 0 }; r.invoices++; r.total += p.total; map.set(k, r); }
     return [...map.values()].sort((a, b) => b.total - a.total).slice(0, 5);
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [live, data.suppliers]);
   const topProducts = useMemo(() => {
     const map = new Map<string, { name: string; qty: number; total: number }>();
     for (const l of data.lines) { if (!liveIds.has(String(l.purchaseId))) continue; const k = String(l.productId); const r = map.get(k) ?? { name: l.productName, qty: 0, total: 0 }; r.qty += l.qty; r.total += l.total; map.set(k, r); }
     return [...map.values()].sort((a, b) => b.total - a.total).slice(0, 5);
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data.lines, liveIds]);
   const statusMix = (["paid", "partial", "unpaid"] as const).map((k) => { const l = live.filter((p) => p.paymentStatus === k); return { key: k, count: l.length, total: sum(l, (p) => p.total), outstanding: sum(l, (p) => p.outstanding) }; });
 
   return (
@@ -226,7 +227,7 @@ function Summary({ header, startDate, endDate, data, detailed }: R & { detailed:
 /* ───────── Purchase by Supplier ───────── */
 function BySupplier({ header, startDate, endDate, data }: R) {
   const m = useMoney(header);
-  const live = data.purchases.filter((p) => p.status === "posted");
+  const live = useMemo(() => data.purchases.filter((p) => p.status === "posted"), [data.purchases]);
   const rows = useMemo(() => {
     const map = new Map<string, { name: string; invoices: number; total: number; paid: number; outstanding: number; last: string }>();
     for (const p of live) {
@@ -235,7 +236,7 @@ function BySupplier({ header, startDate, endDate, data }: R) {
       r.invoices++; r.total += p.total; r.paid += p.amountPaid; r.outstanding += p.outstanding; if (p.purchaseDate > r.last) r.last = p.purchaseDate; map.set(k, r);
     }
     return [...map.values()].sort((a, b) => b.total - a.total);
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [live, data.suppliers]);
   const total = sum(rows, (r) => r.total);
   const cols: Column<(typeof rows)[number]>[] = [
     { key: "name", label: "Supplier", render: (r) => <b>{r.name}</b> }, { key: "invoices", label: "Invoices", align: "right" },
@@ -255,7 +256,7 @@ function BySupplier({ header, startDate, endDate, data }: R) {
 /* ───────── Purchase by Product ───────── */
 function ByProduct({ header, startDate, endDate, data }: R) {
   const m = useMoney(header);
-  const liveIds = new Set(data.purchases.filter((p) => p.status === "posted").map((p) => String(p._id)));
+  const liveIds = useMemo(() => new Set(data.purchases.filter((p) => p.status === "posted").map((p) => String(p._id))), [data.purchases]);
   const rows = useMemo(() => {
     const map = new Map<string, { name: string; unit: string; qty: number; total: number; invoices: Set<string>; lastCost: number; lastDate: string; lastSupplier: string }>();
     for (const l of data.lines) {
@@ -267,7 +268,7 @@ function ByProduct({ header, startDate, endDate, data }: R) {
       map.set(k, r);
     }
     return [...map.values()].sort((a, b) => b.total - a.total);
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data.lines, liveIds]);
   const total = sum(rows, (r) => r.total);
   const q = (n: number) => formatNumber(n, Number.isInteger(n) ? 0 : 2);
   const cols: Column<(typeof rows)[number]>[] = [
@@ -288,14 +289,14 @@ function ByProduct({ header, startDate, endDate, data }: R) {
 /* ───────── Purchase Payment Report ───────── */
 function Payments({ header, startDate, endDate, data }: R) {
   const m = useMoney(header);
-  const rows = [...data.payments].sort((a, b) => a.paymentDate.localeCompare(b.paymentDate));
+  const rows = useMemo(() => [...data.payments].sort((a, b) => a.paymentDate.localeCompare(b.paymentDate)), [data.payments]);
   const name = (id: unknown) => data.suppliers.find((s) => s._id === id)?.name ?? tr("Supplier");
   const total = sum(rows, (p) => p.amount);
   const byMethod = useMemo(() => {
     const map = new Map<string, { method: string; count: number; total: number }>();
     for (const p of rows) { const r = map.get(p.paymentMethod) ?? { method: p.paymentMethod, count: 0, total: 0 }; r.count++; r.total += p.amount; map.set(p.paymentMethod, r); }
     return [...map.values()].sort((a, b) => b.total - a.total);
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rows]);
   const cols: Column<(typeof rows)[number]>[] = [
     { key: "paymentDate", label: "Tarehe", render: (r) => formatDate(r.paymentDate), nowrap: true }, { key: "supplier", label: "Supplier", render: (r) => name(r.supplierId) },
     { key: "paymentMethod", label: "Njia", render: (r) => trValue(r.paymentMethod) }, { key: "reference", label: "Reference", render: (r) => r.reference ?? "—" },
@@ -368,9 +369,9 @@ function Outstanding({ header, openDoc }: R) {
 /* ───────── Last Purchase Price ───────── */
 function LastPrice({ header, startDate, endDate, data }: R) {
   const m = useMoney(header);
-  const liveIds = new Set(data.purchases.filter((p) => p.status === "posted").map((p) => String(p._id)));
+  const liveIds = useMemo(() => new Set(data.purchases.filter((p) => p.status === "posted").map((p) => String(p._id))), [data.purchases]);
   const rows = useMemo(() => {
-    const byProduct = new Map<string, (typeof data.lines)[number][]>();
+    const byProduct = new Map<string, Registers["lines"][number][]>();
     for (const l of data.lines) { if (!liveIds.has(String(l.purchaseId))) continue; const k = String(l.productId); byProduct.set(k, [...(byProduct.get(k) ?? []), l]); }
     return [...byProduct.values()].map((list) => {
       const s = [...list].sort((a, b) => a.date.localeCompare(b.date));
@@ -378,7 +379,7 @@ function LastPrice({ header, startDate, endDate, data }: R) {
       const costs = s.map((x) => x.unitCost);
       return { name: last.productName, unit: last.unit, supplier: last.supplierName, date: last.date, cost: last.unitCost, previous: prev?.unitCost ?? null, min: Math.min(...costs), max: Math.max(...costs), purchases: s.length };
     }).sort((a, b) => a.name.localeCompare(b.name));
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data.lines, liveIds]);
   const change = (r: (typeof rows)[number]) => (r.previous === null || r.previous === 0 ? null : ((r.cost - r.previous) / r.previous) * 100);
   const cols: Column<(typeof rows)[number]>[] = [
     { key: "name", label: "Bidhaa", render: (r) => <b>{r.name}</b> }, { key: "unit", label: "Unit" }, { key: "supplier", label: "Last supplier" },

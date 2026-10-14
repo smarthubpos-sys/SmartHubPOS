@@ -1,4 +1,6 @@
 import { mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, scopedRows } from "./access";
 
@@ -12,11 +14,11 @@ export function localNow(tzOffsetMinutes: number) {
 const toMinutes = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
 
 /** Records a sign-in or sign-out for an employee. Shared by manual and biometric flows. */
-export async function applyAttendance(ctx: any, input: { employee: any; kind: "in" | "out"; userId: any; method: string; tzOffset: number }) {
+export async function applyAttendance(ctx: MutationCtx, input: { employee: Doc<"employees">; kind: "in" | "out"; userId: Id<"users">; method: string; tzOffset: number }) {
   const { employee, kind, userId, method } = input;
   const now = localNow(input.tzOffset);
   if (!employee.isActive) throw new Error("Mfanyakazi huyu hafanyi kazi tena.");
-  const rec = await ctx.db.query("attendance").withIndex("by_employee_date", (q: any) => q.eq("employeeId", employee._id).eq("date", now.date)).first();
+  const rec = await ctx.db.query("attendance").withIndex("by_employee_date", (q) => q.eq("employeeId", employee._id).eq("date", now.date)).first();
   if (kind === "in") {
     if (rec?.signInTime) throw new Error("Tayari ameshaingia kazini leo.");
     await ctx.db.insert("attendance", { tenantId: employee.tenantId, branchId: employee.branchId, employeeId: employee._id, date: now.date, signInTime: now.time, status: "present", notes: method, recordedBy: userId });
@@ -25,7 +27,7 @@ export async function applyAttendance(ctx: any, input: { employee: any; kind: "i
   if (!rec?.signInTime) throw new Error("Hajaingia kazini leo; ingia kwanza.");
   if (rec.signOutTime) throw new Error("Tayari ameshatoka kazini leo.");
   const hours = Math.max(0, Math.round(((now.minutes - toMinutes(rec.signInTime)) / 60) * 100) / 100);
-  await ctx.db.patch(rec._id, { signOutTime: now.time, hoursWorked: hours, notes: `${rec.notes ?? ""}${rec.notes ? " / " : ""}${method}` });
+  await ctx.db.patch("attendance", rec._id, { signOutTime: now.time, hoursWorked: hours, notes: `${rec.notes ?? ""}${rec.notes ? " / " : ""}${method}` });
   return { date: now.date, time: now.time, hoursWorked: hours };
 }
 
@@ -54,7 +56,7 @@ export const recordManual = mutation({
   args: { employeeId: v.id("employees"), kind: v.union(v.literal("in"), v.literal("out")), tzOffset: v.number() },
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "payroll");
-    const employee = await ctx.db.get(a.employeeId);
+    const employee = await ctx.db.get("employees", a.employeeId);
     if (!employee || !canAccessRecord(user, employee)) throw new Error("Mfanyakazi hapatikani.");
     const result = await applyAttendance(ctx, { employee, kind: a.kind, userId: user._id, method: "manual", tzOffset: a.tzOffset });
     await logAudit(ctx, user, { action: a.kind === "in" ? "staff_sign_in" : "staff_sign_out", module: "payroll", referenceId: String(employee._id), details: `manual ${result.time}` });

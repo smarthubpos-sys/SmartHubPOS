@@ -1,4 +1,6 @@
 import { query } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { activeDepartments, canAccessRecord, getCompanySettings, isOwnDataOnly, requireActiveUser, roleHasPermission, scopedRows } from "./access";
 
@@ -7,7 +9,7 @@ const MAX_INVOICES = 50;
 const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
 
 /** A user allowed to combine bills across departments sees the whole business (for bills only), not just one department. */
-async function crossAccess(ctx: any, user: any) {
+async function crossAccess(ctx: QueryCtx, user: any) {
   const allowed = !!user.tenantId && !isOwnDataOnly(user) && (await roleHasPermission(ctx, user, "bills.all_departments"));
   return { allowed, wide: allowed ? { ...user, branchId: undefined } : user };
 }
@@ -20,7 +22,7 @@ export const access = query({
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx, "bills");
     const { allowed } = await crossAccess(ctx, user);
-    const departments = allowed ? (await activeDepartments(ctx, user.tenantId)).map((b: any) => ({ _id: b._id, name: b.name })) : [];
+    const departments = allowed ? (await activeDepartments(ctx, user.tenantId)).map((b) => ({ _id: b._id, name: b.name })) : [];
     return { allDepartments: allowed && departments.length > 1, departments };
   },
 });
@@ -36,7 +38,7 @@ export const invoicesForClient = query({
   args: { clientId: v.id("clients"), onlyOpen: v.optional(v.boolean()), allDepartments: v.optional(v.boolean()) },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "bills");
-    const client = await ctx.db.get(a.clientId);
+    const client = await ctx.db.get("clients", a.clientId);
     if (!client || !canAccessRecord(user, client)) return [];
     const { allowed, wide } = await crossAccess(ctx, user);
     const cross = allowed && !!a.allDepartments;
@@ -67,16 +69,16 @@ export const billData = query({
     const who = allowed ? wide : user;
     const invoices = [];
     for (const id of a.invoiceIds.filter((x, i, arr) => arr.findIndex((y) => String(y) === String(x)) === i)) {
-      const inv = await ctx.db.get(id);
+      const inv = await ctx.db.get("invoices", id);
       if (!inv || !canAccessRecord(who, inv) || inv.status !== "posted" || (isOwnDataOnly(user) && inv.createdBy !== user._id)) throw new Error("Invoice haipatikani.");
       invoices.push(inv);
     }
     if (invoices.length !== unique.length) throw new Error("Invoice haipatikani.");
-    const client = await ctx.db.get(invoices[0].clientId);
+    const client = await ctx.db.get("clients", invoices[0].clientId);
     if (!client || !canAccessRecord(who, client)) throw new Error("Mteja hapatikani.");
     for (const inv of invoices) {
       if (inv.clientId === client._id) continue;
-      const other = await ctx.db.get(inv.clientId); // another department's record of the same customer
+      const other = await ctx.db.get("clients", inv.clientId); // another department's record of the same customer
       if (!allowed || !other || !canAccessRecord(who, other) || !sameCustomer(client, other)) throw new Error("Invoice za bili moja lazima ziwe za mteja mmoja.");
     }
     invoices.sort((x, y) => x.invoiceDate.localeCompare(y.invoiceDate) || x._creationTime - y._creationTime);
@@ -85,23 +87,23 @@ export const billData = query({
     // Receipt footer is read from this business's tenant-wide system settings only.
     // Never fall back to another tenant or another branch's settings.
     const settingRows = await ctx.db.query("appSettings")
-      .withIndex("by_scope", (q: any) => q.eq("tenantId", user.tenantId).eq("branchId", undefined))
+      .withIndex("by_scope", (q) => q.eq("tenantId", user.tenantId).eq("branchId", undefined))
       .collect();
     let receiptFooter = "Asante kwa kununua!";
-    const systemSetting = settingRows.find((row: any) => row.key === "system");
+    const systemSetting = settingRows.find((row) => row.key === "system");
     if (systemSetting) {
       try { receiptFooter = String(JSON.parse(systemSetting.value)?.receiptFooter ?? receiptFooter); } catch { /* use safe default */ }
     }
     const deptName = new Map<string, string>();
-    for (const inv of invoices) if (inv.branchId && !deptName.has(String(inv.branchId))) deptName.set(String(inv.branchId), (await ctx.db.get(inv.branchId))?.name ?? "");
+    for (const inv of invoices) if (inv.branchId && !deptName.has(String(inv.branchId))) deptName.set(String(inv.branchId), (await ctx.db.get("branches", inv.branchId))?.name ?? "");
     const department = deptName.size ? [...deptName.values()].filter(Boolean).join(" + ") : null;
     const productCache = new Map<string, { name: string; itemCode: string }>();
-    const out: Array<{ _id: any; invoiceNo: string; date: string; notes: string; subtotal: number; discount: number; taxAmount: number; total: number; amountPaid: number; outstanding: number; department: string; lines: Array<{ name: string; itemCode: string; qty: number; unitPrice: number; discount: number; lineTotal: number }> }> = [];
+    const out: Array<{ _id: Id<"invoices">; invoiceNo: string; date: string; notes: string; subtotal: number; discount: number; taxAmount: number; total: number; amountPaid: number; outstanding: number; department: string; lines: Array<{ name: string; itemCode: string; qty: number; unitPrice: number; discount: number; lineTotal: number }> }> = [];
     for (const inv of invoices) {
       const lines: (typeof out)[number]["lines"] = [];
       for (const l of await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", inv._id)).collect()) {
         let p = productCache.get(String(l.productId));
-        if (!p) { const doc = await ctx.db.get(l.productId); p = { name: doc?.name ?? "Bidhaa", itemCode: doc?.itemCode ?? "" }; productCache.set(String(l.productId), p); }
+        if (!p) { const doc = await ctx.db.get("products", l.productId); p = { name: doc?.name ?? "Bidhaa", itemCode: doc?.itemCode ?? "" }; productCache.set(String(l.productId), p); }
         lines.push({ name: p.name, itemCode: p.itemCode, qty: l.qty, unitPrice: l.unitPrice, discount: l.discount, lineTotal: l.lineTotal });
       }
       out.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, notes: inv.notes ?? "", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, department: inv.branchId ? deptName.get(String(inv.branchId)) ?? "" : "", lines });

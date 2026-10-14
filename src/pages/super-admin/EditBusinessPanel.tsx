@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { toast } from "sonner";
 import { api } from "@/convex/_generated/api.js";
@@ -44,12 +44,16 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (!data || loaded) return;
-    setName(data.name); setCode(data.code); setCurrency(data.currency);
+  // Initialize the editable draft once when the async query first resolves.
+  // A guarded render-time update avoids an effect-driven cascading render and
+  // does not overwrite edits when Convex refreshes the query afterward.
+  if (data && !loaded) {
+    setName(data.name);
+    setCode(data.code);
+    setCurrency(data.currency);
     setModules(data.modules ?? ALL_MODULE_KEYS);
     setLoaded(true);
-  }, [data, loaded]);
+  }
 
   async function save(e: React.FormEvent) {
     e.preventDefault();

@@ -14,11 +14,11 @@ export const updateEmployee = mutation({
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "hr");
     const { id, ...data } = a;
-    const e = await ctx.db.get(id);
+    const e = await ctx.db.get("employees", id);
     if (!e || !canAccessRecord(user, e)) throw new Error("Mfanyakazi hapatikani.");
     if (!data.name.trim() || !Number.isFinite(data.basicSalary) || data.basicSalary < 0) throw new Error("Jina na mshahara halali vinahitajika.");
     if (!["monthly", "daily", "hourly"].includes(data.salaryType)) throw new Error("Aina ya mshahara si sahihi.");
-    await ctx.db.patch(id, { ...data, name: data.name.trim() });
+    await ctx.db.patch("employees", id, { ...data, name: data.name.trim() });
     await logAudit(ctx, user, { action: "modify_employee", module: "hr", referenceId: String(id), details: data.name });
     return id;
   },
@@ -39,7 +39,7 @@ export const requestLeave = mutation({
   args: { employeeId: v.id("employees"), leaveType: v.string(), startDate: v.string(), endDate: v.string(), reason: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "hr");
-    const e = await ctx.db.get(a.employeeId);
+    const e = await ctx.db.get("employees", a.employeeId);
     if (!e || !canAccessRecord(user, e)) throw new Error("Mfanyakazi hapatikani.");
     if (!TYPES.includes(a.leaveType)) throw new Error("Aina ya likizo si sahihi.");
     if (a.endDate < a.startDate) throw new Error("Tarehe ya mwisho lazima iwe baada ya ya mwanzo.");
@@ -56,10 +56,10 @@ export const decideLeave = mutation({
   args: { id: v.id("leaveRequests"), approve: v.boolean(), note: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "hr");
-    const l = await ctx.db.get(a.id);
+    const l = await ctx.db.get("leaveRequests", a.id);
     if (!l || !canAccessRecord(user, l)) throw new Error("Ombi la likizo halipatikani.");
     if (l.status !== "pending") throw new Error("Ombi hili limeshaamuliwa.");
-    await ctx.db.patch(a.id, { status: a.approve ? "approved" : "rejected", decidedBy: user._id, decidedAt: new Date().toISOString(), decisionNote: a.note });
+    await ctx.db.patch("leaveRequests", a.id, { status: a.approve ? "approved" : "rejected", decidedBy: user._id, decidedAt: new Date().toISOString(), decisionNote: a.note });
     await logAudit(ctx, user, { action: a.approve ? "approve_leave" : "reject_leave", module: "hr", referenceId: String(a.id) });
     return a.id;
   },
@@ -69,10 +69,10 @@ export const cancelLeave = mutation({
   args: { id: v.id("leaveRequests") },
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "hr");
-    const l = await ctx.db.get(a.id);
+    const l = await ctx.db.get("leaveRequests", a.id);
     if (!l || !canAccessRecord(user, l)) throw new Error("Ombi la likizo halipatikani.");
     if (!["pending", "approved"].includes(l.status)) throw new Error("Ombi hili haliwezi kufutwa.");
-    await ctx.db.patch(a.id, { status: "cancelled" });
+    await ctx.db.patch("leaveRequests", a.id, { status: "cancelled" });
     return a.id;
   },
 });

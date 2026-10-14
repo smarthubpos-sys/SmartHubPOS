@@ -1,5 +1,8 @@
 /* Texts of the professional purchasing documents and reports. */
 export const PREPORT_DICT: Record<string, { sw: string; en: string }> = {
+  "suppliers wa zamani hawana biashara, kwa hiyo hawaonekani.": { sw: "suppliers wa zamani hawana biashara, kwa hiyo hawaonekani.", en: "old suppliers have no business, so they are not visible." },
+  "Wahamishie biashara hii": { sw: "Wahamishie biashara hii", en: "Move them to this business" },
+  "Imechapishwa": { sw: "Imechapishwa", en: "Printed" },
   "1–30 days": { sw: "Siku 1–30", en: "1–30 days" },
   "31–60 days": { sw: "Siku 31–60", en: "31–60 days" },
   "61–90 days": { sw: "Siku 61–90", en: "61–90 days" },

@@ -1,4 +1,6 @@
 import { mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, scopedRows } from "./access";
 import { applyAttendance } from "./attendance";
@@ -15,7 +17,13 @@ const b64uToBytes = (s: string) => {
 const bytesToB64u = (u: Uint8Array) => btoa(String.fromCharCode(...u)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const concat = (a: Uint8Array, b: Uint8Array) => { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
 const sha256 = async (d: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", d as BufferSource));
-const parseClientData = (b64: string) => { try { return JSON.parse(new TextDecoder().decode(b64uToBytes(b64))); } catch { throw new Error("Taarifa za kifaa si sahihi."); } };
+const parseClientData = (b64: string): Record<string, unknown> => {
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(b64uToBytes(b64)));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  } catch { /* converted to a user-facing validation error below */ }
+  throw new Error("Taarifa za kifaa si sahihi.");
+};
 
 /** DER ECDSA signature -> raw r||s (64 bytes) as WebCrypto expects. */
 function derToRaw(der: Uint8Array) {
@@ -39,23 +47,23 @@ async function verifySignature(cred: { publicKey: string; algorithm: number }, d
   throw new Error("Aina ya ufunguo wa kifaa haitumiki.");
 }
 
-async function newChallenge(ctx: any, userId: any, purpose: string, employeeId?: any) {
+async function newChallenge(ctx: MutationCtx, userId: Id<"users">, purpose: string, employeeId?: Id<"employees">) {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   const challenge = bytesToB64u(bytes);
   await ctx.db.insert("biometricChallenges", { challenge, purpose, employeeId, userId, expiresAt: Date.now() + 120000 });
   return challenge;
 }
-async function consumeChallenge(ctx: any, challenge: string, purpose: string, userId: any) {
-  const row = await ctx.db.query("biometricChallenges").withIndex("by_challenge", (q: any) => q.eq("challenge", challenge)).first();
+async function consumeChallenge(ctx: MutationCtx, challenge: string, purpose: string, userId: Id<"users">) {
+  const row = await ctx.db.query("biometricChallenges").withIndex("by_challenge", (q) => q.eq("challenge", challenge)).first();
   if (!row || row.purpose !== purpose || String(row.userId) !== String(userId)) throw new Error("Ombi la uthibitisho si sahihi. Jaribu tena.");
-  await ctx.db.delete(row._id);
+  await ctx.db.delete("biometricChallenges", row._id);
   if (row.expiresAt < Date.now()) throw new Error("Muda wa uthibitisho umeisha. Jaribu tena.");
   return row;
 }
-function checkClientData(cd: any, type: string, challenge: string) {
+function checkClientData(cd: Record<string, unknown>, type: string, challenge: string) {
   if (cd.type !== type || cd.challenge !== challenge) throw new Error("Uthibitisho wa kifaa umeshindikana.");
   const expected = process.env.APP_ORIGIN;
-  if (expected && cd.origin !== expected) throw new Error("Chanzo cha ombi si sahihi.");
+  if (expected && (typeof cd.origin !== "string" || cd.origin !== expected)) throw new Error("Chanzo cha ombi si sahihi.");
 }
 
 export const listCredentials = query({
@@ -70,7 +78,7 @@ export const credentialIds = query({
   args: { employeeId: v.id("employees") },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx);
-    const e = await ctx.db.get(a.employeeId);
+    const e = await ctx.db.get("employees", a.employeeId);
     if (!e || !canAccessRecord(user, e)) return [];
     return (await ctx.db.query("biometricCredentials").withIndex("by_employee", (q) => q.eq("employeeId", a.employeeId)).collect()).map((c) => c.credentialId);
   },
@@ -80,7 +88,7 @@ export const registerOptions = mutation({
   args: { employeeId: v.id("employees") },
   handler: async (ctx, a) => {
     const user = await requireManager(ctx);
-    const employee = await ctx.db.get(a.employeeId);
+    const employee = await ctx.db.get("employees", a.employeeId);
     if (!employee || !canAccessRecord(user, employee)) throw new Error("Mfanyakazi hapatikani.");
     const challenge = await newChallenge(ctx, user._id, "register", employee._id);
     const existing = await ctx.db.query("biometricCredentials").withIndex("by_employee", (q) => q.eq("employeeId", employee._id)).collect();
@@ -96,7 +104,7 @@ export const finishRegistration = mutation({
     if (String(row.employeeId) !== String(a.employeeId)) throw new Error("Ombi la uthibitisho si sahihi. Jaribu tena.");
     checkClientData(parseClientData(a.clientDataJSON), "webauthn.create", a.challenge);
     if (![-7, -257].includes(a.algorithm)) throw new Error("Aina ya ufunguo wa kifaa haitumiki.");
-    const employee = await ctx.db.get(a.employeeId);
+    const employee = await ctx.db.get("employees", a.employeeId);
     if (!employee || !canAccessRecord(user, employee)) throw new Error("Mfanyakazi hapatikani.");
     const dup = await ctx.db.query("biometricCredentials").withIndex("by_credential", (q) => q.eq("credentialId", a.credentialId)).first();
     if (dup) throw new Error("Kifaa hiki tayari kimesajiliwa.");
@@ -110,9 +118,9 @@ export const removeCredential = mutation({
   args: { id: v.id("biometricCredentials") },
   handler: async (ctx, a) => {
     const user = await requireManager(ctx);
-    const c = await ctx.db.get(a.id);
+    const c = await ctx.db.get("biometricCredentials", a.id);
     if (!c || !canAccessRecord(user, c)) throw new Error("Kifaa hakipatikani.");
-    await ctx.db.delete(a.id);
+    await ctx.db.delete("biometricCredentials", a.id);
     await logAudit(ctx, user, { action: "remove_biometric", module: "payroll", referenceId: String(c.employeeId) });
     return true;
   },
@@ -139,7 +147,7 @@ export const authenticate = mutation({
     const authData = b64uToBytes(a.authenticatorData);
     if (authData.length < 37) throw new Error("Taarifa za kifaa si sahihi.");
     // The assertion must be bound to the origin that asked for it.
-    const host = (() => { try { return new URL(cd.origin).hostname; } catch { throw new Error("Chanzo cha ombi si sahihi."); } })();
+    const host = (() => { try { if (typeof cd.origin !== "string") throw new Error("origin"); return new URL(cd.origin).hostname; } catch { throw new Error("Chanzo cha ombi si sahihi."); } })();
     const rpIdHash = await sha256(new TextEncoder().encode(host));
     if (!rpIdHash.every((b, i) => b === authData[i])) throw new Error("Uthibitisho wa kifaa umeshindikana.");
     const flags = authData[32];
@@ -149,10 +157,10 @@ export const authenticate = mutation({
     const signed = concat(authData, await sha256(b64uToBytes(a.clientDataJSON)));
     const ok = await verifySignature(cred, signed, b64uToBytes(a.signature));
     if (!ok) throw new Error("Uthibitisho wa alama umeshindikana.");
-    const employee = await ctx.db.get(cred.employeeId);
+    const employee = await ctx.db.get("employees", cred.employeeId);
     if (!employee) throw new Error("Mfanyakazi hapatikani.");
     const result = await applyAttendance(ctx, { employee, kind: a.kind, userId: user._id, method: "biometric", tzOffset: a.tzOffset });
-    await ctx.db.patch(cred._id, { counter, lastUsedAt: new Date().toISOString() });
+    await ctx.db.patch("biometricCredentials", cred._id, { counter, lastUsedAt: new Date().toISOString() });
     await logAudit(ctx, user, { action: a.kind === "in" ? "staff_sign_in" : "staff_sign_out", module: "payroll", referenceId: String(employee._id), details: `biometric ${result.time}` });
     return { ...result, employeeName: employee.name, employeeCode: employee.employeeCode };
   },

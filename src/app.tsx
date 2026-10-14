@@ -1,3 +1,4 @@
+import { lazy } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import ErrorBoundary from "./components/error-boundary.tsx";
 import { DefaultProviders } from "./components/providers/default.tsx";
@@ -5,18 +6,18 @@ import AuthCallback from "./pages/auth/callback.tsx";
 import AppLayout from "./pages/layout/Applayout.tsx";
 import Index from "./pages/Index.tsx";
 import NotFound from "./pages/NotFound.tsx";
-import Dashboard from "./pages/dashboard/page.tsx";
-import SuperAdminPage from "./pages/super-admin/page.tsx";
-import SalesPage from "./pages/sales/page.tsx";
-import StockPage from "./pages/stock/page.tsx";
-import PurchasingPage from "./pages/purchasing/page.tsx";
-import PayrollPage from "./pages/payroll/page.tsx";
-import AccountsPage from "./pages/accounts/page.tsx";
-import MaintenancePage from "./pages/maintenance/page.tsx";
-import BillsPage from "./pages/bills/page.tsx";
-import HRPage from "./pages/hr/page.tsx";
-import NotificationsPage from "./pages/notifications/page.tsx";
-import HelpPage from "./pages/help/page.tsx";
+const Dashboard = lazy(() => import("./pages/dashboard/page.tsx"));
+const SuperAdminPage = lazy(() => import("./pages/super-admin/page.tsx"));
+const SalesPage = lazy(() => import("./pages/sales/page.tsx"));
+const StockPage = lazy(() => import("./pages/stock/page.tsx"));
+const PurchasingPage = lazy(() => import("./pages/purchasing/page.tsx"));
+const PayrollPage = lazy(() => import("./pages/payroll/page.tsx"));
+const AccountsPage = lazy(() => import("./pages/accounts/page.tsx"));
+const MaintenancePage = lazy(() => import("./pages/maintenance/page.tsx"));
+const BillsPage = lazy(() => import("./pages/bills/page.tsx"));
+const HRPage = lazy(() => import("./pages/hr/page.tsx"));
+const NotificationsPage = lazy(() => import("./pages/notifications/page.tsx"));
+const HelpPage = lazy(() => import("./pages/help/page.tsx"));
 
 export default function App() {
   return (

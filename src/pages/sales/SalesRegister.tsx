@@ -6,12 +6,43 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DateRange, ReportTable, Stat, fmt, groupRows, monthStart, num, round2, today, type Row } from "@/pages/shared/report.tsx";
+import { DateRange, ReportTable, Stat } from "@/pages/shared/report.tsx";
+import { fmt, groupRows, monthStart, num, round2, today, type Row } from "@/pages/shared/report-utils.ts";
 import { tr, errorText, trValue } from "@/lib/i18n.ts";
 import TransactionReceipt from "@/components/TransactionReceipt.tsx";
 import PaymentSplit from "@/components/PaymentSplit.tsx";
 import { describeSplits, newSplitLine, splitsTotal, toSplits, type SplitLine } from "@/lib/payment-split.ts";
 import { usePaymentMethods } from "@/hooks/use-payment-methods.ts";
+import { printElement, type Paper } from "@/lib/print-area.ts";
+
+const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** Prints one sold item (a single invoice line) as a small slip, N copies, in the chosen paper size. */
+function printSoldItem(row: Row, copies: number, paper: Paper, company: { name: string; address: string; phone: string; currencySymbol: string }) {
+  const money = (n: unknown) => `${company.currencySymbol} ${fmt(num(n as number), 2)}`;
+  const rowLine = (k: string, v: string) => `<tr><td style="padding:2px 0;color:#444">${esc(k)}</td><td style="padding:2px 0;text-align:right;font-weight:600">${esc(v)}</td></tr>`;
+  const one = `<section style="break-inside:avoid;page-break-after:always;padding:6px 0;font-size:12px">
+    <div style="text-align:center;border-bottom:1px dashed #000;padding-bottom:6px;margin-bottom:6px">
+      <div style="font-size:15px;font-weight:700">${esc(company.name || tr("Biashara"))}</div>
+      ${company.address ? `<div>${esc(company.address)}</div>` : ""}${company.phone ? `<div>${esc(company.phone)}</div>` : ""}
+      <div style="margin-top:4px;font-weight:700">${esc(tr("Sold Item Report"))}</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse">
+      ${rowLine(tr("Invoice"), String(row[tr("Invoice")] ?? row.Invoice ?? ""))}
+      ${rowLine(tr("Tarehe"), String(row.Tarehe ?? ""))}
+      ${rowLine(tr("Mteja"), String(row.Mteja ?? ""))}
+      ${rowLine(tr("Code"), String(row.Code ?? ""))}
+      ${rowLine(tr("Bidhaa"), String(row.Bidhaa ?? ""))}
+      ${rowLine(tr("Qty"), fmt(num(row.Qty), 4))}
+      ${rowLine(tr("Bei/kipande"), money(row["Bei/kipande"]))}
+      ${rowLine(tr("Discount"), money(row.Discount))}
+    </table>
+    <div style="display:flex;justify-content:space-between;border-top:1px dashed #000;margin-top:6px;padding-top:6px;font-size:14px;font-weight:700"><span>${esc(tr("Jumla"))}</span><span>${esc(money(row.Jumla))}</span></div>
+  </section>`;
+  const el = document.createElement("div");
+  el.innerHTML = one.repeat(Math.max(1, copies));
+  printElement(el, paper);
+}
 
 const selectClass = "h-10 rounded-md border bg-background px-3";
 const TITLES: Record<string, string> = {
@@ -27,7 +58,8 @@ export default function SalesRegister() {
   const [start, setStart] = useState(monthStart());
   const [end, setEnd] = useState(today());
   const [clientId, setClientId] = useState("");
-  const data = useQuery(api.sales.salesRegisters, { startDate: start, endDate: end });
+  const needsLines = [ "reports/analysis", "reports/by-product", "reports/client-product", "reports/product-client", "reports/sold-items", "reports/by-supplier" ].includes(path);
+  const data = useQuery(api.sales.salesRegisters, { startDate: start, endDate: end, withLines: needsLines });
   const recordPayment = useMutation(api.sales.recordPayment);
   const [pay, setPay] = useState({ invoiceId: "", date: today(), filterClient: "" });
   const methods = usePaymentMethods();
@@ -155,7 +187,7 @@ export default function SalesRegister() {
       {paymentForm}
       {lastReceipt && <TransactionReceipt title={tr("RISITI YA MALIPO YA MAUZO")} reference={lastReceipt.reference} date={lastReceipt.date} partyLabel={tr("Mteja")} party={lastReceipt.party} amount={lastReceipt.amount} method={lastReceipt.method} note={tr("Malipo yamepokelewa. Hifadhi risiti hii kwa kumbukumbu.")} />}
       {statementPicker}
-      {path === "reports/client-statement" && !clientId ? <p className="text-sm text-muted-foreground">{tr("Chagua mteja kuona statement yake.")}</p> : <ReportTable title={title === "Payment Received" ? tr("Malipo yaliyopokelewa") : title} rows={listRows} sumCols={path === "payments" ? ["Kiasi"] : sumCols} note={note} />}
+      {path === "reports/client-statement" && !clientId ? <p className="text-sm text-muted-foreground">{tr("Chagua mteja kuona statement yake.")}</p> : <ReportTable title={title === "Payment Received" ? tr("Malipo yaliyopokelewa") : title} rows={listRows} sumCols={path === "payments" ? ["Kiasi"] : sumCols} note={note} onPrintRow={path === "reports/sold-items" ? (row, copies, paper) => printSoldItem(row, copies, paper, data.company) : undefined} />}
     </main>
   );
 }

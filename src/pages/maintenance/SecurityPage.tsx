@@ -1,8 +1,9 @@
+import { useMaintenanceSettings, useRun } from "./helpers.ts";
 import { useState } from "react";
 import { useAction, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
-import { Card, Loading, NoAccess, PageShell, TextField, Toggle, useMaintenanceSettings, useRun } from "./_shared";
+import { Card, Loading, NoAccess, PageShell, TextField, Toggle } from "./_shared";
 import { tr } from "@/lib/i18n.ts";
 
 export function ChangePasswordForm({ onDone }: { onDone?: () => void }) {
@@ -29,8 +30,9 @@ export default function SecurityPage() {
   const { busy, run } = useRun();
   const [f, setF] = useState<{ min: string; timeout: string; force: boolean } | null>(null);
   if (!s) return <PageShell title={tr("User Security Settings")}><Loading /></PageShell>;
-  const sec: any = s.app.security ?? {};
-  const form = f ?? { min: String(sec.minPasswordLength ?? 10), timeout: String(sec.sessionTimeoutMinutes ?? 30), force: sec.requirePasswordChangeForNewUsers ?? true };
+  const securityValue: unknown = s.app.security;
+  const sec = typeof securityValue === "object" && securityValue !== null ? securityValue as Record<string, unknown> : {};
+  const form = f ?? { min: String(sec.minPasswordLength ?? 10), timeout: String(sec.sessionTimeoutMinutes ?? 30), force: typeof sec.requirePasswordChangeForNewUsers === "boolean" ? sec.requirePasswordChangeForNewUsers : true };
   const ok = s.canEdit["maintenance.security"];
   return (
     <PageShell title={tr("User Security Settings")} subtitle={tr("Sera ya password na session")}>

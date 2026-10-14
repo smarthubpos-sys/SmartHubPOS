@@ -1,4 +1,6 @@
 import { action, internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
@@ -10,15 +12,36 @@ import { ALL_PERMISSION_KEYS, SETTING_KEYS, SYSTEM_ROLES, cleanModules } from ".
 const LOGIN_DOMAIN = "login.smarthub.invalid";
 const DEFAULT_SECURITY = { minPasswordLength: 10, sessionTimeoutMinutes: 30, requirePasswordChangeForNewUsers: true };
 
-async function readSettingsMap(ctx: any, scope: { tenantId?: any; branchId?: any }) {
-  const rows = (await ctx.db.query("appSettings").withIndex("by_scope", (q: any) => q.eq("tenantId", scope.tenantId)).collect()).filter((r: any) => r.branchId === scope.branchId);
+/**
+ * Maintenance tools (backup, health check, clear data, assign unscoped) work on tables chosen at run time, so the
+ * generated per-table types cannot describe them. This is the single, documented boundary where the database is
+ * viewed through a loose interface; every call still passes the table name explicitly and Convex validates that the
+ * id belongs to that table.
+ */
+type DynamicDoc = { _id: string } & Record<string, unknown>;
+interface DynamicIndexRange { eq(field: string, value: unknown): DynamicIndexRange }
+interface DynamicQuery {
+  take(n: number): Promise<DynamicDoc[]>;
+  collect(): Promise<DynamicDoc[]>;
+  withIndex(index: string, range: (q: DynamicIndexRange) => unknown): DynamicQuery;
+  paginate(opts: { numItems: number; cursor: string | null }): Promise<{ page: DynamicDoc[]; isDone: boolean; continueCursor: string }>;
+}
+interface DynamicDb {
+  query(table: string): DynamicQuery;
+  patch(table: string, id: string, value: Record<string, unknown>): Promise<void>;
+  delete(table: string, id: string): Promise<void>;
+}
+const dynamicDb = (db: unknown): DynamicDb => db as DynamicDb;
+
+async function readSettingsMap(ctx: QueryCtx, scope: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }) {
+  const rows = (await ctx.db.query("appSettings").withIndex("by_scope", (q) => q.eq("tenantId", scope.tenantId)).collect()).filter((r) => r.branchId === scope.branchId);
   const out: Record<string, any> = {};
   for (const r of rows) { try { out[r.key] = JSON.parse(r.value); } catch { /* ignore corrupt value */ } }
   return out;
 }
 
-async function securityPolicy(ctx: any, user: any) {
-  const scope = await resolveWriteScope(ctx, user, { tenantWide: true }).catch(() => ({} as any));
+async function securityPolicy(ctx: QueryCtx, user: any) {
+  const scope = await resolveWriteScope(ctx, user, { tenantWide: true }).catch(() => ({} as Awaited<ReturnType<typeof resolveWriteScope>>));
   const map = await readSettingsMap(ctx, scope);
   return { ...DEFAULT_SECURITY, ...(map.security ?? {}) };
 }
@@ -29,7 +52,7 @@ export const getSettings = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
-    const scope = await resolveWriteScope(ctx, user, { tenantWide: true }).catch(() => ({} as any));
+    const scope = await resolveWriteScope(ctx, user, { tenantWide: true }).catch(() => ({} as Awaited<ReturnType<typeof resolveWriteScope>>));
     const company = (await scopedRows(ctx, user, "companySettings"))[0] ?? null;
     const app = await readSettingsMap(ctx, scope);
     const canEdit: Record<string, boolean> = {};
@@ -56,7 +79,7 @@ export const saveCompany = mutation({
     const patch = Object.fromEntries(Object.entries(args).filter(([, val]) => val !== undefined));
     const existing = (await scopedRows(ctx, user, "companySettings"))[0];
     let id;
-    if (existing) { await ctx.db.patch(existing._id, patch); id = existing._id; }
+    if (existing) { await ctx.db.patch("companySettings", existing._id, patch); id = existing._id; }
     else {
       id = await ctx.db.insert("companySettings", {
         companyName: "Your Business Name", currency: "TZS", currencySymbol: "TSh", decimalPlaces: 2,
@@ -78,15 +101,15 @@ export const saveSetting = mutation({
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
     const value = args.value ?? {};
     if (args.key === "security") {
-      const s = value as any;
-      if (!(s.minPasswordLength >= 8 && s.minPasswordLength <= 64)) throw new Error("Urefu wa password uwe 8–64.");
-      if (!(s.sessionTimeoutMinutes >= 0 && s.sessionTimeoutMinutes <= 1440)) throw new Error("Session timeout iwe 0–1440 dakika (0 = imezimwa).");
+      const s: { minPasswordLength?: unknown; sessionTimeoutMinutes?: unknown } = typeof value === "object" && value !== null ? value : {};
+      if (!(typeof s.minPasswordLength === "number" && s.minPasswordLength >= 8 && s.minPasswordLength <= 64)) throw new Error("Urefu wa password uwe 8–64.");
+      if (!(typeof s.sessionTimeoutMinutes === "number" && s.sessionTimeoutMinutes >= 0 && s.sessionTimeoutMinutes <= 1440)) throw new Error("Session timeout iwe 0–1440 dakika (0 = imezimwa).");
     }
-    if (args.key === "language" && !["sw", "en"].includes((value as any).language)) throw new Error("Lugha lazima iwe sw au en.");
+    if (args.key === "language" && !["sw", "en"].includes(String((typeof value === "object" && value !== null ? (value as { language?: unknown }).language : undefined)))) throw new Error("Lugha lazima iwe sw au en.");
     const rows = (await ctx.db.query("appSettings").withIndex("by_key", (q) => q.eq("key", args.key)).collect())
       .filter((r) => r.tenantId === scope.tenantId && r.branchId === scope.branchId);
     const doc = { value: JSON.stringify(value), updatedAt: new Date().toISOString(), updatedBy: user._id };
-    if (rows[0]) await ctx.db.patch(rows[0]._id, doc);
+    if (rows[0]) await ctx.db.patch("appSettings", rows[0]._id, doc);
     else await ctx.db.insert("appSettings", { ...scope, key: args.key, ...doc });
     await logAudit(ctx, user, { action: `update_${args.key}_settings`, module: "maintenance" });
     return true;
@@ -148,11 +171,11 @@ export const setPeriodStatus = mutation({
   args: { id: v.id("financialPeriods"), status: v.union(v.literal("open"), v.literal("closed"), v.literal("locked")) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.periods");
-    const period = await ctx.db.get(a.id);
+    const period = await ctx.db.get("financialPeriods", a.id);
     if (!period) throw new Error("Period haipo.");
     if (!isSuperAdmin(user) && (!user.tenantId || period.tenantId !== user.tenantId)) throw new Error("Forbidden: period nje ya ofisi yako.");
     if (period.status === "locked" && !isSuperAdmin(user)) throw new Error("Period iliyofungwa (locked) inafunguliwa na Super Admin tu.");
-    await ctx.db.patch(a.id, a.status === "open"
+    await ctx.db.patch("financialPeriods", a.id, a.status === "open"
       ? { status: "open", closedBy: undefined, closedAt: undefined }
       : { status: a.status, closedBy: user._id, closedAt: new Date().toISOString() });
     await logAudit(ctx, user, { action: `period_${a.status}`, module: "maintenance", referenceId: String(a.id), details: period.name });
@@ -164,11 +187,11 @@ export const deletePeriod = mutation({
   args: { id: v.id("financialPeriods") },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.periods");
-    const period = await ctx.db.get(a.id);
+    const period = await ctx.db.get("financialPeriods", a.id);
     if (!period) return false;
     if (!isSuperAdmin(user) && (!user.tenantId || period.tenantId !== user.tenantId)) throw new Error("Forbidden: period nje ya ofisi yako.");
     if (period.status !== "open") throw new Error("Futa period iliyo 'open' tu.");
-    await ctx.db.delete(a.id);
+    await ctx.db.delete("financialPeriods", a.id);
     await logAudit(ctx, user, { action: "delete_period", module: "maintenance", details: period.name });
     return true;
   },
@@ -205,7 +228,7 @@ export const saveRole = mutation({
     const permissions = [...new Set(a.permissions)];
     const existing = await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", name)).first();
     const isSystem = SYSTEM_ROLES.some((r) => r.name === name);
-    if (existing) await ctx.db.patch(existing._id, { displayName: a.displayName.trim(), permissions });
+    if (existing) await ctx.db.patch("roles", existing._id, { displayName: a.displayName.trim(), permissions });
     else await ctx.db.insert("roles", { name, displayName: a.displayName.trim(), permissions, isSystem });
     await logAudit(ctx, user, { action: "save_role", module: "maintenance", referenceId: name, details: `${permissions.length} permissions` });
     return name;
@@ -221,7 +244,7 @@ export const deleteRole = mutation({
     if (inUse) throw new Error("Role hii inatumika na watumiaji. Wabadilishie role kwanza.");
     const existing = await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", name)).first();
     if (!existing) return false;
-    await ctx.db.delete(existing._id); // for system roles this resets them to built-in defaults
+    await ctx.db.delete("roles", existing._id); // for system roles this resets them to built-in defaults
     await logAudit(ctx, user, { action: "delete_role", module: "maintenance", referenceId: name });
     return true;
   },
@@ -230,8 +253,8 @@ export const deleteRole = mutation({
 /* ───────────────────────── Users ───────────────────────── */
 
 /** Keeps only modules the business actually has (the Super Admin decides that per business). */
-async function allowedMenu(ctx: any, tenantId: any, wanted: string[]) {
-  const tenant = tenantId ? await ctx.db.get(tenantId) : null;
+async function allowedMenu(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, wanted: string[]) {
+  const tenant = tenantId ? await ctx.db.get("tenants", tenantId) : null;
   const keys = cleanModules(wanted);
   return tenant?.modules ? keys.filter((k) => (tenant.modules as string[]).includes(k)) : keys;
 }
@@ -256,12 +279,12 @@ export const listOffices = query({
   },
 });
 
-async function assertCanAssign(ctx: any, actor: any, target: { role?: string; tenantId?: any; branchId?: any }, existing?: any) {
+async function assertCanAssign(ctx: QueryCtx, actor: any, target: { role?: string; tenantId?: any; branchId?: any }, existing?: any) {
   const role = target.role === undefined ? undefined : normalizeRole(target.role);
   if (role && ["super_admin", "superadmin"].includes(role) && !isSuperAdmin(actor)) throw new Error("Super Admin pekee ndiye anaweza kutoa role ya Super Admin.");
   if (existing && isSuperAdmin(existing) && !isSuperAdmin(actor)) throw new Error("Huwezi kubadilisha akaunti ya Super Admin.");
   if (role && !["super_admin", "superadmin"].includes(role)) {
-    const known = SYSTEM_ROLES.some((r) => r.name === role) || (await ctx.db.query("roles").withIndex("by_name", (q: any) => q.eq("name", role)).first());
+    const known = SYSTEM_ROLES.some((r) => r.name === role) || (await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", role)).first());
     if (!known) throw new Error(`Role "${role}" haipo.`);
   }
   if (!isSuperAdmin(actor)) {
@@ -269,7 +292,7 @@ async function assertCanAssign(ctx: any, actor: any, target: { role?: string; te
     if (!actor.tenantId || tenantId !== actor.tenantId) throw new Error("Unaweza kusimamia watumiaji wa ofisi yako tu.");
   }
   if (target.branchId) {
-    const branch = await ctx.db.get(target.branchId);
+    const branch = await ctx.db.get("branches", target.branchId);
     const tenantId = target.tenantId ?? actor.tenantId;
     if (!branch || (tenantId && branch.tenantId !== tenantId)) throw new Error("Branch haihusiani na ofisi iliyochaguliwa.");
   }
@@ -284,7 +307,7 @@ export const updateUser = mutation({
   },
   handler: async (ctx, a) => {
     const actor = await requirePermission(ctx, "maintenance.users");
-    const target = await ctx.db.get(a.userId);
+    const target = await ctx.db.get("users", a.userId);
     if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target.tenantId, branchId: a.branchId }, target);
     if (String(actor._id) === String(target._id)) {
@@ -310,7 +333,7 @@ export const updateUser = mutation({
     if (a.clearMenuAccess) patch.menuAccess = undefined;
     else if (a.menuAccess !== undefined) patch.menuAccess = await allowedMenu(ctx, a.tenantId ?? target.tenantId, a.menuAccess);
     if (a.ownDataOnly !== undefined) patch.ownDataOnly = a.ownDataOnly ? true : undefined;
-    await ctx.db.patch(a.userId, patch);
+    await ctx.db.patch("users", a.userId, patch);
     await logAudit(ctx, actor, { action: "update_user", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${target.username ?? target.name}: ${Object.keys(patch).join(", ")}` });
     return true;
   },
@@ -320,7 +343,7 @@ export const authorizeUserAdmin = internalQuery({
   args: { targetUserId: v.optional(v.id("users")), role: v.optional(v.string()), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")) },
   handler: async (ctx, a) => {
     const actor = await requirePermission(ctx, "maintenance.users");
-    const target = a.targetUserId ? await ctx.db.get(a.targetUserId) : undefined;
+    const target = a.targetUserId ? await ctx.db.get("users", a.targetUserId) : undefined;
     if (a.targetUserId && (!target || target.tokenIdentifier !== undefined)) throw new Error("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target?.tenantId, branchId: a.branchId }, target);
     const policy = await securityPolicy(ctx, actor);
@@ -331,18 +354,18 @@ export const authorizeUserAdmin = internalQuery({
 export const finishUserSetup = internalMutation({
   args: { userId: v.id("users"), actorId: v.id("users"), name: v.string(), username: v.string(), role: v.string(), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), requirePasswordChange: v.boolean(), menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()) },
   handler: async (ctx, a) => {
-    await ctx.db.patch(a.userId, {
+    await ctx.db.patch("users", a.userId, {
       name: a.name, username: a.username, role: normalizeRole(a.role), tenantId: a.tenantId, branchId: a.branchId, isActive: true, requirePasswordChange: a.requirePasswordChange,
       menuAccess: a.menuAccess ? await allowedMenu(ctx, a.tenantId, a.menuAccess) : undefined, ownDataOnly: a.ownDataOnly ? true : undefined,
     });
-    const actor = await ctx.db.get(a.actorId);
+    const actor = await ctx.db.get("users", a.actorId);
     await logAudit(ctx, actor, { action: "create_user", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${a.username} (${a.role})` });
   },
 });
 
 export const logUserEvent = internalMutation({
   args: { actorId: v.id("users"), action: v.string(), details: v.string(), result: v.optional(v.string()) },
-  handler: async (ctx, a) => { await logAudit(ctx, await ctx.db.get(a.actorId), { action: a.action, module: "maintenance", details: a.details, result: a.result }); },
+  handler: async (ctx, a) => { await logAudit(ctx, await ctx.db.get("users", a.actorId), { action: a.action, module: "maintenance", details: a.details, result: a.result }); },
 });
 
 export const createUser = action({
@@ -416,8 +439,8 @@ export const whoAmI = internalQuery({
 export const markPasswordChanged = internalMutation({
   args: { userId: v.id("users") },
   handler: async (ctx, a) => {
-    await ctx.db.patch(a.userId, { requirePasswordChange: false });
-    await logAudit(ctx, await ctx.db.get(a.userId), { action: "change_own_password", module: "maintenance" });
+    await ctx.db.patch("users", a.userId, { requirePasswordChange: false });
+    await logAudit(ctx, await ctx.db.get("users", a.userId), { action: "change_own_password", module: "maintenance" });
   },
 });
 
@@ -464,7 +487,7 @@ export const exportTable = query({
   handler: async (ctx, a) => {
     await requireSuperAdminUser(ctx);
     if (!(BACKUP_TABLES as readonly string[]).includes(a.table)) throw new Error("Table hairuhusiwi.");
-    const page = await ctx.db.query(a.table as any).paginate({ numItems: 400, cursor: a.cursor });
+    const page = await dynamicDb(ctx.db).query(a.table).paginate({ numItems: 400, cursor: a.cursor });
     return { rows: page.page, isDone: page.isDone, cursor: page.continueCursor };
   },
 });
@@ -491,13 +514,13 @@ export const healthCheck = query({
     await requireSuperAdminUser(ctx);
     const counts: { table: string; count: number; capped: boolean }[] = [];
     for (const t of BACKUP_TABLES) {
-      const rows = await ctx.db.query(t as any).take(5001);
+      const rows = await dynamicDb(ctx.db).query(t).take(5001);
       counts.push({ table: t, count: Math.min(rows.length, 5000), capped: rows.length > 5000 });
     }
     const unscoped: { table: string; count: number }[] = [];
     for (const t of SCOPED_TABLES) {
-      const rows = await ctx.db.query(t as any).take(2000);
-      const n = rows.filter((r: any) => r.tenantId === undefined).length;
+      const rows = await dynamicDb(ctx.db).query(t).take(2000);
+      const n = rows.filter((r) => r.tenantId === undefined).length;
       if (n) unscoped.push({ table: t, count: n });
     }
     const users = await ctx.db.query("users").collect();
@@ -526,10 +549,10 @@ export const assignUnscoped = mutation({
     let updated = 0;
     for (const t of SCOPED_TABLES) {
       if (updated >= 400) break;
-      const rows = await ctx.db.query(t as any).take(500);
-      for (const r of rows as any[]) {
+      const rows = await dynamicDb(ctx.db).query(t).take(500);
+      for (const r of rows) {
         if (r.tenantId !== undefined || updated >= 400) continue;
-        await ctx.db.patch(r._id, { ...scope });
+        await dynamicDb(ctx.db).patch(t, r._id, { ...scope });
         updated++;
       }
     }
@@ -545,7 +568,7 @@ export const purgeAuditLogs = mutation({
     if (!(a.olderThanDays >= 30)) throw new Error("Futa logs zilizo za zaidi ya siku 30 tu.");
     const cutoff = new Date(Date.now() - a.olderThanDays * 86400000).toISOString();
     const old = await ctx.db.query("auditLogs").withIndex("by_timestamp", (q) => q.lt("timestamp", cutoff)).take(500);
-    for (const r of old) await ctx.db.delete(r._id);
+    for (const r of old) await ctx.db.delete("auditLogs", r._id);
     await logAudit(ctx, user, { action: "purge_audit_logs", module: "maintenance", details: `${old.length} older than ${a.olderThanDays} days` });
     return { deleted: old.length, more: old.length === 500 };
   },
@@ -613,7 +636,7 @@ export const authorizeClear = internalQuery({
     if (unknown.length) throw new Error(`Kundi lisilojulikana: ${unknown.join(", ")}`);
     const email = user.email ?? (user.username ? `${user.username}@${LOGIN_DOMAIN}` : undefined);
     if (!email) throw new Error("Akaunti haina login ya password.");
-    const tenant: any = await ctx.db.get(user.tenantId);
+    const tenant = await ctx.db.get("tenants", user.tenantId);
     return { actorId: user._id, tenantId: user.tenantId, email, tenantName: tenant?.name ?? "" };
   },
 });
@@ -622,44 +645,44 @@ export const authorizeClear = internalQuery({
 export const clearStepBatch = internalMutation({
   args: { actorId: v.id("users"), tenantId: v.id("tenants"), category: v.string(), step: v.number() },
   handler: async (ctx, a) => {
-    const actor = await ctx.db.get(a.actorId);
+    const actor = await ctx.db.get("users", a.actorId);
     if (!actor || !isSuperAdmin(actor) || actor.isActive === false) throw new Error("Forbidden: Super Admin only");
     const step = CLEAR_CATEGORIES[a.category]?.steps[a.step];
     if (!step) throw new Error("Hatua haipo.");
-    const db = ctx.db as any;
+    const db = dynamicDb(ctx.db);
     let deleted = 0;
 
-    const removeWithChildren = async (doc: any) => {
+    const removeWithChildren = async (doc: DynamicDoc) => {
       for (const c of step.children ?? []) {
-        const kids = await db.query(c.table).withIndex(c.index, (q: any) => q.eq(c.field, doc._id)).collect();
-        for (const k of kids) await db.delete(k._id);
+        const kids = await db.query(c.table).withIndex(c.index, (q) => q.eq(c.field, doc._id)).collect();
+        for (const k of kids) await db.delete(c.table, k._id);
       }
-      await db.delete(doc._id);
+      await db.delete(step.table, doc._id);
     };
 
     if (step.via) {
       // Tables without their own tenantId: reach them through the business's clients / products.
       const [childTable, index, field] = step.table === "salesReturns" ? ["salesReturns", "by_client", "clientId"] : ["purchasePriceHistory", "by_product", "productId"];
-      const parents = await db.query(step.via).withIndex("by_scope", (q: any) => q.eq("tenantId", a.tenantId)).collect();
+      const parents = await db.query(step.via).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).collect();
       for (const p of parents) {
-        const rows = await db.query(childTable).withIndex(index, (q: any) => q.eq(field, p._id)).take(200);
-        for (const r of rows) { await db.delete(r._id); deleted++; }
+        const rows = await db.query(childTable).withIndex(index, (q) => q.eq(field, p._id)).take(200);
+        for (const r of rows) { await db.delete(childTable, r._id); deleted++; }
         if (deleted >= 400) return { done: false, deleted };
       }
       return { done: true, deleted };
     }
 
     if (step.resetStock || step.resetBalances) {
-      const rows = await db.query(step.table).withIndex("by_scope", (q: any) => q.eq("tenantId", a.tenantId)).collect();
+      const rows = await db.query(step.table).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).collect();
       for (const r of rows) {
-        if (step.resetStock && (r.currentQty !== 0 || r.openingQty !== 0)) { await db.patch(r._id, { currentQty: 0, openingQty: 0 }); deleted++; }
-        if (step.resetBalances && r.balance !== 0) { await db.patch(r._id, { balance: 0 }); deleted++; }
+        if (step.resetStock && (r.currentQty !== 0 || r.openingQty !== 0)) { await db.patch(step.table, r._id, { currentQty: 0, openingQty: 0 }); deleted++; }
+        if (step.resetBalances && r.balance !== 0) { await db.patch(step.table, r._id, { balance: 0 }); deleted++; }
         if (deleted >= 400) return { done: false, deleted };
       }
       return { done: true, deleted };
     }
 
-    const batch = await db.query(step.table).withIndex("by_scope", (q: any) => q.eq("tenantId", a.tenantId)).take(CLEAR_BATCH);
+    const batch = await db.query(step.table).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).take(CLEAR_BATCH);
     for (const doc of batch) { await removeWithChildren(doc); deleted++; }
     return { done: batch.length < CLEAR_BATCH, deleted };
   },
@@ -668,11 +691,11 @@ export const clearStepBatch = internalMutation({
 export const finishClear = internalMutation({
   args: { actorId: v.id("users"), tenantId: v.id("tenants"), categories: v.array(v.string()), counts: v.string() },
   handler: async (ctx, a) => {
-    const actor = await ctx.db.get(a.actorId);
+    const actor = await ctx.db.get("users", a.actorId);
     for (const key of a.categories) {
       for (const seq of CLEAR_CATEGORIES[key]?.resetSequences ?? []) {
         const rows = await ctx.db.query(seq).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).collect();
-        for (const r of rows) await ctx.db.delete(r._id);
+        for (const r of rows) await dynamicDb(ctx.db).delete(seq, r._id);
       }
     }
     if (a.categories.some((k) => CLEAR_CATEGORIES[k]?.rebuildStats)) {
@@ -684,7 +707,7 @@ export const finishClear = internalMutation({
 
 export const logClearFailure = internalMutation({
   args: { actorId: v.id("users"), details: v.string() },
-  handler: async (ctx, a) => { await logAudit(ctx, await ctx.db.get(a.actorId), { action: "clear_data_file", module: "maintenance", details: a.details, result: "failure" }); },
+  handler: async (ctx, a) => { await logAudit(ctx, await ctx.db.get("users", a.actorId), { action: "clear_data_file", module: "maintenance", details: a.details, result: "failure" }); },
 });
 
 /** Wipes the chosen data of the SELECTED business after re-checking the Super Admin's own password. */
@@ -727,7 +750,7 @@ export const clearDataOverview = query({
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
     if (!isSuperAdmin(user)) return { isSuperAdmin: false as const, tenantName: null, categories: [] as { key: string; label: string; description: string }[] };
-    const tenant: any = user.tenantId ? await ctx.db.get(user.tenantId) : null;
+    const tenant = user.tenantId ? await ctx.db.get("tenants", user.tenantId) : null;
     return {
       isSuperAdmin: true as const,
       tenantName: tenant?.name ?? null,

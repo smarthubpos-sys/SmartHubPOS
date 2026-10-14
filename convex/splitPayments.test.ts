@@ -70,7 +70,7 @@ describe("one receipt, several payment methods", () => {
     expect(r.splits.map((s) => s.method)).toEqual(["M-Pesa 5551234", "CRDB", "cash"]);
 
     const { pays, invoice, journals } = await t.run(async (ctx) => ({
-      pays: await ctx.db.query("customerPayments").collect(), invoice: await ctx.db.get(inv.invoiceId), journals: await ctx.db.query("journalEntries").collect(),
+      pays: await ctx.db.query("customerPayments").collect(), invoice: await ctx.db.get("invoices", inv.invoiceId), journals: await ctx.db.query("journalEntries").collect(),
     }));
     expect(invoice).toMatchObject({ paymentStatus: "paid", outstanding: 0, amountPaid: 30000 });
     expect(pays).toHaveLength(3);
@@ -112,7 +112,7 @@ describe("one receipt, several payment methods", () => {
     expect(p.outstanding).toBe(30000);
     const r = await asMgr.mutation(api.purchasing.recordSupplierPayment, { supplierId, paymentDate: date, splits: [{ method: "x", methodId: phone, amount: 12000 }, { method: "cash", amount: 8000 }] });
     expect(r).toMatchObject({ amount: 20000, allocated: 20000, supplierCredit: 0 });
-    const rows = await t.run(async (ctx) => ({ pays: await ctx.db.query("supplierPayments").collect(), purchase: await ctx.db.get(p.purchaseId) }));
+    const rows = await t.run(async (ctx) => ({ pays: await ctx.db.query("supplierPayments").collect(), purchase: await ctx.db.get("purchases", p.purchaseId) }));
     expect(rows.pays.map((x) => x.paymentMethod)).toEqual(["Lipa 1234", "cash"]);
     expect(new Set(rows.pays.map((x) => x.receiptNo)).size).toBe(1);
     expect(rows.purchase).toMatchObject({ amountPaid: 20000, outstanding: 10000, paymentStatus: "partial" });

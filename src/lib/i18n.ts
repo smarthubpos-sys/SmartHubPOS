@@ -16,8 +16,9 @@ import { ACCESS_DICT } from "./i18n-dict-access.ts";
 import { SUPERADMIN_DICT, INVOICING_DICT, DEPT_DICT } from "./i18n-dict-superadmin.ts";
 import { PREPORT_DICT } from "./i18n-dict-preports.ts";
 import { PAYMENTS_DICT } from "./i18n-dict-payments.ts";
+import { PERIOD_REPORT_DICT } from "./i18n-dict-periodreport.ts";
 
-const DICT: Record<string, { sw: string; en: string }> = { ...SERVER_DICT, ...UI_DICT, ...EXTRA_DICT, ...ACCESS_DICT, ...SUPERADMIN_DICT, ...INVOICING_DICT, ...DEPT_DICT, ...PREPORT_DICT, ...PAYMENTS_DICT };
+const DICT: Record<string, { sw: string; en: string }> = { ...SERVER_DICT, ...UI_DICT, ...EXTRA_DICT, ...ACCESS_DICT, ...SUPERADMIN_DICT, ...INVOICING_DICT, ...DEPT_DICT, ...PREPORT_DICT, ...PAYMENTS_DICT, ...PERIOD_REPORT_DICT };
 
 export type Lang = "sw" | "en";
 const STORAGE_KEY = "smarthub.lang";

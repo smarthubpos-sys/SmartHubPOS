@@ -1,7 +1,7 @@
 import { useIsMobile } from "@/hooks/use-mobile.ts";
 import { Navigate, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { MODULES } from "@/convex/permissions";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { ChangePasswordForm } from "@/pages/maintenance/SecurityPage.tsx";
@@ -13,6 +13,7 @@ import { tr, setLang } from "@/lib/i18n.ts";
 import BusinessPicker from "@/pages/super-admin/BusinessPicker.tsx";
 import { PICK_BUSINESS_FLAG } from "@/lib/business-session.ts";
 import AnnouncementPopup from "@/components/announcement-popup.tsx";
+import ErrorBoundary from "@/components/error-boundary.tsx";
 import SubscriptionBanner from "./_components/SubscriptionBanner.tsx";
 
 function LoadingScreen() {
@@ -56,13 +57,23 @@ export default function AppLayout() {
     return () => { cancelled = true; };
   }, [resetting, isAuthenticated, user, exitBusiness]);
   const settings = useQuery(api.maintenance.getSettings, isAuthenticated && user && business && !business.suspended && !business.needsPicker ? {} : "skip");
-  const timeout = Number((settings?.app.security as any)?.sessionTimeoutMinutes ?? 30);
+  const securitySettings = settings?.app.security as unknown;
+  const timeoutValue = typeof securitySettings === "object" && securitySettings !== null && "sessionTimeoutMinutes" in securitySettings
+    ? securitySettings.sessionTimeoutMinutes
+    : 30;
+  const timeout = Number(timeoutValue ?? 30);
   useIdleSignOut(isAuthenticated && !!user, timeout);
   // ONE language for the whole system: the language saved for the business (default Kiswahili).
-  useEffect(() => { if (settings) setLang((settings.app.language as any)?.language === "en" ? "en" : "sw"); }, [settings]);
+  useEffect(() => {
+    if (!settings) return;
+    const languageSettings = settings.app.language as unknown;
+    const language = typeof languageSettings === "object" && languageSettings !== null && "language" in languageSettings
+      ? languageSettings.language
+      : undefined;
+    setLang(language === "en" ? "en" : "sw");
+  }, [settings]);
 
-  // Phones: the menu starts closed and closes after every page change.
-  useEffect(() => { if (isMobile) setSidebarOpen(false); }, [isMobile, location.pathname]);
+  // Mobile navigation closes the sidebar through Sidebar.onNavigate; avoid a post-render state update effect.
   useEffect(() => {
     if (!isLoading && !isAuthenticated) navigate("/", { replace: true, state: { from: location.pathname } });
   }, [isLoading, isAuthenticated, navigate, location.pathname]);
@@ -71,7 +82,7 @@ export default function AppLayout() {
   if (!isAuthenticated) return <LoadingScreen />;
   if (user === null) return <div className="min-h-screen flex items-center justify-center bg-slate-950 p-5 text-white"><div className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 text-center shadow-2xl"><h1 className="text-xl font-bold">{tr("Tunamalizia akaunti yako…")}</h1><p className="mt-2 text-sm text-slate-300">{tr("Ikiwa ukurasa huu hautabadilika, jaribu kutoka na kuingia tena.")}</p><div className="mt-5"><SignInButton /></div></div></div>;
 
-  if (user.requirePasswordChange) return <div className="min-h-screen flex items-center justify-center bg-slate-950 p-5"><div className="w-full max-w-md space-y-4 rounded-2xl border bg-card p-6 shadow-2xl"><h1 className="text-xl font-bold">{tr("Badilisha password yako")}</h1><p className="text-sm text-muted-foreground">{tr("Kwa usalama, lazima ubadilishe password ya kuanzia kabla ya kuendelea.")}</p><ChangePasswordForm /></div></div>;
+  if (user?.requirePasswordChange) return <div className="min-h-screen flex items-center justify-center bg-slate-950 p-5"><div className="w-full max-w-md space-y-4 rounded-2xl border bg-card p-6 shadow-2xl"><h1 className="text-xl font-bold">{tr("Badilisha password yako")}</h1><p className="text-sm text-muted-foreground">{tr("Kwa usalama, lazima ubadilishe password ya kuanzia kabla ya kuendelea.")}</p><ChangePasswordForm /></div></div>;
 
   if (business?.suspended) return <div className="min-h-screen flex items-center justify-center bg-slate-950 p-5 text-white"><div className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 text-center shadow-2xl"><h1 className="text-xl font-bold">{tr("Biashara yako imesimamishwa")}</h1><p className="mt-2 text-sm text-slate-300">{tr("Wasiliana na Super Admin ili iwashwe tena.")}</p><div className="mt-5"><SignInButton /></div></div></div>;
   if (business?.expired) return <div className="min-h-screen flex items-center justify-center bg-slate-950 p-5 text-white"><div className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 text-center shadow-2xl"><h1 className="text-xl font-bold">{business.subscription?.plan === "demo" ? tr("Muda wa demo umeisha") : tr("Usajili wa biashara yako umeisha")}</h1><p className="mt-2 text-sm text-slate-300">{tr("Wasiliana na SmartHub ili ulipie uendelee kutumia mfumo. Data yako yote iko salama.")}</p><div className="mt-5"><SignInButton /></div></div></div>;
@@ -87,7 +98,7 @@ export default function AppLayout() {
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <TopBar onMenuToggle={() => setSidebarOpen((o) => !o)} />
       <SubscriptionBanner />
-      <main className="flex-1 overflow-auto p-3 sm:p-4 md:p-6">{blocked ? <Navigate to="/dashboard" replace /> : <Outlet />}</main>
+      <main className="flex-1 overflow-auto p-3 sm:p-4 md:p-6">{blocked ? <Navigate to="/dashboard" replace /> : <ErrorBoundary resetKey={location.pathname}><Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center" role="status" aria-live="polite"><div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" /></div>}><Outlet /></Suspense></ErrorBoundary>}</main>
     </div>
     <AnnouncementPopup />
   </div>;

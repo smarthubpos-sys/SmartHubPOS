@@ -1,10 +1,11 @@
+import { useSubmit } from "@/components/use-submit.ts";
 import { useEffect, useState } from "react";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, CheckCircle2, Fingerprint, LogIn, LogOut, ScanFace, XCircle } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
 import { Button } from "@/components/ui/button.tsx";
-import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, Table, useSubmit } from "@/components/page-kit.tsx";
+import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, Table } from "@/components/page-kit.tsx";
 import { localDate, tzOffset } from "@/lib/format.ts";
 import { errorText, getLocale, tr } from "@/lib/i18n.ts";
 import { biometricError, biometricSupported, getAssertion, platformBiometricAvailable } from "@/lib/webauthn.ts";
@@ -29,7 +30,6 @@ export default function AttendancePage({ kind: initial }: { kind: "in" | "out" }
 
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
   useEffect(() => { void platformBiometricAvailable().then(setPlatform); }, []);
-  useEffect(() => setKind(initial), [initial]);
 
   const verb = (k: "in" | "out") => (k === "in" ? tr("Ingia kazini") : tr("Toka kazini"));
 

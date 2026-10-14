@@ -14,7 +14,7 @@ import { useLocation } from "react-router-dom";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
-import { useNotifications } from "@/hooks/use-notifications.ts";
+import { useMarkRead, useNotifications } from "@/hooks/use-notifications.ts";
 import { notificationText } from "@/lib/notify.ts";
 
 const routeTitles: Record<string, string> = {
@@ -38,7 +38,7 @@ export default function TopBar({ onMenuToggle }: Props) {
   const location = useLocation();
   const navigate = useNavigate();
   const { items, unread } = useNotifications();
-  const markRead = useMutation(api.notifications.markRead);
+  const markRead = useMarkRead();
   const currentUser = useQuery(api.users.getCurrentUser);
   const business = useQuery(api.tenants.current);
   const exitBusiness = useMutation(api.tenants.exitBusiness);

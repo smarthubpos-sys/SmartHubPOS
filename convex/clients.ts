@@ -14,7 +14,7 @@ export const getById = query({
   args: { id: v.id("clients") },
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx);
-    const record = await ctx.db.get(args.id);
+    const record = await ctx.db.get("clients", args.id);
     return canAccessRecord(user, record) ? record : null;
   },
 });
@@ -42,9 +42,9 @@ export const upsert = mutation({
     const scope = await resolveWriteScope(ctx, user);
     const { id, ...data } = args;
     if (id) {
-      const existingRecord = await ctx.db.get(id);
+      const existingRecord = await ctx.db.get("clients", id);
       if (!canAccessRecord(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
-      await ctx.db.patch(id, data);
+      await ctx.db.patch("clients", id, data);
       return id;
     }
     // Client codes are unique only inside the current tenant + branch. A different

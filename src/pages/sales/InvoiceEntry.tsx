@@ -7,9 +7,11 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Stat, fmt, num, round2, today } from "@/pages/shared/report.tsx";
+import { Stat } from "@/pages/shared/report.tsx";
+import { fmt, num, round2, today } from "@/pages/shared/report-utils.ts";
 import { tr, errorText } from "@/lib/i18n.ts";
 import BillSheet from "@/components/BillSheet.tsx";
+import ReturnPanel from "@/pages/sales/ReturnPanel.tsx";
 import { readPaper, savePaper, type Paper } from "@/lib/print-area.ts";
 
 type Line = { productId: string; qty: string; price: string; discount: string };
@@ -22,8 +24,12 @@ export default function InvoiceEntry() {
   const clients = useQuery(api.clients.list, {});
   const products = useQuery(api.products.listActive, {});
   const units = useQuery(api.products.listUnits, {});
-  const recent = useQuery(api.sales.salesRegisters, { startDate: daysAgo(30), endDate: today() });
+  const recent = useQuery(api.sales.salesRegisters, { startDate: daysAgo(30), endDate: today(), withLines: false });
   const createInvoice = useMutation(api.sales.createInvoice);
+  const voidInvoice = useMutation(api.sales.voidInvoice);
+  const business = useQuery(api.tenants.current);
+  const settings = useQuery(api.maintenance.getSettings, {});
+  const allowNegative = !!settings?.company?.allowNegativeStock; // same switch the server uses (Maintenance > Company)
 
   const [clientId, setClientId] = useState("");
   const [date, setDate] = useState(today());
@@ -41,6 +47,7 @@ export default function InvoiceEntry() {
   const [scan, setScan] = useState("");
   const [lines, setLines] = useState<Line[]>([emptyLine()]);
   const [busy, setBusy] = useState(false);
+  const [returning, setReturning] = useState(false); // partial return screen for the picked invoice
 
   const unitName = useMemo(() => new Map((units ?? []).map((u) => [String(u._id), u.name])), [units]);
   const productById = useMemo(() => new Map((products ?? []).map((p) => [String(p._id), p])), [products]);
@@ -77,6 +84,20 @@ export default function InvoiceEntry() {
     setScan("");
   };
 
+  const cancelSelected = async () => {
+    if (!selected) return;
+    const inv = recent?.invoices.find((x) => String(x._id) === selected);
+    const reason = window.prompt(tr("Batilisha invoice {0}? Stoo itarudi na malipo yaliyopokelewa yatarudishwa. Andika sababu (hiari) kisha bonyeza OK.", [inv?.invoiceNo ?? ""]));
+    if (reason === null) return;
+    setBusy(true);
+    try {
+      const r = await voidInvoice({ invoiceId: selected as Id<"invoices">, reason: reason.trim() || undefined });
+      toast.success(tr("Invoice {0} imebatilishwa. Yaliyorudishwa: {1}.", [r.invoiceNo, fmt(r.refunded)]));
+      setSelected(null); setReturning(false); setJustSaved(null); setPrintToken(0);
+    } catch (e) { toast.error(errorText(e, "Imeshindikana kubatilisha invoice.")); }
+    finally { setBusy(false); }
+  };
+
   const submit = async () => {
     if (!clientId) { toast.error(tr("Chagua mteja.")); return; }
     const used = lines.filter((l) => l.productId);
@@ -88,7 +109,7 @@ export default function InvoiceEntry() {
     }
     for (const [id, qty] of requested) {
       const p = productById.get(id);
-      if (p && qty > p.currentQty + 1e-8) { toast.error(tr("Stock haitoshi kwa {0}. Iliyopo: {1}, unayouza: {2}", [p.name, fmt(p.currentQty, 4), fmt(qty, 4)])); return; }
+      if (!allowNegative && p && qty > p.currentQty + 1e-8) { toast.error(tr("Stock haitoshi kwa {0}. Iliyopo: {1}, unayouza: {2}", [p.name, fmt(p.currentQty, 4), fmt(qty, 4)])); return; }
     }
     setBusy(true);
     try {
@@ -99,6 +120,7 @@ export default function InvoiceEntry() {
       });
       setSelected(null); setJustSaved(r.invoiceId);
       toast.success(tr("Invoice {0} imehifadhiwa — jumla {1}, deni {2}.", [r.invoiceNo, fmt(r.total), fmt(r.outstanding)]));
+      if (r.creditWarning) toast.warning(tr("Onyo: mteja huyu amevuka kikomo chake cha mkopo."));
       setLines([emptyLine()]); setInvoiceDiscount("0"); setNotes("");
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuhifadhi invoice.")); }
     finally { setBusy(false); }
@@ -194,6 +216,8 @@ export default function InvoiceEntry() {
               <div className="flex flex-wrap items-center gap-2">
                 <label className="flex items-center gap-1 text-xs">{tr("Printer")}<select className="h-9 rounded-md border bg-background px-2" value={paper} onChange={(e) => { const v = e.target.value as Paper; setPaper(v); savePaper(v); }}><option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option></select></label>
                 <Button disabled={!selected} onClick={() => { setJustSaved(null); setPrintToken((n) => n + 1); }}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha invoice iliyochaguliwa")}</Button>
+                {business?.isManager && <Button variant="outline" disabled={!selected || busy} onClick={() => { setJustSaved(null); setReturning(true); }}>{tr("Rejesha bidhaa (sehemu)")}</Button>}
+                {business?.isManager && <Button variant="destructive" disabled={!selected || busy} onClick={() => void cancelSelected()}>{tr("Batilisha invoice iliyochaguliwa")}</Button>}
               </div>
             </div>
             {!recent.invoices.length && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice bado.")}</p>}
@@ -201,14 +225,15 @@ export default function InvoiceEntry() {
               <thead><tr className="border-b text-left">{["", tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Jumla"), tr("Imelipwa"), tr("Deni"), tr("Hali")].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
               <tbody>{recent.invoices.slice(0, 20).map((x) => {
                 const id = String(x._id);
-                return <tr key={id} className={`cursor-pointer border-b ${selected === id ? "bg-primary/10" : "hover:bg-muted/50"}`} onClick={() => { setSelected(id); setJustSaved(null); setPrintToken(0); }}>
-                  <td className="p-2"><input type="radio" name="picked-invoice" aria-label={x.invoiceNo} className="h-4 w-4 cursor-pointer accent-primary" checked={selected === id} onChange={() => { setSelected(id); setJustSaved(null); setPrintToken(0); }} /></td>
+                return <tr key={id} className={`cursor-pointer border-b ${selected === id ? "bg-primary/10" : "hover:bg-muted/50"}`} onClick={() => { setSelected(id); setReturning(false); setJustSaved(null); setPrintToken(0); }}>
+                  <td className="p-2"><input type="radio" name="picked-invoice" aria-label={x.invoiceNo} className="h-4 w-4 cursor-pointer accent-primary" checked={selected === id} onChange={() => { setSelected(id); setReturning(false); setJustSaved(null); setPrintToken(0); }} /></td>
                   <td className="p-2 font-medium">{x.invoiceNo}</td><td className="p-2">{x.date}</td><td className="p-2">{x.clientName}</td>
                   <td className="p-2 tabular-nums">{fmt(x.total)}</td><td className="p-2 tabular-nums">{fmt(x.amountPaid)}</td><td className="p-2 tabular-nums">{fmt(x.outstanding)}</td><td className="p-2">{x.paymentStatus}</td>
                 </tr>;
               })}</tbody>
             </table></div>}
           </section>
+          {selected && returning && <ReturnPanel key={selected} invoiceId={selected as Id<"invoices">} onClose={() => setReturning(false)} />}
           {selected && !justSaved && <section className="rounded-xl border p-4">
             <BillSheet kind="invoice" key={selected} invoiceIds={[selected as Id<"invoices">]} printToken={printToken} paper={paper} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={changeWhatsapp} />
           </section>}

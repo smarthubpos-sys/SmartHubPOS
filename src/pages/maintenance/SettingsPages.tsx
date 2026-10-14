@@ -1,18 +1,23 @@
+import { useMaintenanceSettings, useRun } from "./helpers.ts";
 import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { Plus, Trash2 } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
-import { Card, Loading, NoAccess, PageShell, SelectField, TextField, Toggle, useMaintenanceSettings, useRun } from "./_shared";
+import { Card, Loading, NoAccess, PageShell, SelectField, TextField, Toggle } from "./_shared";
 import { tr, errorText, setLang } from "@/lib/i18n.ts";
 import { authorizedDevices, deviceSupport, listInstalledPrinters, pairDevice, testPrinter, type DeviceInfo, type DeviceKind } from "@/lib/printers.ts";
 
 type Settings = NonNullable<ReturnType<typeof useMaintenanceSettings>>;
 const str = (v: unknown, d = "") => (v === undefined || v === null ? d : String(v));
+const settingObject = (value: unknown): Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 
-function useForm<T extends Record<string, any>>(initial: T) {
+function useForm<T extends object>(initial: T) {
   const [f, setF] = useState<T>(initial);
-  return { f, set: <K extends keyof T>(k: K, v: T[K]) => setF((p) => ({ ...p, [k]: v })) };
+  return { f, set: <K extends keyof T>(k: K, v: T[K]) => setF((p) => ({ ...p, [k]: v } as T)) };
 }
 
 function OfficeWarning({ s }: { s: Settings }) {
@@ -24,7 +29,7 @@ function OfficeWarning({ s }: { s: Settings }) {
 function CompanyForm({ s }: { s: Settings }) {
   const save = useMutation(api.maintenance.saveCompany);
   const { busy, run } = useRun();
-  const c: any = s.company ?? {};
+  const c = settingObject(s.company);
   const { f, set } = useForm({ companyName: str(c.companyName), address: str(c.address), phone: str(c.phone), email: str(c.email), taxId: str(c.taxId), website: str(c.website), logoUrl: str(c.logoUrl) });
   const allowed = s.canEdit["maintenance.company"];
   const onLogo = (file?: File) => {
@@ -72,7 +77,7 @@ export function CompanyPage() {
 function CurrencyForm({ s }: { s: Settings }) {
   const save = useMutation(api.maintenance.saveCompany);
   const { busy, run } = useRun();
-  const c: any = s.company ?? {};
+  const c = settingObject(s.company);
   const { f, set } = useForm({ currency: str(c.currency, "TZS"), currencySymbol: str(c.currencySymbol, "TSh"), decimalPlaces: str(c.decimalPlaces, "2") });
   const allowed = s.canEdit["maintenance.company"];
   const preview = `${f.currencySymbol} ${(1234567.891).toLocaleString("en-US", { minimumFractionDigits: Number(f.decimalPlaces) || 0, maximumFractionDigits: Number(f.decimalPlaces) || 0 })}`;
@@ -105,10 +110,10 @@ function TaxForm({ s }: { s: Settings }) {
   const saveCompany = useMutation(api.maintenance.saveCompany);
   const saveSetting = useMutation(api.maintenance.saveSetting);
   const { busy, run } = useRun();
-  const c: any = s.company ?? {};
-  const t: any = s.app.taxes ?? {};
+  const c = settingObject(s.company);
+  const t = settingObject(s.app.taxes);
   const { f, set } = useForm({ taxName: str(c.taxName, tr("VAT")), taxRate: str(c.taxRate, "18"), traIntegrationEnabled: !!c.traIntegrationEnabled, priceIncludesTax: !!t.priceIncludesTax });
-  const [rates, setRates] = useState<{ name: string; rate: string }[]>((t.rates ?? []).map((r: any) => ({ name: r.name, rate: String(r.rate) })));
+  const [rates, setRates] = useState<{ name: string; rate: string }[]>((Array.isArray(t.rates) ? t.rates : []).flatMap((rate): { name: string; rate: string }[] => { const r = settingObject(rate); return typeof r.name === "string" ? [{ name: r.name, rate: String(r.rate ?? 0) }] : []; }));
   const allowed = s.canEdit["maintenance.tax"] && s.canEdit["maintenance.company"];
   return (
     <>
@@ -153,10 +158,10 @@ function SystemForm({ s }: { s: Settings }) {
   const saveCompany = useMutation(api.maintenance.saveCompany);
   const saveSetting = useMutation(api.maintenance.saveSetting);
   const { busy, run } = useRun();
-  const c: any = s.company ?? {};
-  const a: any = s.app.system ?? {};
+  const c = settingObject(s.company);
+  const a = settingObject(s.app.system);
   const { f, set } = useForm({
-    stockControlEnabled: c.stockControlEnabled ?? true, allowNegativeStock: !!c.allowNegativeStock,
+    stockControlEnabled: typeof c.stockControlEnabled === "boolean" ? c.stockControlEnabled : true, allowNegativeStock: c.allowNegativeStock === true,
     inventoryCostingMethod: str(c.inventoryCostingMethod, "weighted_average"),
     dateFormat: str(a.dateFormat, "dd/MM/yyyy"), receiptFooter: str(a.receiptFooter, tr("Asante kwa kununua!")), defaultPaymentMethod: str(a.defaultPaymentMethod, "cash"),
     reportEmailRecipients: str(a.reportEmailRecipients, ""),
@@ -195,7 +200,7 @@ export function SystemSetupPage() {
 function HardwareForm({ s }: { s: Settings }) {
   const saveSetting = useMutation(api.maintenance.saveSetting);
   const { busy, run } = useRun();
-  const h: any = s.app.hardware ?? {};
+  const h = settingObject(s.app.hardware);
   const { f, set } = useForm({
     printerConnection: str(h.printerConnection, "wired"), printerSource: str(h.printerSource, "installed"),
     receiptPrinter: str(h.receiptPrinter), receiptDevice: (h.receiptDevice ?? null) as DeviceInfo | null,
@@ -308,12 +313,12 @@ function NumberingForm({ s }: { s: Settings }) {
   const saveSetting = useMutation(api.maintenance.saveSetting);
   const saveCompany = useMutation(api.maintenance.saveCompany);
   const { busy, run } = useRun();
-  const saved: any = s.app.numbering ?? {};
-  const c: any = s.company ?? {};
+  const saved = settingObject(s.app.numbering);
+  const c = settingObject(s.company);
   const [rows, setRows] = useState<Record<string, { prefix: string; padding: string; next: string }>>(() =>
     Object.fromEntries(DOCS.map(([k, , d]) => [k, {
-      prefix: saved[k]?.prefix ?? (k === "invoice" ? c.invoicePrefix : k === "purchase" ? c.purchasePrefix : undefined) ?? d,
-      padding: String(saved[k]?.padding ?? 6), next: String(saved[k]?.next ?? 1),
+      prefix: str(settingObject(saved[k]).prefix, str(k === "invoice" ? c.invoicePrefix : k === "purchase" ? c.purchasePrefix : undefined, d)),
+      padding: String(settingObject(saved[k]).padding ?? 6), next: String(settingObject(saved[k]).next ?? 1),
     }])));
   const ok = s.canEdit["maintenance.numbering"];
   const upd = (k: string, p: Partial<{ prefix: string; padding: string; next: string }>) => setRows((r) => ({ ...r, [k]: { ...r[k], ...p } }));
@@ -366,7 +371,7 @@ export function NumberingPage() {
 function LanguageForm({ s }: { s: Settings }) {
   const saveSetting = useMutation(api.maintenance.saveSetting);
   const { busy, run } = useRun();
-  const [choice, setChoice] = useState<string>((s.app.language as any)?.language === "en" ? "en" : "sw");
+  const [choice, setChoice] = useState<string>(settingObject(s.app.language).language === "en" ? "en" : "sw");
   const ok = s.canEdit["maintenance.language"];
   return (
     <>

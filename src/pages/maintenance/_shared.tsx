@@ -1,12 +1,9 @@
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "convex/react";
 import { ArrowLeft } from "lucide-react";
-import { toast } from "sonner";
-import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { tr, trMessage } from "@/lib/i18n.ts";
+import { tr } from "@/lib/i18n.ts";
 
 export function PageShell({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   const navigate = useNavigate();
@@ -70,29 +67,6 @@ export function Toggle({ label, checked, onChange, hint, disabled }: { label: st
   );
 }
 
-/** Runs an async action, showing toasts, and tracks a busy flag. */
-export function useRun() {
-  const [busy, setBusy] = useState(false);
-  const run = async (fn: () => Promise<unknown>, ok = tr("Imehifadhiwa.")) => {
-    setBusy(true);
-    try { await fn(); toast.success(ok); return true; }
-    catch (e) { toast.error(cleanError(e)); return false; }
-    finally { setBusy(false); }
-  };
-  return { busy, run };
-}
-
-/** Convex wraps server errors in long text; show only the useful line. */
-export function cleanError(e: unknown) {
-  const msg = e instanceof Error ? e.message : String(e);
-  const m = msg.match(/Uncaught Error: ([^\n]+)/) ?? msg.match(/Error: ([^\n]+)/);
-  return trMessage((m?.[1] ?? msg).replace(/ at (async )?handler.*$/, "").trim());
-}
-
-export function useMaintenanceSettings() {
-  const data = useQuery(api.maintenance.getSettings, {});
-  return data;
-}
 
 export function NoAccess({ permission }: { permission: string }) {
   return <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">{tr("Huna ruhusa ya kubadilisha ukurasa huu (")}<code>{permission}</code>{tr("). Unaweza kuona tu.")}</p>;

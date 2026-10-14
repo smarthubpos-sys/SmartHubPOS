@@ -52,8 +52,8 @@ export default function PayrollPage() {
           />
         }
       />
-      <Route path="sign-in" element={<AttendancePage kind="in" />} />
-      <Route path="sign-out" element={<AttendancePage kind="out" />} />
+      <Route path="sign-in" element={<AttendancePage key="attendance-in" kind="in" />} />
+      <Route path="sign-out" element={<AttendancePage key="attendance-out" kind="out" />} />
       <Route path="process" element={<ProcessPayroll />} />
       <Route path="employees" element={<div className="mx-auto max-w-6xl space-y-4"><PageHeader title={tr("Add / Modify Employee")} subtitle={tr("Manage employee records")} /><EmployeesPanel /></div>} />
       <Route path="placement" element={<Placement />} />
@@ -61,7 +61,7 @@ export default function PayrollPage() {
       <Route path="reports/summary" element={<PayrollReports mode="summary" />} />
       <Route path="reports/payments" element={<PayrollReports mode="payments" />} />
       <Route path="reports/employee-statement" element={<PayrollReports mode="employee" />} />
-      <Route path="*" element={<AttendancePage kind="in" />} />
+      <Route path="*" element={<AttendancePage key="attendance-default" kind="in" />} />
     </Routes>
   );
 }

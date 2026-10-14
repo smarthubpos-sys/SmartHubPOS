@@ -5,7 +5,8 @@ import { ArrowLeft, BarChart2 } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
 import { Button } from "@/components/ui/button.tsx";
 import { FormField, PageHeader, Panel, SelectBox } from "@/components/page-kit.tsx";
-import { ReportTable, type Row } from "@/pages/shared/report.tsx";
+import { ReportTable } from "@/pages/shared/report.tsx";
+import type { Row } from "@/pages/shared/report-utils.ts";
 import { tr, trValue } from "@/lib/i18n.ts";
 
 export default function PayrollReports({ mode }: { mode: "summary" | "payments" | "employee" }) {
@@ -16,9 +17,9 @@ export default function PayrollReports({ mode }: { mode: "summary" | "payments" 
   const all = records ?? [];
 
   const K = { period: tr("Kipindi"), employee: tr("Mfanyakazi"), count: tr("Wafanyakazi"), gross: tr("Gross"), ded: tr("Makato"), net: tr("Net"), status: tr("Hali"), date: tr("Tarehe") };
-  let rows: Row[] = [];
-  let title = "";
-  let sum: string[] = [];
+  let rows: Row[];
+  let title: string;
+  let sum: string[];
   if (mode === "summary") {
     title = tr("Payroll Report");
     const by = new Map<string, Row>();

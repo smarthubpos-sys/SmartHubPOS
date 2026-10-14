@@ -1,3 +1,4 @@
+import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 
 /**
@@ -33,12 +34,12 @@ export function planStatus(tenant: { plan?: string; planEndsAt?: string } | null
 }
 
 /** Sets a business to a 3-day demo, or records a payment (extends from the current end when still running). */
-export async function applyPlan(ctx: any, tenantId: Id<"tenants">, opts: { plan: "demo" | "paid"; months?: number; amount?: number; note?: string }, createdBy?: Id<"users">) {
-  const tenant = await ctx.db.get(tenantId);
+export async function applyPlan(ctx: MutationCtx, tenantId: Id<"tenants">, opts: { plan: "demo" | "paid"; months?: number; amount?: number; note?: string }, createdBy?: Id<"users">) {
+  const tenant = await ctx.db.get("tenants", tenantId);
   if (!tenant) throw new Error("Biashara haipo");
   const today = tzToday();
   if (opts.plan === "demo") {
-    await ctx.db.patch(tenantId, { plan: "demo", planStartsAt: today, planEndsAt: planEnd(today, "demo"), planMonths: undefined, planAmount: undefined });
+    await ctx.db.patch("tenants", tenantId, { plan: "demo", planStartsAt: today, planEndsAt: planEnd(today, "demo"), planMonths: undefined, planAmount: undefined });
     return { plan: "demo" as const, startsAt: today, endsAt: planEnd(today, "demo") };
   }
   const { months, amount } = opts;
@@ -49,6 +50,6 @@ export async function applyPlan(ctx: any, tenantId: Id<"tenants">, opts: { plan:
   const startsAt = extending ? addDays(status.endsAt!, 1) : today;
   const endsAt = planEnd(startsAt, "paid", months);
   await ctx.db.insert("subscriptionPayments", { tenantId, amount, months, startsAt, endsAt, note: opts.note?.trim() || undefined, createdBy, createdAt: new Date().toISOString() });
-  await ctx.db.patch(tenantId, { plan: "paid", planStartsAt: extending ? (tenant.planStartsAt ?? startsAt) : startsAt, planEndsAt: endsAt, planMonths: months, planAmount: amount });
+  await ctx.db.patch("tenants", tenantId, { plan: "paid", planStartsAt: extending ? (tenant.planStartsAt ?? startsAt) : startsAt, planEndsAt: endsAt, planMonths: months, planAmount: amount });
   return { plan: "paid" as const, startsAt, endsAt };
 }

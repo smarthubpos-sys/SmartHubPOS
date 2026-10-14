@@ -36,7 +36,7 @@ export const upsert = mutation({
 
     const existing = (await scopedRows(ctx, user, "companySettings"))[0];
     if (existing) {
-      await ctx.db.patch(existing._id, args);
+      await ctx.db.patch("companySettings", existing._id, args);
       return existing._id;
     }
     return await ctx.db.insert("companySettings", { ...args, ...scope });

@@ -26,7 +26,7 @@ async function ledger(t: any) {
   return await t.run(async (ctx: any) => {
     const out: Record<string, { code: string; net: number }> = {};
     for (const l of await ctx.db.query("journalLines").collect()) {
-      const a = await ctx.db.get(l.accountId);
+      const a = await ctx.db.get("accounts", l.accountId);
       out[a.name] = { code: a.code, net: (out[a.name]?.net ?? 0) + l.debit - l.credit };
     }
     return out;
@@ -110,7 +110,7 @@ describe("every payment goes to the account of its own payment method", () => {
     await t.run(async (ctx) => {
       const cash = (await ctx.db.query("accounts").collect()).find((a) => a.code === "1000")!;
       const line = (await ctx.db.query("journalLines").collect()).find((x) => x.debit === 6000)!;
-      await ctx.db.patch(line._id, { accountId: cash._id });
+      await ctx.db.patch("journalLines", line._id, { accountId: cash._id });
     });
     expect((await ledger(t))["Cash and equivalents"].net).toBe(6000);
     expect(await asMgr.mutation(api.paymentMethods.repairOldPayments, {})).toEqual({ moved: 1 });

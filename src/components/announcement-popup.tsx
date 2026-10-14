@@ -1,16 +1,14 @@
 import { useState } from "react";
-import { useMutation } from "convex/react";
 import { Megaphone } from "lucide-react";
-import { api } from "@/convex/_generated/api.js";
 import { Button } from "@/components/ui/button.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog.tsx";
-import { useNotifications } from "@/hooks/use-notifications.ts";
+import { useMarkRead, useNotifications } from "@/hooks/use-notifications.ts";
 import { tr } from "@/lib/i18n.ts";
 
 /** Shows the newest unread message from the Super Admin once, as a popup, then marks it read. */
 export default function AnnouncementPopup() {
   const { items } = useNotifications();
-  const markRead = useMutation(api.notifications.markRead);
+  const markRead = useMarkRead();
   const [closed, setClosed] = useState<string[]>([]);
   const next = items.find((i) => i.code === "announcement" && !i.read && !closed.includes(i.key));
   if (!next) return null;

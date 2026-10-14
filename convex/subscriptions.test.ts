@@ -21,7 +21,7 @@ async function setup() {
   const asB = t.withIdentity({ subject: ids.mgrB, tokenIdentifier: "x|3" });
   return { t, asAdmin, asA, asB, ...ids };
 }
-const setEnd = (t: any, id: any, plan: string, endsAt: string) => t.run(async (ctx: any) => { await ctx.db.patch(id, { plan, planEndsAt: endsAt }); });
+const setEnd = (t: any, id: any, plan: string, endsAt: string) => t.run(async (ctx: any) => { await ctx.db.patch("tenants", id, { plan, planEndsAt: endsAt }); });
 
 describe("date helpers", () => {
   it("adds months without overflowing short months", () => {
@@ -36,8 +36,8 @@ describe("business subscriptions", () => {
     const { asAdmin, t } = await setup();
     const demo = await asAdmin.mutation(api.tenants.create, { name: "Demo Shop", code: "D1" });
     const paid = await asAdmin.mutation(api.tenants.create, { name: "Paid Shop", code: "P1", plan: "paid", months: 3, amount: 150000 });
-    const d = await t.run((ctx) => ctx.db.get(demo.tenantId));
-    const p = await t.run((ctx) => ctx.db.get(paid.tenantId));
+    const d = await t.run((ctx) => ctx.db.get("tenants", demo.tenantId));
+    const p = await t.run((ctx) => ctx.db.get("tenants", paid.tenantId));
     expect(d?.plan).toBe("demo");
     expect(d?.planEndsAt).toBe(addDays(tzToday(), 2));
     expect(p?.plan).toBe("paid");

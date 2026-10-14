@@ -403,6 +403,7 @@ export default defineSchema({
     lineTotalStr: v.string(),
     costAtSale: v.number(),
     discount: v.number(),
+    returnedQty: v.optional(v.number()), // quantity already taken back by partial sales returns (qty stays the original sold quantity)
   }).index("by_invoice", ["invoiceId"]),
 
   // ── CUSTOMER PAYMENTS ────────────────────────────────────────
@@ -418,6 +419,7 @@ export default defineSchema({
     receiptNo: v.optional(v.string()), // same value on every split of one receipt
     reference: v.optional(v.string()),
     notes: v.optional(v.string()),
+    voided: v.optional(v.boolean()), // true when the invoice was cancelled and the money refunded
     createdBy: v.id("users"),
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_client", ["clientId"])
@@ -427,15 +429,33 @@ export default defineSchema({
 
   // ── SALES RETURNS ────────────────────────────────────────────
   salesReturns: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    branchId: v.optional(v.id("branches")),
     returnDate: v.string(),
     clientId: v.id("clients"),
     invoiceId: v.id("invoices"),
     returnRef: v.string(),
-    total: v.number(),
+    total: v.number(), // value returned, tax included
+    subtotal: v.optional(v.number()), // value returned before tax
+    taxAmount: v.optional(v.number()),
+    creditedToDebt: v.optional(v.number()), // part that reduced what the customer still owed
+    refunded: v.optional(v.number()), // part paid back to the customer
+    refundMethod: v.optional(v.string()),
     reason: v.optional(v.string()),
     status: v.string(),
     createdBy: v.id("users"),
-  }).index("by_client", ["clientId"]),
+  }).index("by_client", ["clientId"])
+    .index("by_scope", ["tenantId", "branchId"])
+    .index("by_invoice", ["invoiceId"]),
+
+  salesReturnLines: defineTable({
+    returnId: v.id("salesReturns"),
+    invoiceLineId: v.id("invoiceLines"),
+    productId: v.id("products"),
+    qty: v.number(),
+    value: v.number(), // net value of the returned quantity (line discount and invoice discount share removed)
+    cost: v.number(), // cost of the returned quantity
+  }).index("by_return", ["returnId"]),
 
   // ── STOCK MOVEMENTS ──────────────────────────────────────────
   stockMovements: defineTable({
@@ -456,6 +476,7 @@ export default defineSchema({
     createdBy: v.id("users"),
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_product", ["productId"])
+    .index("by_tenant_date", ["tenantId", "movementDate"])
     .index("by_date", ["movementDate"])
     .index("by_product_date", ["productId", "movementDate"]),
 
@@ -586,6 +607,7 @@ export default defineSchema({
     reversedBy: v.optional(v.id("journalEntries")),
   }) .index("by_tenant_ref", ["tenantId", "reference"]) .index("by_scope", ["tenantId", "branchId"])
     .index("by_date", ["entryDate"])
+    .index("by_tenant_date", ["tenantId", "entryDate"])
     .index("by_reference", ["reference"])
     .index("by_status", ["status"]),
 
@@ -618,6 +640,24 @@ export default defineSchema({
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_date", ["expenseDate"])
     .index("by_status", ["status"]),
+
+  // ── SAVED PERIOD REPORTS (day / month / year reports generated from Accounts > Period Report) ──
+  reportRuns: defineTable({
+    tenantId: v.id("tenants"),
+    period: v.string(), // day | month | year
+    startDate: v.string(),
+    endDate: v.string(),
+    scope: v.string(), // "all" or the id of one department
+    scopeLabel: v.string(),
+    title: v.string(),
+    netProfit: v.number(),
+    netSales: v.number(),
+    totalExpenses: v.number(),
+    data: v.string(), // JSON snapshot (sections) so the report can be reopened exactly as it was generated
+    createdBy: v.id("users"),
+    createdByName: v.string(),
+    createdAt: v.string(),
+  }).index("by_tenant", ["tenantId"]),
 
   // ── AUDIT LOG ────────────────────────────────────────────────
   auditLogs: defineTable({

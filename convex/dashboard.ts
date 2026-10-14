@@ -1,4 +1,5 @@
 import { query } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { requireActiveUser, isOwnDataOnly, getCompanySettings, filterScoped } from "./access";
 import { daysBetween } from "./plans";
@@ -11,9 +12,9 @@ import { daysBetween } from "./plans";
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const sum = (rows: any[], k: string) => round2(rows.reduce((s, r) => s + (r[k] ?? 0), 0));
 
-async function scopedStats(ctx: any, user: any) {
-  const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q: any) => q.eq("tenantId", user.tenantId)).collect();
-  return user.branchId ? rows.filter((r: any) => r.branchId === user.branchId) : rows;
+async function scopedStats(ctx: QueryCtx, user: any) {
+  const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect();
+  return user.branchId ? rows.filter((r) => r.branchId === user.branchId) : rows;
 }
 
 function forbidOwnDataOnly(user: any) {
@@ -30,8 +31,8 @@ export const getMetrics = query({
     if (!tenantId) return empty;
 
     const totals = await scopedStats(ctx, user);
-    const days = (await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q: any) => q.eq("tenantId", tenantId).eq("date", args.date)).collect())
-      .filter((d: any) => !user.branchId || d.branchId === user.branchId);
+    const days = (await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).eq("date", args.date)).collect())
+      .filter((d) => !user.branchId || d.branchId === user.branchId);
 
     const recentInvoices = user.branchId
       ? await ctx.db.query("invoices").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(5)
@@ -76,8 +77,8 @@ export const getCharts = query({
     if (!tenantId) return noData;
 
     const totals = await scopedStats(ctx, user);
-    const rows = (await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q: any) => q.eq("tenantId", tenantId).gte("date", a.from).lte("date", a.today)).collect())
-      .filter((d: any) => !user.branchId || d.branchId === user.branchId);
+    const rows = (await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", a.from).lte("date", a.today)).collect())
+      .filter((d) => !user.branchId || d.branchId === user.branchId);
 
     const daily = new Map<string, { date: string; sales: number; purchases: number; collected: number; invoices: number }>();
     const span = Math.min(Math.max(daysBetween(a.from, a.today), 0), 366);
@@ -125,7 +126,7 @@ export const getMyDashboard = query({
 
     const mine = filterScoped(user, await ctx.db.query("invoices")
       .withIndex("by_tenant_user_date", (q) => q.eq("tenantId", tenantId).eq("createdBy", user._id).gte("invoiceDate", a.from).lte("invoiceDate", a.today))
-      .order("desc").take(1500)).filter((i: any) => i.status === "posted");
+      .order("desc").take(1500)).filter((i) => i.status === "posted");
 
     const daily = new Map<string, { date: string; sales: number; collected: number }>();
     const span = Math.min(Math.max(daysBetween(a.from, a.today), 0), 90);
@@ -146,7 +147,7 @@ export const getMyDashboard = query({
     const recent = [];
     for (const i of [...mine].sort((x, y) => y.invoiceDate.localeCompare(x.invoiceDate) || y._creationTime - x._creationTime).slice(0, 8)) {
       const key = String(i.clientId);
-      if (!clientName.has(key)) clientName.set(key, ((await ctx.db.get(i.clientId)) as { name?: string } | null)?.name ?? "—");
+      if (!clientName.has(key)) clientName.set(key, ((await ctx.db.get("clients", i.clientId)) as { name?: string } | null)?.name ?? "—");
       recent.push({ _id: i._id, invoiceNo: i.invoiceNo, invoiceDate: i.invoiceDate, total: i.total, outstanding: i.outstanding, paymentStatus: i.paymentStatus, clientName: clientName.get(key)! });
     }
     const r2 = (o: typeof today) => ({ sales: round2(o.sales), collected: round2(o.collected), outstanding: round2(o.outstanding), invoices: o.invoices });

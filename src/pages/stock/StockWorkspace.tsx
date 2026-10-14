@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -6,8 +6,10 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DateRange, ReportTable, Stat, fmt, monthStart, num, round2, today, type Row } from "@/pages/shared/report.tsx";
+import { DateRange, ReportTable, Stat } from "@/pages/shared/report.tsx";
+import { fmt, monthStart, num, round2, today, type Row } from "@/pages/shared/report-utils.ts";
 import { tr, errorText, trValue } from "@/lib/i18n.ts";
+import { printElement } from "@/lib/print-area.ts";
 
 const selectClass = "h-10 rounded-md border bg-background px-3";
 const loading = <div className="p-6 text-sm text-muted-foreground">{tr("Inapakia taarifa za stock…")}</div>;
@@ -22,7 +24,7 @@ async function save(fn: () => Promise<unknown>, okMessage = tr("Taarifa zimehifa
 const emptyProduct = { itemCode: "", partNumber: "", name: "", description: "", barcode: "", groupId: "", unitId: "", sellingPrice: "0", openingQty: "0", openingCost: "0", reorderLevel: "", minStockLevel: "", trackSerialNumbers: "false", trackBatchNumbers: "false", trackExpiry: "false", isActive: "true" };
 
 function ProductsScreen() {
-  const data = useQuery(api.inventory.stockRegisters, {});
+  const data = useQuery(api.inventory.stockRegisters, { light: true });
   const upsert = useMutation(api.products.upsert);
   const [mode, setMode] = useState<"list" | "edit">("list");
   const [editingId, setEditingId] = useState("");
@@ -166,7 +168,7 @@ function ProductsScreen() {
 /* ───────────────────────── Quantity Adjustment ───────────────────────── */
 
 function AdjustmentScreen() {
-  const data = useQuery(api.inventory.stockRegisters, { startDate: monthStart(), endDate: today() });
+  const data = useQuery(api.inventory.stockRegisters, { startDate: monthStart(), endDate: today(), light: true });
   const adjust = useMutation(api.inventory.adjust);
   const [productId, setProductId] = useState("");
   const [counted, setCounted] = useState("");
@@ -211,7 +213,7 @@ function AdjustmentScreen() {
 /* ───────────────────────── Group & Unit maintenance ───────────────────────── */
 
 function GroupsScreen() {
-  const data = useQuery(api.inventory.stockRegisters, {});
+  const data = useQuery(api.inventory.stockRegisters, { light: true });
   const upsertGroup = useMutation(api.products.upsertGroup);
   const upsertUnit = useMutation(api.products.upsertUnit);
   const [kind, setKind] = useState<"group" | "unit">("group");
@@ -264,7 +266,8 @@ function GroupsScreen() {
 /* ───────────────────────── Quantity-based views and reports ───────────────────────── */
 
 function QuantityScreen({ kind }: { kind: "item-quantity" | "quantity" | "prices" | "reorder" | "out-of-stock" }) {
-  const data = useQuery(api.inventory.stockRegisters, {});
+  // Only the quantity screens compare stock with the whole movement history; the others stay light.
+  const data = useQuery(api.inventory.stockRegisters, { light: !(kind === "item-quantity" || kind === "quantity") });
   const reconcile = useMutation(api.inventory.reconcileMovements);
   const [group, setGroup] = useState("");
   if (!data) return loading;
@@ -312,7 +315,7 @@ function QuantityScreen({ kind }: { kind: "item-quantity" | "quantity" | "prices
 
 function TransactionsScreen() {
   const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end });
+  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Transaction Quantity")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
@@ -328,7 +331,7 @@ function TransactionsScreen() {
 
 function HistoryScreen() {
   const [start, setStart] = useState("2000-01-01"); const [end, setEnd] = useState(today()); const [productId, setProductId] = useState("");
-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end });
+  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Item History")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
@@ -351,7 +354,7 @@ function HistoryScreen() {
 
 function EarningsScreen() {
   const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end });
+  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Stock Earning Report")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
@@ -363,7 +366,7 @@ function EarningsScreen() {
 
 function StockTakeScreen() {
   const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end });
+  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Stock Taking Report")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
@@ -374,7 +377,7 @@ function StockTakeScreen() {
 }
 
 function TrackingScreen({ kind }: { kind: "expiry" | "serials" }) {
-  const data = useQuery(api.inventory.stockRegisters, {});
+  const data = useQuery(api.inventory.stockRegisters, { light: true });
   if (!data) return loading;
   const list = data.products.filter((p) => p.isActive && (kind === "expiry" ? p.trackExpiry : p.trackSerialNumbers));
   return (
@@ -388,9 +391,10 @@ function TrackingScreen({ kind }: { kind: "expiry" | "serials" }) {
 }
 
 function BarcodesScreen() {
-  const data = useQuery(api.inventory.stockRegisters, {});
+  const data = useQuery(api.inventory.stockRegisters, { light: true });
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [copies, setCopies] = useState("1");
+  const labelsRef = useRef<HTMLDivElement>(null);
   if (!data) return loading;
   const chosen = data.products.filter((p) => picked[p._id]);
   const labels = chosen.flatMap((p) => Array.from({ length: Math.max(1, Math.floor(num(copies))) }, (_, i) => ({ p, i })));
@@ -402,7 +406,7 @@ function BarcodesScreen() {
           <label className="grid gap-1 text-xs">{tr("Nakala kwa kila bidhaa")}<Input className="w-28" type="number" min="1" value={copies} onChange={(e) => setCopies(e.target.value)} /></label>
           <Button variant="outline" onClick={() => setPicked(Object.fromEntries(data.products.filter((p) => p.isActive).map((p) => [p._id, true])))}>{tr("Chagua zote")}</Button>
           <Button variant="outline" onClick={() => setPicked({})}>{tr("Ondoa zote")}</Button>
-          <Button disabled={!chosen.length} onClick={() => window.print()}>{tr("Print labels (")}{labels.length})</Button>
+          <Button disabled={!chosen.length} onClick={() => printElement(labelsRef.current, "A4")}>{tr("Print labels (")}{labels.length})</Button>
         </div>
         <div className="grid max-h-72 gap-1 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
           {data.products.filter((p) => p.isActive).map((p) => (
@@ -411,7 +415,7 @@ function BarcodesScreen() {
         </div>
         <p className="text-xs text-muted-foreground">{tr("Label inaonyesha jina, bei na namba ya barcode (au item code kama barcode haijawekwa). Kuchapa mistari ya barcode (bars) kunahitaji barcode font au maktaba ya barcode kwenye printer yako.")}</p>
       </section>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 print:grid-cols-3">
+      <div ref={labelsRef} className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 print:grid-cols-3">
         {labels.map(({ p, i }) => (
           <div key={`${p._id}-${i}`} className="break-inside-avoid rounded-md border p-3 text-center">
             <div className="text-sm font-semibold leading-tight">{p.name}</div>

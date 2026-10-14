@@ -4,7 +4,7 @@ import { getCurrentProfile, isSuperAdmin, normalizeRole } from "./access";
 const LOGIN_DOMAIN = "@login.smarthub.invalid";
 
 /** Profiles = Convex Auth user documents (no tokenIdentifier). Legacy per-session rows are ignored. */
-function isProfile(row: any) {
+function isProfile(row: Record<string, unknown>) {
   return row.tokenIdentifier === undefined && (row.username !== undefined || row.email !== undefined);
 }
 
@@ -65,7 +65,7 @@ export const updateCurrentUser = mutation({
     // lastLogin is refreshed at most once an hour: writing it on every page load made concurrent logins collide.
     const lastSeen = current.lastLogin ? Date.parse(current.lastLogin) : 0;
     if (!Number.isFinite(lastSeen) || Date.now() - lastSeen > 3_600_000) patch.lastLogin = new Date().toISOString();
-    if (Object.keys(patch).length > 0) await ctx.db.patch(current._id, patch);
+    if (Object.keys(patch).length > 0) await ctx.db.patch("users", current._id, patch);
     return current._id;
   },
 });

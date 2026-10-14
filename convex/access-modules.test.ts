@@ -114,7 +114,7 @@ describe("super admin alerts", () => {
     const adminId = await t.run((ctx) => ctx.db.insert("users", { name: "Boss", username: "boss2", role: "super_admin", isActive: true }));
     const asAdmin = t.withIdentity({ subject: adminId, tokenIdentifier: "x|10" });
     await t.run(async (ctx) => {
-      await ctx.db.patch(tenantId, { plan: "paid", planEndsAt: "2020-01-01", isActive: false });
+      await ctx.db.patch("tenants", tenantId, { plan: "paid", planEndsAt: "2020-01-01", isActive: false });
       await ctx.db.insert("subscriptionPayments", { tenantId, amount: 50000, months: 1, startsAt: "2019-12-01", endsAt: "2020-01-01", createdAt: new Date().toISOString() });
       await ctx.db.insert("auditLogs", { tenantId, userName: "x", action: "sale", module: "sales", timestamp: new Date().toISOString(), result: "failure" });
     });

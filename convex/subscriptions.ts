@@ -71,7 +71,7 @@ export const history = query({
   args: { tenantId: v.id("tenants") },
   handler: async (ctx, a) => {
     await requireSuperAdminUser(ctx);
-    const tenant = await ctx.db.get(a.tenantId);
+    const tenant = await ctx.db.get("tenants", a.tenantId);
     const rows = await ctx.db.query("subscriptionPayments").withIndex("by_tenant", (q) => q.eq("tenantId", a.tenantId)).collect();
     return { status: planStatus(tenant, tzToday()), payments: rows.sort((x, y) => y.createdAt.localeCompare(x.createdAt)) };
   },

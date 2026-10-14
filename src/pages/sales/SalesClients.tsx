@@ -6,14 +6,14 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { fmt, num } from "@/pages/shared/report.tsx";
+import { fmt, num } from "@/pages/shared/report-utils.ts";
 import { tr, errorText } from "@/lib/i18n.ts";
 
 const empty = { code: "", name: "", phone: "", email: "", address: "", taxId: "", contactPerson: "", openingBalance: "0", creditLimit: "", creditPolicy: "allow", paymentTerms: "", notes: "", isActive: "true" };
 
 export default function SalesClients() {
   const navigate = useNavigate();
-  const data = useQuery(api.sales.salesRegisters, {});
+  const data = useQuery(api.sales.salesRegisters, { withLines: false });
   const upsert = useMutation(api.clients.upsert);
   const [mode, setMode] = useState<"list" | "edit">("list");
   const [id, setId] = useState("");

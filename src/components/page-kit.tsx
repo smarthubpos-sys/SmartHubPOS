@@ -1,8 +1,6 @@
-import { useState, type ReactNode, type SelectHTMLAttributes } from "react";
-import { toast } from "sonner";
+import { type ReactNode, type SelectHTMLAttributes } from "react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
-import { errorText, tr } from "@/lib/i18n.ts";
 
 export function PageHeader({ title, subtitle, actions, icon: Icon }: { title: string; subtitle?: string; actions?: ReactNode; icon?: LucideIcon }) {
   return (
@@ -88,14 +86,4 @@ export function Table({ head, children }: { head: string[]; children: ReactNode 
   );
 }
 
-/** Runs an async action with a busy flag and success/error toasts in the system language. */
-export function useSubmit() {
-  const [busy, setBusy] = useState(false);
-  async function run<T>(fn: () => Promise<T>, okMessage?: string): Promise<T | undefined> {
-    setBusy(true);
-    try { const r = await fn(); toast.success(okMessage ?? tr("Taarifa imehifadhiwa kikamilifu.")); return r; }
-    catch (e) { toast.error(errorText(e, "Imeshindikana kuhifadhi taarifa.")); return undefined; }
-    finally { setBusy(false); }
-  }
-  return { busy, run };
-}
+
