@@ -2,7 +2,7 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { activeDepartments, canAccessRecord, getCompanySettings, isOwnDataOnly, requireActiveUser, roleHasPermission, scopedRows } from "./access";
+import { activeDepartments, allowedBranchIds, canAccessRecord, getCompanySettings, isOwnDataOnly, requireActiveUser, roleHasPermission, scopedRows } from "./access";
 import type { UserLike } from "./access";
 
 const money = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -11,7 +11,8 @@ const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
 
 /** A user allowed to combine bills across departments sees the whole business (for bills only), not just one department. */
 async function crossAccess(ctx: QueryCtx, user: UserLike) {
-  const allowed = !!user.tenantId && !isOwnDataOnly(user) && (await roleHasPermission(ctx, user, "bills.all_departments"));
+  // Not for a user limited to a few departments: this view is business-wide, so it would show departments he was not given.
+  const allowed = !!user.tenantId && !isOwnDataOnly(user) && !allowedBranchIds(user) && (await roleHasPermission(ctx, user, "bills.all_departments"));
   return { allowed, wide: allowed ? { ...user, branchId: undefined } : user };
 }
 /** Same customer in another department = same code or same name (customers are kept per department). */

@@ -71,13 +71,14 @@ export default function TopBar({ onMenuToggle }: Props) {
         {departments.length > 0 && (business?.canSwitch ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className={`cursor-pointer ${activeDepartment ? "" : "border-amber-500 text-amber-700"}`} title={tr("Idara")}>
+              <Button variant="outline" size="sm" className={`cursor-pointer ${activeDepartment || !business?.canPickAll ? "" : "border-amber-500 text-amber-700"}`} title={tr("Idara")}>
                 <MapPin className="h-4 w-4 sm:mr-1" /><span className="hidden max-w-[8rem] truncate sm:inline">{activeDepartment?.name ?? tr("Idara zote")}</span><ChevronDown className="ml-1 h-3.5 w-3.5" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52">
-              <DropdownMenuItem className="cursor-pointer" onClick={() => pickDepartment(undefined)}>{tr("Idara zote (ripoti za pamoja)")}</DropdownMenuItem>
-              <DropdownMenuSeparator />
+              {/* A user given only some departments (e.g. Bar + Kitchen) switches between those; the combined view is not his. */}
+              {business?.canPickAll && <><DropdownMenuItem className="cursor-pointer" onClick={() => pickDepartment(undefined)}>{tr("Idara zote (ripoti za pamoja)")}</DropdownMenuItem>
+              <DropdownMenuSeparator /></>}
               {departments.map((d) => <DropdownMenuItem key={d._id} className="cursor-pointer" onClick={() => pickDepartment(d._id)}>{d.name}</DropdownMenuItem>)}
             </DropdownMenuContent>
           </DropdownMenu>
@@ -106,7 +107,7 @@ export default function TopBar({ onMenuToggle }: Props) {
             {items.slice(0, 6).map((i) => {
               const text = notificationText(i.code, i.params);
               return (
-                <DropdownMenuItem key={i.key} className="cursor-pointer items-start gap-2" onClick={() => { void markRead({ keys: [i.key] }); navigate(i.link); }}>
+                <DropdownMenuItem key={i.key} className="cursor-pointer items-start gap-2" onClick={() => { void markRead({ keys: [i.key] }); navigate(i.link, i.link === "/notifications" ? { state: { open: i.key } } : undefined); }}>
                   <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${i.read ? "bg-muted" : i.level === "danger" ? "bg-rose-500" : i.level === "warning" ? "bg-amber-500" : "bg-indigo-500"}`} />
                   <span className="min-w-0"><span className={`block truncate text-sm ${i.read ? "" : "font-semibold"}`}>{text.title}</span><span className="block truncate text-xs text-muted-foreground">{text.body}</span></span>
                 </DropdownMenuItem>

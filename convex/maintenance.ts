@@ -5,10 +5,10 @@ import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
 import {
-  filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
+  activeDepartments, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
   requireSuperAdminUser, resolveWriteScope, roleHasPermission, scopedRows } from "./access";
 import type { UserLike } from "./access";
-import { ALL_PERMISSION_KEYS, SETTING_KEYS, SYSTEM_ROLES, cleanModules } from "./permissions";
+import { ALL_PERMISSION_KEYS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
 
 const LOGIN_DOMAIN = "login.smarthub.invalid";
 const DEFAULT_SECURITY = { minPasswordLength: 10, sessionTimeoutMinutes: 30, requirePasswordChangeForNewUsers: true };
@@ -83,7 +83,7 @@ export const saveCompany = mutation({
     if (args.decimalPlaces !== undefined && (args.decimalPlaces < 0 || args.decimalPlaces > 6)) throw new Error("Decimal places lazima iwe 0–6.");
     if (args.taxRate !== undefined && (args.taxRate < 0 || args.taxRate > 100)) throw new Error("Tax rate lazima iwe 0–100.");
     const patch = Object.fromEntries(Object.entries(args).filter(([, val]) => val !== undefined));
-    const existing = (await scopedRows(ctx, user, "companySettings"))[0];
+    const existing = (await scopedRows(ctx, user, "companySettings")).find((r) => r.branchId === scope.branchId); // the row of THIS scope (business-wide, or the chosen department), never another department's
     let id;
     if (existing) { await ctx.db.patch("companySettings", existing._id, patch); id = existing._id; }
     else {
@@ -213,7 +213,7 @@ export const listRoles = query({
     const byName = new Map(rows.map((r) => [r.name, r]));
     const system = SYSTEM_ROLES.map((r) => {
       const row = byName.get(r.name);
-      return { name: r.name, displayName: row?.displayName ?? r.displayName, permissions: row?.permissions ?? r.permissions, isSystem: true, customized: !!row };
+      return { name: r.name, displayName: row?.displayName ?? r.displayName, permissions: row ? permissionsWithNewDefaults(r.name, row.permissions, row.knownKeys) : r.permissions, isSystem: true, customized: !!row };
     });
     const custom = rows.filter((r) => !SYSTEM_ROLES.some((s) => s.name === r.name))
       .map((r) => ({ name: r.name, displayName: r.displayName, permissions: r.permissions, isSystem: false, customized: true }));
@@ -234,8 +234,9 @@ export const saveRole = mutation({
     const permissions = [...new Set(a.permissions)];
     const existing = await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", name)).first();
     const isSystem = SYSTEM_ROLES.some((r) => r.name === name);
-    if (existing) await ctx.db.patch("roles", existing._id, { displayName: a.displayName.trim(), permissions });
-    else await ctx.db.insert("roles", { name, displayName: a.displayName.trim(), permissions, isSystem });
+    assertSuperAdminKeysUnchanged(user, existing?.permissions ?? SYSTEM_ROLES.find((r) => r.name === name)?.permissions, permissions);
+    if (existing) await ctx.db.patch("roles", existing._id, { displayName: a.displayName.trim(), permissions, knownKeys: ALL_PERMISSION_KEYS });
+    else await ctx.db.insert("roles", { name, displayName: a.displayName.trim(), permissions, isSystem, knownKeys: ALL_PERMISSION_KEYS });
     await logAudit(ctx, user, { action: "save_role", module: "maintenance", referenceId: name, details: `${permissions.length} permissions` });
     return name;
   },
@@ -259,6 +260,21 @@ export const deleteRole = mutation({
 /* ───────────────────────── Users ───────────────────────── */
 
 /** Keeps only modules the business actually has (the Super Admin decides that per business). */
+/** Permissions such as stock.adjust can be given or taken away by a Super Admin only (role or single user). */
+function assertSuperAdminKeysUnchanged(actor: Parameters<typeof isSuperAdmin>[0], before: string[] | undefined, after: string[] | undefined) {
+  if (isSuperAdmin(actor)) return;
+  const only = (keys: string[] | undefined) => (keys ?? []).filter((k) => SUPER_ADMIN_ONLY_PERMISSIONS.includes(k)).sort().join(",");
+  if (only(before) !== only(after)) throw new Error("Ruhusa ya kubadili / kufuta stock inatolewa na kuondolewa na Super Admin pekee.");
+}
+
+/** Keeps only permissions that may be given to a single user (unknown keys are refused, not silently dropped). */
+function cleanExtraPermissions(keys: string[]) {
+  const ok = USER_GRANTABLE_PERMISSIONS.map((g) => g.key);
+  const bad = keys.filter((k) => !ok.includes(k));
+  if (bad.length) throw new Error(`Ruhusa isiyojulikana kwa mtumiaji: ${bad.join(", ")}`);
+  return [...new Set(keys)];
+}
+
 async function allowedMenu(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, wanted: string[]) {
   const tenant = tenantId ? await ctx.db.get("tenants", tenantId) : null;
   const keys = cleanModules(wanted);
@@ -270,8 +286,11 @@ export const listUsers = query({
   handler: async (ctx) => {
     const user = await requirePermission(ctx, "maintenance.users");
     const rows = (await ctx.db.query("users").collect()).filter((r) => r.tokenIdentifier === undefined && (r.username !== undefined || r.email !== undefined));
-    const visible = isSuperAdmin(user) ? rows : rows.filter((r) => r.tenantId && r.tenantId === user.tenantId);
-    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, ownDataOnly: r.ownDataOnly === true }));
+    const tenantRows = isSuperAdmin(user) ? rows : rows.filter((r) => r.tenantId && r.tenantId === user.tenantId);
+    // A user tied to one department only manages (and sees) the users of that department.
+    const limit = departmentLimit(user);
+    const visible = limit ? tenantRows.filter((r) => insideLimit(departmentScope(r), limit)) : tenantRows;
+    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], ownDataOnly: r.ownDataOnly === true }));
   },
 });
 
@@ -284,6 +303,53 @@ export const listOffices = query({
     return { tenants, branches };
   },
 });
+
+/** Departments a user belongs to: a list when he was given several, one id when tied to one, null = all departments. */
+function departmentScope(user: UserLike): string[] | null {
+  if (user.branchIds && user.branchIds.length > 1) return user.branchIds.map(String);
+  if (user.branchId && !user.branchPicked) return [String(user.branchId)];
+  return null;
+}
+const sameScope = (x: string[] | null, y: string[] | null) => (x === null || y === null ? x === y : [...x].sort().join() === [...y].sort().join());
+const insideLimit = (scope: string[] | null, limit: string[]) => !!scope && scope.every((id) => limit.includes(id));
+/** What an actor may manage: null = every department; otherwise only users whose departments are all in this list. */
+const departmentLimit = (actor: UserLike) => (isSuperAdmin(actor) ? null : departmentScope(actor));
+
+/** Roles that may work across all departments of a business without an explicit grant. */
+const FLOATING_ROLES = ["super_admin", "superadmin", "admin", "administrator", "manager", "owner", "business_owner"];
+
+/** Every department given to a user must exist in the SAME business (a form could send an id from another business). */
+async function assertBranchesBelong(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, ids: Id<"branches">[]) {
+  for (const id of ids) {
+    const branch = await ctx.db.get("branches", id);
+    if (!branch || (tenantId && branch.tenantId !== tenantId)) throw new Error("Branch haihusiani na ofisi iliyochaguliwa.");
+  }
+}
+
+/**
+ * Department rules for creating / changing a user (scope: null = all departments):
+ *  1. A user tied to one or a few departments manages only users inside those departments, and can only give them those.
+ *  2. In a business WITH departments, staff (cashier, accountant, viewer...) need either department(s) ticked or an explicit
+ *     "all departments" grant. Managers/admins may work across all departments without it.
+ */
+async function assertDepartmentRules(
+  ctx: QueryCtx, actor: UserLike,
+  next: { role?: string; tenantId?: Id<"tenants">; scope: string[] | null; allDepartments?: boolean },
+  existing?: UserLike | null,
+  requireDepartment = true,
+) {
+  const limit = departmentLimit(actor);
+  if (limit) {
+    if (existing && !insideLimit(departmentScope(existing), limit)) throw new Error("Akaunti yako imefungwa kwenye idara moja (au idara chache ulizopewa); huwezi kusimamia watumiaji wa idara nyingine.");
+    if (!insideLimit(next.scope, limit)) throw new Error("Unaweza kuweka watumiaji kwenye idara yako tu (idara ulizopewa).");
+  }
+  if (!requireDepartment || next.scope || next.allDepartments || !next.tenantId) return;
+  const role = normalizeRole(next.role);
+  if (FLOATING_ROLES.includes(role) || (role && (await roleHasPermission(ctx, { role }, "system.manager")))) return;
+  if ((await activeDepartments(ctx, next.tenantId)).length > 0) {
+    throw new Error("Biashara hii ina idara. Chagua idara za mtumiaji huyu (tiki moja au zaidi) au washa 'Idara zote'.");
+  }
+}
 
 async function assertCanAssign(ctx: QueryCtx, actor: UserLike, target: { role?: string; tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, existing?: UserLike | null) {
   const role = target.role === undefined ? undefined : normalizeRole(target.role);
@@ -308,17 +374,39 @@ export const updateUser = mutation({
   args: {
     userId: v.id("users"), name: v.optional(v.string()), role: v.optional(v.string()),
     tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), clearBranch: v.optional(v.boolean()),
+    // Department access from the Users form: ticked departments (1 = tied to it, 2+ = may switch between them) or all departments.
+    branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()),
     isActive: v.optional(v.boolean()), requirePasswordChange: v.optional(v.boolean()),
-    menuAccess: v.optional(v.array(v.string())), clearMenuAccess: v.optional(v.boolean()), ownDataOnly: v.optional(v.boolean()),
+    menuAccess: v.optional(v.array(v.string())), clearMenuAccess: v.optional(v.boolean()), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())),
   },
   handler: async (ctx, a) => {
     const actor = await requirePermission(ctx, "maintenance.users");
     const target = await ctx.db.get("users", a.userId);
     if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target.tenantId, branchId: a.branchId }, target);
+    const nextRole = a.role !== undefined ? a.role : target.role;
+    const nextTenant = a.tenantId ?? target.tenantId;
+    // Department access after this edit. The form sends ticked departments / "all departments"; older callers send branchId / clearBranch.
+    const viaForm = a.branchIds !== undefined || a.allDepartments !== undefined;
+    const legacyChanged = a.clearBranch ? target.branchId !== undefined : a.branchId !== undefined && a.branchId !== target.branchId;
+    const deptTouched = viaForm || legacyChanged;
+    const next = !deptTouched
+      ? { branchId: target.branchId, branchIds: target.branchIds, allDepartments: target.allDepartments, branchPicked: target.branchPicked }
+      : viaForm
+        ? resolveDepartmentAccess({ branchId: target.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments })
+        : { branchId: a.clearBranch ? undefined : a.branchId, branchIds: undefined, allDepartments: undefined, branchPicked: false };
+    const touchesDepartment = a.role !== undefined || deptTouched || a.tenantId !== undefined;
+    const nextScope = departmentScope(next);
+    if (deptTouched) await assertBranchesBelong(ctx, nextTenant, [...(next.branchIds ?? []), ...(next.branchId ? [next.branchId] : [])]);
     if (String(actor._id) === String(target._id)) {
       if (a.isActive === false) throw new Error("Huwezi kuzima akaunti yako mwenyewe.");
       if (a.role !== undefined && normalizeRole(a.role) !== normalizeRole(target.role)) throw new Error("Huwezi kubadilisha role yako mwenyewe.");
+      // Otherwise a user tied to one department could free himself by choosing "Zote" on his own account.
+      if (deptTouched && (!sameScope(departmentScope(target), nextScope) || !!next.allDepartments !== !!target.allDepartments)) throw new Error("Huwezi kubadilisha idara ya akaunti yako mwenyewe.");
+    }
+    // Authority (own departments only) is always checked; "must have a department" only when role/department is being changed.
+    if (!isSuperAdmin(target)) {
+      await assertDepartmentRules(ctx, actor, { role: nextRole, tenantId: nextTenant, scope: nextScope, allDepartments: !!next.allDepartments }, target, touchesDepartment);
     }
     if (isSuperAdmin(target) && (a.isActive === false || (a.role !== undefined && !isSuperAdmin({ role: a.role })))) {
       const others = (await ctx.db.query("users").collect()).filter((u) => u._id !== target._id && u.tokenIdentifier === undefined && isSuperAdmin(u) && u.isActive !== false);
@@ -328,17 +416,17 @@ export const updateUser = mutation({
     if (a.name !== undefined) patch.name = a.name.trim();
     if (a.role !== undefined) patch.role = normalizeRole(a.role);
     if (a.tenantId !== undefined) patch.tenantId = a.tenantId;
-    if (a.branchId !== undefined) { patch.branchId = a.branchId; patch.branchPicked = false; }
-    if (a.clearBranch) { patch.branchId = undefined; patch.branchPicked = false; }
+    if (deptTouched) { patch.branchId = next.branchId; patch.branchIds = next.branchIds; patch.allDepartments = next.allDepartments; patch.branchPicked = next.branchPicked; }
     if (a.isActive !== undefined) patch.isActive = a.isActive;
     if (a.requirePasswordChange !== undefined) patch.requirePasswordChange = a.requirePasswordChange;
-    if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined) {
+    if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined || a.extraPermissions !== undefined) {
       if (String(actor._id) === String(target._id)) throw new Error("Huwezi kubadilisha menyu au ruhusa za data za akaunti yako mwenyewe.");
       if (isSuperAdmin(target)) throw new Error("Huwezi kubadilisha menyu ya Super Admin.");
     }
     if (a.clearMenuAccess) patch.menuAccess = undefined;
     else if (a.menuAccess !== undefined) patch.menuAccess = await allowedMenu(ctx, a.tenantId ?? target.tenantId, a.menuAccess);
     if (a.ownDataOnly !== undefined) patch.ownDataOnly = a.ownDataOnly ? true : undefined;
+    if (a.extraPermissions !== undefined) { assertSuperAdminKeysUnchanged(actor, target.extraPermissions, a.extraPermissions); patch.extraPermissions = cleanExtraPermissions(a.extraPermissions); }
     await ctx.db.patch("users", a.userId, patch);
     await logAudit(ctx, actor, { action: "update_user", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${target.username ?? target.name}: ${Object.keys(patch).join(", ")}` });
     return true;
@@ -346,23 +434,56 @@ export const updateUser = mutation({
 });
 
 export const authorizeUserAdmin = internalQuery({
-  args: { targetUserId: v.optional(v.id("users")), role: v.optional(v.string()), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")) },
+  args: { targetUserId: v.optional(v.id("users")), role: v.optional(v.string()), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())) },
   handler: async (ctx, a) => {
     const actor = await requirePermission(ctx, "maintenance.users");
+    if (!a.targetUserId) assertSuperAdminKeysUnchanged(actor, [], a.extraPermissions);
     const target = a.targetUserId ? await ctx.db.get("users", a.targetUserId) : undefined;
     if (a.targetUserId && (!target || target.tokenIdentifier !== undefined)) throw new Error("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target?.tenantId, branchId: a.branchId }, target);
+    if (target) await assertDepartmentRules(ctx, actor, { tenantId: target.tenantId, role: target.role, scope: departmentScope(target) }, target, false); // e.g. password reset
+    else if (!["super_admin", "superadmin"].includes(normalizeRole(a.role))) {
+      const acc = resolveDepartmentAccess({ branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments });
+      const tenantId = a.tenantId ?? actor.tenantId;
+      await assertBranchesBelong(ctx, tenantId, [...(acc.branchIds ?? []), ...(acc.branchId ? [acc.branchId] : [])]);
+      await assertDepartmentRules(ctx, actor, { role: a.role, tenantId, scope: departmentScope(acc), allDepartments: !!acc.allDepartments });
+    }
     const policy = await securityPolicy(ctx, actor);
     return { actorId: actor._id, minLength: policy.minPasswordLength as number, forceChange: !!policy.requirePasswordChangeForNewUsers, email: target?.email as string | undefined, username: target?.username as string | undefined, actorTenantId: actor.tenantId };
   },
 });
 
-export const finishUserSetup = internalMutation({
-  args: { userId: v.id("users"), actorId: v.id("users"), name: v.string(), username: v.string(), role: v.string(), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), requirePasswordChange: v.boolean(), menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()) },
+/**
+ * Login names are unique across ALL businesses (the login screen has only username + password), so "admin" can belong to one
+ * business only. This tells createUser whether a name is free, reuses a half-created account (setup that never finished),
+ * and suggests free alternatives such as "admin.duka1".
+ */
+export const usernameStatus = internalQuery({
+  args: { username: v.string(), tenantId: v.optional(v.id("tenants")) },
   handler: async (ctx, a) => {
+    const find = async (name: string) => await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", name)).first();
+    const existing = await find(a.username);
+    const orphanId = existing && existing.role === undefined && !existing.tenantId ? existing._id : undefined;
+    if (!existing || orphanId) return { taken: false as const, orphanId, suggestions: [] as string[] };
+    const code = a.tenantId ? ((await ctx.db.get("tenants", a.tenantId))?.code ?? "").toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+    const free: string[] = [];
+    const candidates = [...(code ? [`${a.username}.${code}`] : []), ...[1, 2, 3, 4, 5].map((n) => `${a.username}${n}`)];
+    for (const c of candidates) {
+      const name = c.slice(0, 32);
+      if (/^[a-z0-9][a-z0-9._-]{2,31}$/.test(name) && !(await find(name))) free.push(name);
+      if (free.length === 3) break;
+    }
+    return { taken: true as const, orphanId: undefined, suggestions: free };
+  },
+});
+
+export const finishUserSetup = internalMutation({
+  args: { userId: v.id("users"), actorId: v.id("users"), name: v.string(), username: v.string(), role: v.string(), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()), requirePasswordChange: v.boolean(), menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())) },
+  handler: async (ctx, a) => {
+    const acc = resolveDepartmentAccess({ branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments });
     await ctx.db.patch("users", a.userId, {
-      name: a.name, username: a.username, role: normalizeRole(a.role), tenantId: a.tenantId, branchId: a.branchId, isActive: true, requirePasswordChange: a.requirePasswordChange,
-      menuAccess: a.menuAccess ? await allowedMenu(ctx, a.tenantId, a.menuAccess) : undefined, ownDataOnly: a.ownDataOnly ? true : undefined,
+      name: a.name, username: a.username, role: normalizeRole(a.role), tenantId: a.tenantId, branchId: acc.branchId, branchIds: acc.branchIds, allDepartments: acc.allDepartments, branchPicked: acc.branchPicked, isActive: true, requirePasswordChange: a.requirePasswordChange,
+      menuAccess: a.menuAccess ? await allowedMenu(ctx, a.tenantId, a.menuAccess) : undefined, ownDataOnly: a.ownDataOnly ? true : undefined, extraPermissions: a.extraPermissions?.length ? cleanExtraPermissions(a.extraPermissions) : undefined,
     });
     const actor = await ctx.db.get("users", a.actorId);
     await logAudit(ctx, actor, { action: "create_user", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${a.username} (${a.role})` });
@@ -378,25 +499,46 @@ export const createUser = action({
   args: {
     name: v.string(), username: v.string(), password: v.string(), role: v.string(),
     tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
-    menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()),
+    branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()),
+    menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())),
   },
   handler: async (ctx, a): Promise<string> => {
     const username = a.username.trim().toLowerCase();
     if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3–32, bila nafasi.");
-    const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { role: a.role, tenantId: a.tenantId, branchId: a.branchId });
+    const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { role: a.role, tenantId: a.tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, extraPermissions: a.extraPermissions });
     if (a.password.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
     const tenantId = a.tenantId ?? auth.actorTenantId;
     if (!["super_admin", "superadmin"].includes(normalizeRole(a.role)) && !tenantId) throw new Error("Chagua ofisi kwa mtumiaji huyu.");
     const email = `${username}@${LOGIN_DOMAIN}`;
-    const { user } = await createAccount(ctx, {
-      provider: "password", account: { id: email, secret: a.password },
-      profile: { email, name: a.name.trim() || username, username },
-    });
+    if (username === (process.env.SUPER_ADMIN_USERNAME ?? "").trim().toLowerCase()) throw new Error(`Username "${username}" imehifadhiwa kwa Super Admin. Chagua jina lingine.`);
+    const status = await ctx.runQuery(internal.maintenance.usernameStatus, { username, tenantId });
+    if (status.taken) {
+      const hint = status.suggestions.length ? ` Jaribu: ${status.suggestions.join(", ")}.` : "";
+      throw new Error(`Username "${username}" tayari inatumika (majina ya watumiaji ni ya kipekee kwa biashara zote, hata kama role ni ile ile).${hint}`);
+    }
+    let userId: Id<"users">;
+    if (status.orphanId) {
+      // An earlier attempt created the login but never finished: complete it with the new password instead of failing forever.
+      try { await modifyAccountCredentials(ctx, { provider: "password", account: { id: email, secret: a.password } }); }
+      catch (e) { throw new Error(`Username "${username}" imeshatumika bila kukamilika. Tumia jina lingine.`, { cause: e }); }
+      userId = status.orphanId;
+    } else {
+      try {
+        const { user } = await createAccount(ctx, {
+          provider: "password", account: { id: email, secret: a.password },
+          profile: { email, name: a.name.trim() || username, username },
+        });
+        userId = user._id;
+      } catch (e) {
+        if (/already exists|exists/i.test(String((e as Error)?.message ?? e))) throw new Error(`Username "${username}" tayari inatumika. Chagua jina lingine.`, { cause: e });
+        throw e;
+      }
+    }
     await ctx.runMutation(internal.maintenance.finishUserSetup, {
-      userId: user._id, actorId: auth.actorId, name: a.name.trim() || username, username, role: a.role,
-      tenantId, branchId: a.branchId, requirePasswordChange: auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly,
+      userId, actorId: auth.actorId, name: a.name.trim() || username, username, role: a.role,
+      tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, requirePasswordChange: auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly, extraPermissions: a.extraPermissions,
     });
-    return String(user._id);
+    return String(userId);
   },
 });
 
@@ -426,6 +568,8 @@ export const changeOwnPassword = action({
       throw new Error("Password ya sasa si sahihi.");
     }
     await modifyAccountCredentials(ctx, { provider: "password", account: { id: me.email, secret: a.newPassword } });
+    // Anyone else holding the old password (other devices / browsers) is signed out; this session stays.
+    await invalidateSessions(ctx, { userId: me.userId, ...(me.sessionId ? { except: [me.sessionId as Id<"authSessions">] } : {}) });
     await ctx.runMutation(internal.maintenance.markPasswordChanged, { userId: me.userId });
     return true;
   },
@@ -434,11 +578,13 @@ export const changeOwnPassword = action({
 export const whoAmI = internalQuery({
   args: {},
   handler: async (ctx) => {
-    const user = await requireActiveUser(ctx);
+    const user = await requireActiveUser(ctx, undefined, { allowPasswordChange: true }); // the one call a user who must change the password is allowed to make
+    const identity = await ctx.auth.getUserIdentity();
+    const sessionId = String(identity?.subject ?? "").split("|")[1];
     const policy = await securityPolicy(ctx, user);
     const email = user.email ?? (user.username ? `${user.username}@${LOGIN_DOMAIN}` : undefined);
     if (!email) throw new Error("Akaunti haina login ya password.");
-    return { userId: user._id, email, minLength: policy.minPasswordLength as number };
+    return { userId: user._id, email, sessionId: sessionId || undefined, minLength: policy.minPasswordLength as number };
   },
 });
 

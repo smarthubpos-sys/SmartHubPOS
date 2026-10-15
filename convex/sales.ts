@@ -2,9 +2,9 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { UserLike } from "./access";
-import { canAccessRecord, filterScoped, isOwnDataOnly, isManagerRole, normalizeRole, requireActiveUser, resolveWriteScope, scopedRows, getCompanySettings } from "./access";
+import { canAccessRecord, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, resolveWriteScope, scopedRows, getCompanySettings } from "./access";
 import { bumpStats } from "./stats";
-import { getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
+import { assertDate, assertFinite, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
 
 const lineValidator = v.object({ productId: v.id("products"), qty: v.number(), unitPrice: v.number(), discount: v.optional(v.number()) });
@@ -36,7 +36,8 @@ export const createInvoice = mutation({
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx, "sales"); const scope = await resolveWriteScope(ctx, user);
     if (!args.lines.length) throw new Error("Invoice lazima iwe na angalau bidhaa moja.");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.invoiceDate)) throw new Error("Tarehe ya invoice si sahihi.");
+    assertDate(args.invoiceDate, "Tarehe ya invoice");
+    assertFinite(args.discount, "Discount ya invoice"); assertFinite(args.taxRate, "Tax rate"); assertFinite(args.paymentAmount, "Kiasi kilicholipwa");
     const client = await ctx.db.get("clients", args.clientId); if (!canAccessRecord(user, client)) throw new Error("Mteja hayupo kwenye ofisi/branch yako.");
     const company = await getCompanySettings(ctx, user);
     const allowNegativeStock = !!company?.allowNegativeStock;
@@ -49,7 +50,7 @@ export const createInvoice = mutation({
       if (!Number.isFinite(line.qty) || line.qty <= 0 || !Number.isFinite(line.unitPrice) || line.unitPrice < 0) throw new Error("Kiasi au bei si sahihi.");
       const product = await ctx.db.get("products", line.productId); if (!product || !canAccessRecord(user, product) || !product.isActive) throw new Error("Bidhaa haipatikani kwenye branch hii.");
       if (!allowNegativeStock && product.currentQty + 1e-8 < (requested.get(String(line.productId)) ?? line.qty)) throw new Error(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, unayouza: ${requested.get(String(line.productId))}`);
-      const discount = money(line.discount ?? 0); const gross = money(line.qty * line.unitPrice); if (discount < 0 || discount > gross) throw new Error("Discount si sahihi.");
+      assertFinite(line.discount, "Discount"); const discount = money(line.discount ?? 0); const gross = money(line.qty * line.unitPrice); if (discount < 0 || discount > gross) throw new Error("Discount si sahihi.");
       const lineTotal = money(gross - discount); subtotal += lineTotal; prepared.push({ productId: line.productId, qty: line.qty, unitPrice: line.unitPrice, discount, lineTotal, cost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0 });
     }
     subtotal = money(subtotal); const discount = money(args.discount ?? 0); if (discount < 0 || discount > subtotal) throw new Error("Discount ya invoice si sahihi.");
@@ -113,7 +114,7 @@ export const createInvoice = mutation({
 });
 
 /**
- * Cancel a posted invoice made by mistake (managers only). Stock goes back, the sale and its cost are reversed in the ledger,
+ * Cancel a posted invoice made by mistake (only roles / users given the "sales.void" permission). Stock goes back, the sale and its cost are reversed in the ledger,
  * and any money already received on it is refunded from the SAME account(s) it was paid into. The invoice record is kept with status "cancelled"
  * (never deleted) and drops out of every Sales list, report, balance and total.
  */
@@ -121,9 +122,9 @@ export const voidInvoice = mutation({
   args: { invoiceId: v.id("invoices"), reason: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "sales");
-    if (!(await isManagerRole(ctx, user))) throw new Error("Forbidden: ni meneja pekee anayeweza kubatilisha invoice.");
+    if (!(await roleHasPermission(ctx, user, "sales.void"))) throw new Error("Forbidden: huna ruhusa ya kufuta / kubatilisha oda. Muombe msimamizi akupe ruhusa (Role Management au User Settings).");
     const invoice = await ctx.db.get("invoices", a.invoiceId);
-    if (!invoice || !canAccessRecord(user, invoice)) throw new Error("Invoice haipatikani.");
+    if (!invoice || !canAccessRecord(user, invoice) || (isOwnDataOnly(user) && invoice.createdBy !== user._id)) throw new Error("Invoice haipatikani.");
     if (invoice.status !== "posted") throw new Error("Invoice hii tayari imebatilishwa.");
     if (invoice.total <= 0) throw new Error("Invoice hii imerudishwa yote kupitia marejesho; haihitaji kubatilishwa.");
     const scope = { tenantId: invoice.tenantId, branchId: invoice.branchId };
@@ -220,7 +221,7 @@ export const returnItems = mutation({
     if (invoice.status !== "posted") throw new Error("Invoice hii imebatilishwa; haiwezi kupokea marejesho.");
     const today = new Date().toISOString().slice(0, 10);
     const returnDate = a.returnDate ?? today;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(returnDate)) throw new Error("Tarehe ya marejesho si sahihi.");
+    assertDate(returnDate, "Tarehe ya marejesho");
     const wanted = a.lines.filter((l) => l.qty !== 0);
     if (!wanted.length) throw new Error("Weka kiasi cha angalau bidhaa moja inayorudishwa.");
     if (new Set(wanted.map((l) => String(l.invoiceLineId))).size !== wanted.length) throw new Error("Mstari mmoja umejirudia.");
@@ -308,6 +309,7 @@ export const returnItems = mutation({
  */
 export const recordPayment = mutation({ args: { invoiceId: v.id("invoices"), amount: v.optional(v.number()), paymentMethod: v.optional(v.string()), splits: v.optional(v.array(splitValidator)), paymentDate: v.string(), reference: v.optional(v.string()), notes: v.optional(v.string()) }, handler: async (ctx, args) => {
   const user = await requireActiveUser(ctx, "sales");
+  assertDate(args.paymentDate, "Tarehe ya malipo");
   const role = normalizeRole(user.role);
   if (role !== "cashier" && !(await isManagerRole(ctx, user))) throw new Error("Forbidden: cashier permission required to receive customer payments");
   const scope = await resolveWriteScope(ctx, user); const invoice = await ctx.db.get("invoices", args.invoiceId);
@@ -356,11 +358,24 @@ export const salesRegisters = query({
     const inRange = (d: string) => (!a.startDate || d >= a.startDate) && (!a.endDate || d <= a.endDate);
 
     const clients = tenantId ? filterScoped(user, await scopedRows(ctx, user, "clients")) : [];
-    const invRaw: Doc<"invoices">[] = tenantId ? await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => { const b = q.eq("tenantId", tenantId); if (a.startDate && a.endDate) return b.gte("invoiceDate", a.startDate).lte("invoiceDate", a.endDate); if (a.startDate) return b.gte("invoiceDate", a.startDate); if (a.endDate) return b.lte("invoiceDate", a.endDate); return b; }).order("desc").take(REG_CAP + 1) : [];
-    const payRaw: Doc<"customerPayments">[] = tenantId ? await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => { const b = q.eq("tenantId", tenantId); if (a.startDate && a.endDate) return b.gte("paymentDate", a.startDate).lte("paymentDate", a.endDate); if (a.startDate) return b.gte("paymentDate", a.startDate); if (a.endDate) return b.lte("paymentDate", a.endDate); return b; }).order("desc").take(REG_CAP + 1) : [];
-    const openRaw: Doc<"invoices">[] = tenantId ? await ctx.db.query("invoices").withIndex("by_tenant_outstanding", (q) => q.eq("tenantId", tenantId).gt("outstanding", 0)).take(OPEN_CAP + 1) : [];
-    const afterInvRaw: Doc<"invoices">[] = tenantId && endDate ? await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gt("invoiceDate", endDate)).take(REG_CAP + 1) : [];
-    const afterPayRaw: Doc<"customerPayments">[] = tenantId && endDate ? await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gt("paymentDate", endDate)).take(REG_CAP + 1) : [];
+    // A user working in ONE department reads only that department's rows (per-department indexes), so another department's
+    // volume can never fill the REG_CAP window and hide this department's invoices.
+    const branchId = user.branchId;
+    const invRaw: Doc<"invoices">[] = !tenantId ? [] : branchId
+      ? await ctx.db.query("invoices").withIndex("by_scope_date", (q) => { const b = q.eq("tenantId", tenantId).eq("branchId", branchId); if (a.startDate && a.endDate) return b.gte("invoiceDate", a.startDate).lte("invoiceDate", a.endDate); if (a.startDate) return b.gte("invoiceDate", a.startDate); if (a.endDate) return b.lte("invoiceDate", a.endDate); return b; }).order("desc").take(REG_CAP + 1)
+      : await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => { const b = q.eq("tenantId", tenantId); if (a.startDate && a.endDate) return b.gte("invoiceDate", a.startDate).lte("invoiceDate", a.endDate); if (a.startDate) return b.gte("invoiceDate", a.startDate); if (a.endDate) return b.lte("invoiceDate", a.endDate); return b; }).order("desc").take(REG_CAP + 1);
+    const payRaw: Doc<"customerPayments">[] = !tenantId ? [] : branchId
+      ? await ctx.db.query("customerPayments").withIndex("by_scope_date", (q) => { const b = q.eq("tenantId", tenantId).eq("branchId", branchId); if (a.startDate && a.endDate) return b.gte("paymentDate", a.startDate).lte("paymentDate", a.endDate); if (a.startDate) return b.gte("paymentDate", a.startDate); if (a.endDate) return b.lte("paymentDate", a.endDate); return b; }).order("desc").take(REG_CAP + 1)
+      : await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => { const b = q.eq("tenantId", tenantId); if (a.startDate && a.endDate) return b.gte("paymentDate", a.startDate).lte("paymentDate", a.endDate); if (a.startDate) return b.gte("paymentDate", a.startDate); if (a.endDate) return b.lte("paymentDate", a.endDate); return b; }).order("desc").take(REG_CAP + 1);
+    const openRaw: Doc<"invoices">[] = !tenantId ? [] : branchId
+      ? await ctx.db.query("invoices").withIndex("by_scope_outstanding", (q) => q.eq("tenantId", tenantId).eq("branchId", branchId).gt("outstanding", 0)).take(OPEN_CAP + 1)
+      : await ctx.db.query("invoices").withIndex("by_tenant_outstanding", (q) => q.eq("tenantId", tenantId).gt("outstanding", 0)).take(OPEN_CAP + 1);
+    const afterInvRaw: Doc<"invoices">[] = !tenantId || !endDate ? [] : branchId
+      ? await ctx.db.query("invoices").withIndex("by_scope_date", (q) => q.eq("tenantId", tenantId).eq("branchId", branchId).gt("invoiceDate", endDate)).take(REG_CAP + 1)
+      : await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gt("invoiceDate", endDate)).take(REG_CAP + 1);
+    const afterPayRaw: Doc<"customerPayments">[] = !tenantId || !endDate ? [] : branchId
+      ? await ctx.db.query("customerPayments").withIndex("by_scope_date", (q) => q.eq("tenantId", tenantId).eq("branchId", branchId).gt("paymentDate", endDate)).take(REG_CAP + 1)
+      : await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gt("paymentDate", endDate)).take(REG_CAP + 1);
     const truncated = invRaw.length > REG_CAP || payRaw.length > REG_CAP || openRaw.length > OPEN_CAP || afterInvRaw.length > REG_CAP || afterPayRaw.length > REG_CAP;
 
     const posted = (rows: Doc<"invoices">[], cap: number) => mine(user, filterScoped(user, rows.slice(0, cap))).filter((i) => i.status === "posted");

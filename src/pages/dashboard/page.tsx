@@ -112,7 +112,7 @@ function BusinessDashboard() {
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   <Area type="monotone" dataKey="sales" name={tr("Mauzo")} stroke="var(--chart-1)" strokeWidth={2} fill="url(#gSales)" />
                   <Area type="monotone" dataKey="purchases" name={tr("Manunuzi")} stroke="var(--chart-2)" strokeWidth={2} fill="url(#gBuy)" />
-                  <Area type="monotone" dataKey="collected" name={tr("Fedha zilizopokelewa")} stroke="var(--chart-3)" strokeWidth={2} fillOpacity={0} />
+                  <Area type="monotone" dataKey="collected" name={tr("Fedha zilizopokelewa (kwa tarehe ya invoice)")} stroke="var(--chart-3)" strokeWidth={2} fillOpacity={0} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>

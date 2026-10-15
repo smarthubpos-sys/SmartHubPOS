@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
-import { activeDepartments, isSuperAdmin, logAudit, requireActiveUser } from "./access";
+import { activeDepartments, allowedBranchIds, isSuperAdmin, logAudit, requireActiveUser } from "./access";
 import type { UserLike } from "./access";
 import { accRows, entryRows, isDate, round2, summarize, type JEntry, type Row } from "./reportCore";
 
@@ -24,7 +24,8 @@ async function reportScope(ctx: QueryCtx, user: UserLike, requested: string | un
   if (!user.tenantId) return { tenantId: null, departments: [] as Array<{ id: string; name: string }>, only: null as string | null, hasDepartments: false };
   const departments = (await activeDepartments(ctx, user.tenantId)).map((b) => ({ id: String(b._id), name: b.name }));
   // Same rule as the top-bar department switch (tenants.current): a user tied to one department cannot look at the others.
-  const canSwitch = isSuperAdmin(user) || !user.branchId || !!user.branchPicked;
+  // A user given several departments reports on the one he is working in now (switch in the top bar to report on another).
+  const canSwitch = (isSuperAdmin(user) || !user.branchId || !!user.branchPicked) && !allowedBranchIds(user);
   const fixed = canSwitch ? null : String(user.branchId);
   const only = fixed ?? (requested && requested !== "all" ? requested : null);
   if (only && !departments.some((d) => d.id === only)) throw new Error("Idara hiyo haipo kwenye biashara yako.");
@@ -47,7 +48,12 @@ export const chunk = query({
     if (!isDate(a.from) || !isDate(a.to) || a.to < a.from) throw new Error("Tarehe za ripoti si sahihi.");
     const sc = await reportScope(ctx, user, a.scope);
     if (!sc.tenantId) return { tooBig: false, sections: [] as Array<{ bk: string; rows: Row[] }> };
-    const entries = await ctx.db.query("journalEntries").withIndex("by_tenant_date", (q) => q.eq("tenantId", sc.tenantId).gte("entryDate", a.from).lte("entryDate", a.to)).take(MAX_ENTRIES + 1);
+    // One department chosen/locked: read only its entries, so a big department cannot make a small one "too big".
+    const tenantId = sc.tenantId;
+    const onlyBranch = sc.only ? ctx.db.normalizeId("branches", sc.only) : null;
+    const entries = onlyBranch
+      ? await ctx.db.query("journalEntries").withIndex("by_scope_date", (q) => q.eq("tenantId", tenantId).eq("branchId", onlyBranch).gte("entryDate", a.from).lte("entryDate", a.to)).take(MAX_ENTRIES + 1)
+      : await ctx.db.query("journalEntries").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("entryDate", a.from).lte("entryDate", a.to)).take(MAX_ENTRIES + 1);
     if (entries.length > MAX_ENTRIES) return { tooBig: true, sections: [] as Array<{ bk: string; rows: Row[] }> };
 
     const accounts = new Map<string, Doc<"accounts"> | null>();
@@ -92,6 +98,10 @@ export const save = mutation({
     if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
     if (!["day", "month", "year"].includes(a.period)) throw new Error("Aina ya ripoti si sahihi.");
     if (!isDate(a.startDate) || !isDate(a.endDate) || a.endDate < a.startDate) throw new Error("Tarehe za ripoti si sahihi.");
+    // The department scope of a saved report must be one this user may report on (a department-locked user: only his own).
+    const sc = await reportScope(ctx, user, a.scope);
+    if (sc.only ? a.scope !== sc.only : a.scope !== "all") throw new Error("Idara ya ripoti hairuhusiwi kwa akaunti yako.");
+    if (sc.only && a.sections.some((s) => s.bk !== sc.only)) throw new Error("Ripoti ina data ya idara nyingine.");
     const all = summarize(a.sections.flatMap((s) => s.rows));
     // The snapshot must stay under the document limit: the per-day rows are the only large part, drop them if needed.
     let sections = a.sections;

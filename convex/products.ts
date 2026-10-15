@@ -1,7 +1,7 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requireActiveUser, requireManager, canAccessRecord, filterScoped, resolveWriteScope, scopedRows } from "./access";
+import { requireActiveUser, requireManagerOrPermission, requirePermission, roleHasPermission, canAccessRecord, filterScoped, resolveWriteScope, scopedRows } from "./access";
 import { getSystemAccount, postSystemJournal, roundMoney } from "./ledger";
 
 export const list = query({
@@ -52,7 +52,8 @@ export const upsert = mutation({
     isActive: v.boolean(),
   },
   handler: async (ctx, args) => {
-    const user = await requireManager(ctx);
+    // New product: stock.manage (or manager). Changing / deactivating an EXISTING product: only with the stock.adjust permission.
+    const user = args.id ? await requirePermission(ctx, "stock.adjust") : await requireManagerOrPermission(ctx, "stock.manage");
     const scope = await resolveWriteScope(ctx, user);
 
     const { id, openingQty, openingCost, ...data } = args;
@@ -133,7 +134,7 @@ export const upsertGroup = mutation({
     isActive: v.boolean(),
   },
   handler: async (ctx, args) => {
-    const user = await requireManager(ctx);
+    const user = await requireManagerOrPermission(ctx, "stock.manage");
     const scope = await resolveWriteScope(ctx, user);
     const { id, ...data } = args;
     if (id) {
@@ -163,7 +164,7 @@ export const upsertUnit = mutation({
     isActive: v.boolean(),
   },
   handler: async (ctx, args) => {
-    const user = await requireManager(ctx);
+    const user = await requireManagerOrPermission(ctx, "stock.manage");
     const scope = await resolveWriteScope(ctx, user);
     const { id, ...data } = args;
     if (id) {
@@ -201,7 +202,8 @@ const codeFrom = (name: string, taken: Set<string>, prefix: string) => {
 export const importBatch = mutation({
   args: { rows: v.array(importRow), dryRun: v.boolean(), updateExisting: v.boolean() },
   handler: async (ctx, args) => {
-    const user = await requireManager(ctx);
+    const user = await requireManagerOrPermission(ctx, "stock.manage");
+    if (args.updateExisting && !(await roleHasPermission(ctx, user, "stock.adjust"))) throw new Error("Kuboresha bidhaa zilizopo kunahitaji ruhusa ya kubadili / kufuta stock (inatolewa na Super Admin). Ingiza bidhaa mpya tu.");
     const scope = await resolveWriteScope(ctx, user);
     if (args.rows.length > 400) throw new Error("Pakia hadi bidhaa 400 kwa mara moja.");
     // Read only THIS business (and department) through the by_scope index - never every business's products.

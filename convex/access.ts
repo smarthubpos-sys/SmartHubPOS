@@ -1,10 +1,27 @@
 import type { QueryCtx, MutationCtx } from "./_generated/server";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
-import { SYSTEM_ROLES, effectiveModules } from "./permissions";
+import { SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, effectiveModules, permissionsWithNewDefaults } from "./permissions";
 import { planStatus, tzToday } from "./plans";
 
 /** The parts of a user the access helpers read. A real user (Doc<"users">) fits; tests may pass a lighter object. */
-export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "ownDataOnly" | "branchPicked">>;
+export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "extraPermissions" | "ownDataOnly" | "branchPicked" | "branchIds" | "allDepartments">>;
+/**
+ * Departments a user is limited to when he was given SEVERAL (e.g. Bar + Kitchen): he works in one at a time and may switch
+ * only between these. null = no such list (one department, or all departments).
+ */
+export function allowedBranchIds(user: UserLike): Id<"branches">[] | null {
+  return user.branchIds && user.branchIds.length > 1 ? user.branchIds : null;
+}
+
+/** Turns what the Users form sends (ticked departments / "all departments") into the fields stored on the user. */
+export function resolveDepartmentAccess(a: { branchId?: Id<"branches">; branchIds?: Id<"branches">[]; allDepartments?: boolean }) {
+  if (a.allDepartments) return { branchId: undefined, branchIds: undefined, allDepartments: true as const, branchPicked: false };
+  const ids = [...new Set(a.branchIds ?? [])];
+  if (ids.length === 0) return { branchId: undefined, branchIds: undefined, allDepartments: undefined, branchPicked: false };
+  if (ids.length === 1) return { branchId: ids[0], branchIds: undefined, allDepartments: undefined, branchPicked: false };
+  return { branchId: a.branchId && ids.includes(a.branchId) ? a.branchId : ids[0], branchIds: ids, allDepartments: undefined, branchPicked: true };
+}
+
 /** A user that may be missing (signed out / not found). */
 export type MaybeUser = UserLike | null | undefined;
 /** Any stored row that belongs to a business (and optionally a department). */
@@ -32,11 +49,13 @@ export async function getCurrentProfile(ctx: QueryCtx) {
  * `module` (optional) = the sidebar module the call belongs to ("payroll", "purchasing" ...). The call is refused when the
  * business did not pay for that module or the user's menu does not include it, so hiding a menu is also enforced on the server.
  */
-export async function requireActiveUser(ctx: QueryCtx, module?: string) {
+export async function requireActiveUser(ctx: QueryCtx, module?: string, opts: { allowPasswordChange?: boolean } = {}) {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) throw new Error("Unauthenticated");
   const user = await getCurrentProfile(ctx);
   if (!user || user.isActive === false) throw new Error("Forbidden: active user account required");
+  // A user told to change the password must do so first: the screen alone is not a protection, the server refuses everything else too.
+  if (user.requirePasswordChange === true && !opts.allowPasswordChange) throw new Error("Forbidden: password change required");
   // Users of a stopped business cannot use the system (Super Admin is never blocked).
   if (!isSuperAdmin(user) && user.tenantId) {
     const tenant = await ctx.db.get("tenants", user.tenantId);
@@ -96,16 +115,30 @@ const BUILTIN_ROLE_PERMISSIONS: Record<string, string[]> = {
 
 export async function roleHasPermission(ctx: QueryCtx, user: MaybeUser, permission: string) {
   if (isSuperAdmin(user)) return true;
+  // A permission given to this one user directly (Users form), limited to the grantable list.
+  if (user?.extraPermissions?.includes(permission) && USER_GRANTABLE_PERMISSIONS.some((g) => g.key === permission)) return true;
   const name = normalizeRole(user?.role);
   const row = await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", name)).first();
-  const perms: string[] = row ? row.permissions : BUILTIN_ROLE_PERMISSIONS[name] ?? [];
-  return perms.includes(ALL_PERMISSIONS_FOR_ADMIN) || perms.includes(permission);
+  const perms: string[] = row ? permissionsWithNewDefaults(name, row.permissions, row.knownKeys) : BUILTIN_ROLE_PERMISSIONS[name] ?? [];
+  // The "owner" wildcard never covers a permission that must be given on purpose (e.g. stock.adjust).
+  return (perms.includes(ALL_PERMISSIONS_FOR_ADMIN) && !SUPER_ADMIN_ONLY_PERMISSIONS.includes(permission)) || perms.includes(permission);
 }
 
 export async function requirePermission(ctx: QueryCtx, permission: string, module?: string) {
   const user = await requireActiveUser(ctx, module);
   if (!(await roleHasPermission(ctx, user, permission))) throw new Error(`Forbidden: permission "${permission}" required`);
   return user;
+}
+
+/**
+ * Managers/admins always pass. Any other role passes when it was given `permission` (Role Management or the Users form),
+ * so a custom role such as "Store keeper" with only `stock.manage` can work without being made a manager.
+ */
+export async function requireManagerOrPermission(ctx: QueryCtx, permission: string, module?: string) {
+  const user = await requireActiveUser(ctx, module);
+  if (await isManagerRole(ctx, user)) return user;
+  if (await roleHasPermission(ctx, user, permission)) return user;
+  throw new Error(`Forbidden: manager permission required (or permission "${permission}")`);
 }
 
 export async function requireSuperAdminUser(ctx: QueryCtx) {
@@ -123,6 +156,8 @@ export async function resolveWriteScope(ctx: QueryCtx, user: UserLike, opts: { t
   if (user.tenantId) return await withDepartment(ctx, user, user.branchId ? { tenantId: user.tenantId, branchId: user.branchId } : { tenantId: user.tenantId }, opts);
   const tenants = await ctx.db.query("tenants").withIndex("by_active", (q) => q.eq("isActive", true)).collect();
   if (!tenants.length) return {};
+  // Never guess the business: with several businesses a Super Admin must pick one first, otherwise records could be saved into the wrong one.
+  if (tenants.length > 1) throw new Error("Chagua biashara (ofisi) unayofanyia kazi kwanza kabla ya kuhifadhi.");
   const tenant = tenants[0];
   const branches = await ctx.db.query("branches").withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id)).collect();
   const branch = branches.find((b) => b.isActive);

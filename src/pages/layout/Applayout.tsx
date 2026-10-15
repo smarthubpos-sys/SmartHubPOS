@@ -56,7 +56,7 @@ export default function AppLayout() {
     });
     return () => { cancelled = true; };
   }, [resetting, isAuthenticated, user, exitBusiness]);
-  const settings = useQuery(api.maintenance.getSettings, isAuthenticated && user && business && !business.suspended && !business.needsPicker ? {} : "skip");
+  const settings = useQuery(api.maintenance.getSettings, isAuthenticated && user && !user.requirePasswordChange && business && !business.suspended && !business.needsPicker ? {} : "skip");
   const securitySettings = settings?.app.security as unknown;
   const timeoutValue = typeof securitySettings === "object" && securitySettings !== null && "sessionTimeoutMinutes" in securitySettings
     ? securitySettings.sessionTimeoutMinutes

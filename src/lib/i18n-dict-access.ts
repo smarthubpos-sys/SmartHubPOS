@@ -23,6 +23,7 @@ export const ACCESS_DICT: Record<string, { sw: string; en: string }> = {
   "Mfano mhudumu: ruhusu Sales na Bills tu, na weka 'aone mauzo na bili zake tu'. Huduma ambazo biashara haijalipia hazionekani hapa.": { sw: "Mfano mhudumu: ruhusu Sales na Bills tu, na weka 'aone mauzo na bili zake tu'. Huduma ambazo biashara haijalipia hazionekani hapa.", en: "Example, a waiter: allow only Sales and Bills, and tick 'sees only his own sales and bills'. Services the business has not paid for are not listed here." },
   "Dashboard yangu": { sw: "Dashboard yangu", en: "My dashboard" },
   "Mauzo yangu ya leo": { sw: "Mauzo yangu ya leo", en: "My sales today" },
+  "Fedha zilizopokelewa (kwa tarehe ya invoice)": { sw: "Fedha zilizopokelewa (kwa tarehe ya invoice)", en: "Cash received (by invoice date)" },
   "Fedha nilizopokea leo": { sw: "Fedha nilizopokea leo", en: "Cash I received today" },
   "Invoice nilizotoa leo": { sw: "Invoice nilizotoa leo", en: "Invoices I issued today" },
   "Bili zangu zilizo wazi": { sw: "Bili zangu zilizo wazi", en: "My open bills" },
@@ -37,4 +38,7 @@ export const ACCESS_DICT: Record<string, { sw: string; en: string }> = {
   "Huwezi kubadilisha menyu au ruhusa za data za akaunti yako mwenyewe.": { sw: "Huwezi kubadilisha menyu au ruhusa za data za akaunti yako mwenyewe.", en: "You cannot change the menu or data permissions of your own account." },
   "Huwezi kubadilisha menyu ya Super Admin.": { sw: "Huwezi kubadilisha menyu ya Super Admin.", en: "You cannot change a Super Admin's menu." },
   "Weka sarafu (mf. TZS).": { sw: "Weka sarafu (mf. TZS).", en: "Enter a currency (e.g. TZS)." },
+  "Huna ruhusa ya kubadili / kufuta stock": { sw: "Huna ruhusa ya kubadili / kufuta stock", en: "You do not have permission to change / delete stock" },
+  "Huna ruhusa ya kubadili / kufuta stock. Muombe Super Admin akupe ruhusa hii.": { sw: "Huna ruhusa ya kubadili / kufuta stock. Muombe Super Admin akupe ruhusa hii.", en: "You do not have permission to change / delete stock. Ask the Super Admin to give you this permission." },
+  "Ruhusa ya kubadili / kufuta stock inatolewa na kuondolewa na Super Admin pekee.": { sw: "Ruhusa ya kubadili / kufuta stock inatolewa na kuondolewa na Super Admin pekee.", en: "Only the Super Admin can give or remove the permission to change / delete stock." },
 };

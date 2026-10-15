@@ -10,7 +10,7 @@ async function setup() {
   const ids = await t.run(async (ctx) => {
     const now = new Date().toISOString();
     const tenant = await ctx.db.insert("tenants", { name: "Duka", code: "D", isActive: true, createdByToken: "t", createdAt: now });
-    const mgr = await ctx.db.insert("users", { name: "Mgr", username: "mgr", role: "manager", tenantId: tenant, isActive: true });
+    const mgr = await ctx.db.insert("users", { name: "Mgr", username: "mgr", role: "manager", tenantId: tenant, isActive: true, extraPermissions: ["stock.adjust"] });
     const emp = await ctx.db.insert("employees", { tenantId: tenant, employeeCode: "E1", name: "Asha", startDate: "2026-01-01", basicSalary: 300000, salaryType: "monthly", isActive: true });
     return { tenant, mgr, emp };
   });

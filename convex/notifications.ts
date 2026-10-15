@@ -4,6 +4,7 @@ import type { Id } from "./_generated/dataModel";
 import { isManagerRole, isSuperAdmin, requireActiveUser, scopedRows } from "./access";
 import { announcementApplies } from "./announcements";
 import { planStatus, tzToday } from "./plans";
+import { effectiveModules } from "./permissions";
 
 /**
  * Alerts are computed from live data (stock, bills, leave, payroll, support), so they are always current.
@@ -56,6 +57,13 @@ export const feed = query({
         items.push({ key: `ann:${m._id}`, code: "announcement", level: m.theme === "red" ? "danger" : m.theme === "orange" ? "warning" : "info", params: { title: m.title, body: m.body }, link: "/notifications", at: m.createdAt.slice(0, 10) });
       }
     }
+
+    // Only alerts the user can actually OPEN: an alert pointing to a module this business did not pay for, or that the
+    // user's menu hides, would lead to a "module not available" screen (and could never be cleared).
+    const tenantDoc = user.tenantId ? await ctx.db.get("tenants", user.tenantId as Id<"tenants">) : null;
+    const allowed = isSuperAdmin(user) ? null : effectiveModules(tenantDoc?.modules, user.menuAccess);
+    const openable = (link: string) => !allowed || ["notifications", "help", "dashboard"].includes(link.split("/")[1] ?? "") || allowed.includes(link.split("/")[1] ?? "");
+    for (let k = items.length - 1; k >= 0; k--) if (!openable(items[k].link)) items.splice(k, 1);
 
     const reads = new Set((await ctx.db.query("notificationReads").withIndex("by_user", (q) => q.eq("userId", user._id)).collect()).map((r) => r.key));
     const rank = { danger: 0, warning: 1, info: 2 } as const;

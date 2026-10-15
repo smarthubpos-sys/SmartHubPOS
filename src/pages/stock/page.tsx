@@ -4,6 +4,7 @@ import { Package, Sliders, FolderTree, Hash, ArrowLeftRight, BarChart2, Tag, Tre
 import StockWorkspace from "@/pages/stock/StockWorkspace.tsx";
 import StockImport from "@/pages/stock/StockImport.tsx";
 import { tr } from "@/lib/i18n.ts";
+import { useStockRights } from "@/hooks/use-stock-rights.ts";
 
 const stockMenuItems = [
   {
@@ -36,6 +37,9 @@ const stockMenuItems = [
 
 export default function StockPage() {
   const navigate = useNavigate();
+  const { canAdjust } = useStockRights();
+  // Quantity Adjustment is for people the Super Admin gave the stock permission to.
+  const sections = canAdjust ? stockMenuItems : stockMenuItems.map((sec) => ({ ...sec, items: sec.items.filter((i) => i.path !== "/stock/adjustment") }));
 
   return (
     <Routes>
@@ -44,7 +48,7 @@ export default function StockPage() {
         element={
           <ModuleMenu
             title={tr("Stock Management")}
-            sections={stockMenuItems}
+            sections={sections}
             onClose={() => navigate("/dashboard")}
           />
         }

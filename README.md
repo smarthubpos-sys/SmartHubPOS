@@ -38,6 +38,15 @@ The following Convex mutations now create their stock/payment records and the as
 - `payroll.markPayrollPaid`: settlement of net payroll payable against cash.
 - `accounting.profitAndLoss` and `accounting.balanceSheet`: date-filtered reports from posted journal lines.
 
-System accounts are created per tenant/branch when first needed (1000 cash, 1100 receivables, 1200 inventory, 2000 payables, 2100 tax payable, 2200 payroll payable, 2300 deductions payable, 4000 revenue, 5000 COGS, 5100 stock adjustment gain, 5200 shrinkage expense, 6000 payroll expense). Review the chart-of-accounts mapping with the accountant before live use. Tax treatment and statutory payroll deduction allocation must be configured and verified for the applicable jurisdiction.
+System accounts are created per tenant/branch when first needed (1000 cash, 1100 receivables, 1200 inventory, 2000 payables, 2150 tax payable, 2200 payroll payable, 2300 deductions payable, 4000 revenue, 5000 COGS, 5100 stock adjustment gain, 5200 shrinkage expense, 6000 payroll expense). Review the chart-of-accounts mapping with the accountant before live use. Tax treatment and statutory payroll deduction allocation must be configured and verified for the applicable jurisdiction.
 
-**Verification status:** dependencies could not be installed in this environment before timeout; therefore the production build, lint, automated tests and deployed Convex schema/functions have not been verified. Deploy to a separate test Convex deployment, regenerate API types, and test with synthetic company/branch data before production.
+**Verification status:** `tsc -b`, `npm run lint`, `npm test` (all tests) and `vite build` pass locally. The deployed Convex schema/functions still need a test on a separate Convex deployment with synthetic data before production.
+
+## Security notes
+
+- Never commit private keys. `*.pem` is git-ignored. If a `jwt_private_key.pem` was ever shared or committed, generate a new key pair, set `JWT_PRIVATE_KEY` and `JWKS` in the Convex environment, and delete the file (this signs everyone out).
+- A user flagged `requirePasswordChange` is refused by the server on every call except changing the password.
+
+## Goods received (GRN)
+
+Confirming a GRN adds stock and posts Dr Inventory (1200) / Cr Goods received not invoiced (2050). Cancelling it reverses both. When the supplier invoice arrives, enter it in Purchase Entry **only for goods that were not already received through a GRN**, otherwise stock is counted twice; the 2050 balance is then cleared against Accounts payable by the accountant with a manual journal.

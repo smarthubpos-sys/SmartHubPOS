@@ -8,7 +8,7 @@ async function setup() {
   const t = convexTest(schema, modules);
   const ids = await t.run(async (ctx) => {
     const tenantId = await ctx.db.insert("tenants", { name: "Shop", code: "SHOP", isActive: true, createdByToken: "t", createdAt: new Date().toISOString() });
-    const userId = await ctx.db.insert("users", { name: "Mgr", username: "mgr", role: "manager", tenantId, isActive: true });
+    const userId = await ctx.db.insert("users", { name: "Mgr", username: "mgr", role: "manager", tenantId, isActive: true, extraPermissions: ["stock.adjust"] });
     const clientId = await ctx.db.insert("clients", { tenantId, code: "CASH", name: "Cash Customer", openingBalance: 0, creditPolicy: "allow", isActive: true });
     return { tenantId, userId, clientId };
   });

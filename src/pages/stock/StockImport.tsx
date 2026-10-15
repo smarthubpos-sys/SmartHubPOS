@@ -9,6 +9,7 @@ import { Empty, PageHeader, Panel, Pill, Stat, Table } from "@/components/page-k
 import { downloadProductTemplate, parseProductFile, type ParsedRow } from "@/lib/excel.ts";
 import { formatNumber } from "@/lib/format.ts";
 import { errorText, tr } from "@/lib/i18n.ts";
+import { useStockRights } from "@/hooks/use-stock-rights.ts";
 
 type Checked = ParsedRow & { status: "new" | "update" | "error"; itemCode?: string; message?: string };
 const CHUNK = 400;
@@ -21,7 +22,10 @@ export default function StockImport() {
   const input = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState("");
   const [rows, setRows] = useState<Checked[]>([]);
-  const [updateExisting, setUpdateExisting] = useState(true);
+  const { canAdjust } = useStockRights();
+  const [wantUpdate, setUpdateExisting] = useState(true);
+  const updateExisting = wantUpdate && canAdjust; // updating existing items needs the stock permission
+
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
   const [done, setDone] = useState<{ created: number; updated: number; errors: number } | null>(null);
@@ -90,7 +94,7 @@ export default function StockImport() {
             <input ref={input} type="file" accept=".xlsx" className="hidden" disabled={busy} onChange={(e) => void onFile(e.target.files?.[0])} />
           </label>
           <label className="mt-3 flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={updateExisting} onChange={(e) => { setUpdateExisting(e.target.checked); if (rows.length) void check(rows, e.target.checked); }} />
+            <input type="checkbox" disabled={!canAdjust} checked={updateExisting} onChange={(e) => { setUpdateExisting(e.target.checked); if (rows.length) void check(rows, e.target.checked); }} />
             {tr("Boresha bei na taarifa za bidhaa zilizopo tayari")}
           </label>
         </Panel>

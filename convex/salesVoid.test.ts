@@ -56,7 +56,7 @@ describe("cancel invoice", () => {
     const { t, asMgr, asCashier, clientId, productId } = await setup();
     const inv = await asMgr.mutation(api.sales.createInvoice, { clientId, invoiceDate: date, lines: [{ productId, qty: 3, unitPrice: 10000 }] });
     await asMgr.mutation(api.sales.recordPayment, { invoiceId: inv.invoiceId, paymentDate: date, amount: 10000, paymentMethod: "cash" });
-    await expect(asCashier.mutation(api.sales.voidInvoice, { invoiceId: inv.invoiceId })).rejects.toThrow(/meneja/);
+    await expect(asCashier.mutation(api.sales.voidInvoice, { invoiceId: inv.invoiceId })).rejects.toThrow(/huna ruhusa ya kufuta/);
 
     const r = await asMgr.mutation(api.sales.voidInvoice, { invoiceId: inv.invoiceId, reason: "kosa la bei" });
     expect(r.refunded).toBe(10000);
@@ -95,5 +95,33 @@ describe("closed periods", () => {
     // the refused sale left nothing behind (stock moved only for the two good invoices)
     const qty = await t.run(async (ctx) => (await ctx.db.get("products", productId))?.currentQty);
     expect(qty).toBe(98);
+  });
+});
+
+describe("who may delete (cancel) an order", () => {
+  it("a cashier cannot until the permission is given to the role or to that one user; taking it away blocks again", async () => {
+    const { t, asMgr, asCashier, cashier, clientId, productId } = await setup();
+    const mk = async () => (await asMgr.mutation(api.sales.createInvoice, { clientId, invoiceDate: date, lines: [{ productId, qty: 1, unitPrice: 10000 }] })).invoiceId;
+
+    // 1. Nobody but managers by default.
+    await expect(asCashier.mutation(api.sales.voidInvoice, { invoiceId: await mk() })).rejects.toThrow(/huna ruhusa ya kufuta/);
+
+    // 2. Given to ONE user directly (User Settings).
+    await t.run(async (ctx) => { await ctx.db.patch("users", cashier, { extraPermissions: ["sales.void"] }); });
+    await asCashier.mutation(api.sales.voidInvoice, { invoiceId: await mk() });
+    await t.run(async (ctx) => { await ctx.db.patch("users", cashier, { extraPermissions: [] }); });
+    await expect(asCashier.mutation(api.sales.voidInvoice, { invoiceId: await mk() })).rejects.toThrow(/huna ruhusa ya kufuta/);
+
+    // 3. Given to the whole ROLE (Role Management).
+    await t.run(async (ctx) => { await ctx.db.insert("roles", { name: "cashier", displayName: "Cashier", permissions: ["sales.manage", "sales.void"], isSystem: true }); });
+    await asCashier.mutation(api.sales.voidInvoice, { invoiceId: await mk() });
+  });
+
+  it("the current-business query tells the screen whether the Cancel button should show", async () => {
+    const { t, asMgr, asCashier, cashier } = await setup();
+    expect((await asMgr.query(api.tenants.current, {}))?.canVoidInvoice).toBe(true);
+    expect((await asCashier.query(api.tenants.current, {}))?.canVoidInvoice).toBe(false);
+    await t.run(async (ctx) => { await ctx.db.patch("users", cashier, { extraPermissions: ["sales.void"] }); });
+    expect((await asCashier.query(api.tenants.current, {}))?.canVoidInvoice).toBe(true);
   });
 });

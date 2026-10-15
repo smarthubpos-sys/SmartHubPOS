@@ -3,7 +3,7 @@ import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Infer } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireActiveUser, requireSuperAdminUser } from "./access";
 import { addDays, tzToday } from "./plans";
 
@@ -220,10 +220,17 @@ export const rebuild = internalMutation({
     }
 
     if (a.phase === "top") {
-      // Newest 300 posted invoices of the last 90 days (same sample the old dashboard used).
+      // Newest posted invoices of the last 90 days, sampled PER DEPARTMENT: one busy department must not push a quiet
+      // department's invoices out of the sample (its "top products" would then be empty or wrong).
       const since90 = addDays(today, -89), since30 = addDays(today, -29), since7 = addDays(today, -6);
-      const recent = (await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("invoiceDate", since90)).order("desc").take(450))
-        .filter((i) => i.status === "posted").slice(0, 300);
+      const branchRows = await ctx.db.query("branches").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).collect();
+      const scopes: Array<Id<"branches"> | undefined> = [undefined, ...branchRows.map((b) => b._id)];
+      const perScope = Math.max(50, Math.min(300, Math.floor(900 / scopes.length)));
+      const recent: Doc<"invoices">[] = [];
+      for (const branchId of scopes) {
+        const rows = await ctx.db.query("invoices").withIndex("by_scope_date", (q) => q.eq("tenantId", tenantId).eq("branchId", branchId).gte("invoiceDate", since90)).order("desc").take(Math.floor(perScope * 1.5));
+        recent.push(...rows.filter((i) => i.status === "posted").slice(0, perScope));
+      }
       const rev: Record<string, { d7: Map<string, number>; d30: Map<string, number>; d90: Map<string, number> }> = {};
       for (const inv of recent) {
         const r = (rev[bkey(inv.branchId)] ??= { d7: new Map(), d30: new Map(), d90: new Map() });

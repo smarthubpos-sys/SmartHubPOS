@@ -20,6 +20,7 @@ export default defineSchema({
     tenantId: v.optional(v.id("tenants")),
     startsAt: v.optional(v.string()), endsAt: v.optional(v.string()),
     isActive: v.boolean(), createdBy: v.id("users"), createdAt: v.string(),
+    clicks: v.optional(v.number()), // banner: how many times users opened its link
   }).index("by_active", ["isActive"]),
   branches: defineTable({ tenantId: v.id("tenants"), name: v.string(), code: v.string(), isActive: v.boolean(), createdAt: v.string() }).index("by_tenant", ["tenantId"]).index("by_tenant_code", ["tenantId", "code"]),
   tenantSettings: defineTable({ tenantId: v.id("tenants"), traIntegrationEnabled: v.boolean(), stockControlEnabled: v.boolean(), traEnvironment: v.optional(v.string()), traTaxpayerId: v.optional(v.string()), defaultCurrency: v.string() }).index("by_tenant", ["tenantId"]),
@@ -37,6 +38,9 @@ export default defineSchema({
     tenantId: v.optional(v.id("tenants")),
     branchId: v.optional(v.id("branches")),
     branchPicked: v.optional(v.boolean()), // true when a floating (all-departments) user chose a department to work in
+    // Departments this user may work in. branchId = the one he works in NOW; with 2+ ids he switches only between these (top bar).
+    branchIds: v.optional(v.array(v.id("branches"))),
+    allDepartments: v.optional(v.boolean()), // explicit grant: this (non-manager) user may work in every department
     name: v.optional(v.string()),
     email: v.optional(v.string()),
     username: v.optional(v.string()),
@@ -46,6 +50,7 @@ export default defineSchema({
     requirePasswordChange: v.optional(v.boolean()),
     lastLogin: v.optional(v.string()),
     menuAccess: v.optional(v.array(v.string())), // sidebar modules this user may open (missing = all the business has)
+    extraPermissions: v.optional(v.array(v.string())), // permissions given to this ONE user on top of his role (e.g. "sales.void")
     ownDataOnly: v.optional(v.boolean()), // staff mode: sees only his own sales/bills and a personal dashboard
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("email", ["email"])
@@ -58,6 +63,7 @@ export default defineSchema({
     displayName: v.string(),
     permissions: v.array(v.string()),
     isSystem: v.boolean(),
+    knownKeys: v.optional(v.array(v.string())), // permission keys that existed when the role was last saved (new keys get the built-in default)
   }).index("by_name", ["name"]),
 
   // ── DASHBOARD ROLL-UPS (small pre-computed numbers so the dashboard never scans invoices/products) ──
@@ -313,6 +319,7 @@ export default defineSchema({
     reference: v.optional(v.string()),
     notes: v.optional(v.string()),
     createdBy: v.id("users"),
+    voided: v.optional(v.boolean()), // true when the purchase it was paid on was deleted and the money came back
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_supplier", ["supplierId"])
     .index("by_date", ["paymentDate"])
@@ -386,6 +393,8 @@ export default defineSchema({
     postedAt: v.optional(v.string()),
   }) .index("by_tenant_date", ["tenantId", "invoiceDate"]) .index("by_tenant_status", ["tenantId", "status"]) .index("by_tenant_no", ["tenantId", "invoiceNo"]) .index("by_scope", ["tenantId", "branchId"])
     .index("by_tenant_user_date", ["tenantId", "createdBy", "invoiceDate"])
+    .index("by_scope_date", ["tenantId", "branchId", "invoiceDate"])
+    .index("by_scope_outstanding", ["tenantId", "branchId", "outstanding"])
     .index("by_client", ["clientId"])
     .index("by_date", ["invoiceDate"])
     .index("by_invoiceNo", ["invoiceNo"])
@@ -425,6 +434,7 @@ export default defineSchema({
     .index("by_client", ["clientId"])
     .index("by_date", ["paymentDate"])
     .index("by_tenant_date", ["tenantId", "paymentDate"])
+    .index("by_scope_date", ["tenantId", "branchId", "paymentDate"])
     .index("by_invoice", ["invoiceId"]),
 
   // ── SALES RETURNS ────────────────────────────────────────────
@@ -608,6 +618,7 @@ export default defineSchema({
   }) .index("by_tenant_ref", ["tenantId", "reference"]) .index("by_scope", ["tenantId", "branchId"])
     .index("by_date", ["entryDate"])
     .index("by_tenant_date", ["tenantId", "entryDate"])
+    .index("by_scope_date", ["tenantId", "branchId", "entryDate"])
     .index("by_reference", ["reference"])
     .index("by_status", ["status"]),
 

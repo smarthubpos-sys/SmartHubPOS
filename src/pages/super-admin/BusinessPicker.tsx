@@ -40,9 +40,12 @@ export default function BusinessPicker() {
   const [creating, setCreating] = useState(false);
   const [openCard, setOpenCard] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
-  const [alertsOpen, setAlertsOpen] = useState(false);
+  // The alerts panel opens by itself once per browser session when something is dangerous; the person can toggle it afterwards.
+  const [alertsToggled, setAlertsToggled] = useState<boolean | null>(null);
+  const [firstAlertVisit] = useState(() => { try { return !window.sessionStorage.getItem("smarthub.alerts.toast"); } catch { return true; } });
   const alertCount = summary?.alerts.length ?? 0;
   const dangerCount = summary?.alerts.filter((a) => a.level === "danger").length ?? 0;
+  const alertsOpen = alertsToggled ?? (firstAlertVisit && dangerCount > 0);
   useEffect(() => {
     if (!summary || dangerCount === 0) return;
     const key = "smarthub.alerts.toast";
@@ -58,6 +61,19 @@ export default function BusinessPicker() {
     : a.code === "expiring" ? tr("{0}: usajili unaisha baada ya siku {1} ({2}).", [a.name, a.a ?? 0, a.b ?? "—"])
     : a.code === "failures" ? tr("{0}: vitendo {1} vimeshindwa ndani ya saa 24 zilizopita.", [a.name, a.a ?? 0])
     : tr("{0}: biashara imesimamishwa.", [a.name]);
+
+  type SummaryAlert = NonNullable<typeof summary>["alerts"][number];
+  /** Opens what the alert is about: the business card (and its subscription panel for expiry alerts), scrolled into view. */
+  function openAlert(a: SummaryAlert) {
+    const id = String(a.tenantId);
+    setTab("businesses");
+    setFilter("");
+    setOpenCard(id);
+    setEditId(null);
+    if (a.code === "expired" || a.code === "expiring") setOpenId(id);
+    if (a.code === "failures") toast.info(tr("Ingia kwenye biashara hii kisha fungua Maintenance > Audit Trail kuona vitendo vilivyoshindwa."));
+    window.setTimeout(() => document.getElementById(`biz-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 120);
+  }
 
   async function enter(id: Id<"tenants">) {
     setBusyId(String(id));
@@ -130,7 +146,7 @@ export default function BusinessPicker() {
             </div>
 
             <div className="rounded-xl border border-white/10 bg-[#061f4b]/50">
-              <button type="button" aria-expanded={alertsOpen} onClick={() => setAlertsOpen((v) => !v)} className="flex min-h-10 w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm font-semibold text-white">
+              <button type="button" aria-expanded={alertsOpen} onClick={() => setAlertsToggled(!alertsOpen)} className="flex min-h-10 w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm font-semibold text-white">
                 <Bell className="h-4 w-4 shrink-0" />
                 <span className="flex-1">{tr("Tahadhari")}</span>
                 <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${dangerCount > 0 ? "bg-red-500 text-white" : alertCount > 0 ? "bg-amber-300 text-slate-900" : "bg-emerald-400/20 text-emerald-100"}`}>{alertCount}</span>
@@ -139,10 +155,12 @@ export default function BusinessPicker() {
               {alertsOpen && <div className="space-y-1.5 border-t border-white/10 p-2">
                 {alertCount === 0 && <p className="px-1 py-1 text-xs text-blue-100">{tr("Hakuna tahadhari. Kila kitu kiko sawa.")}</p>}
                 {summary.alerts.map((a) => (
-                  <div key={a.key} className={`flex items-start gap-2 rounded-lg px-2.5 py-1.5 text-xs ${a.level === "danger" ? "bg-red-500/20 text-red-50" : a.level === "warning" ? "bg-amber-300/15 text-amber-50" : "bg-white/10 text-blue-50"}`}>
+                  <button key={a.key} type="button" onClick={() => openAlert(a)} title={tr("Bonyeza kufungua biashara hii")}
+                    className={`flex w-full cursor-pointer items-start gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${a.level === "danger" ? "bg-red-500/20 text-red-50 hover:bg-red-500/30" : a.level === "warning" ? "bg-amber-300/15 text-amber-50 hover:bg-amber-300/25" : "bg-white/10 text-blue-50 hover:bg-white/20"}`}>
                     <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${a.level === "danger" ? "bg-red-400" : a.level === "warning" ? "bg-amber-300" : "bg-blue-300"}`} />
-                    <span className="min-w-0 break-words">{alertText(a)}</span>
-                  </div>
+                    <span className="min-w-0 flex-1 break-words">{alertText(a)}</span>
+                    <span className="shrink-0 self-center text-[10px] font-semibold underline underline-offset-2">{a.code === "expired" || a.code === "expiring" ? tr("Fungua usajili") : tr("Fungua")}</span>
+                  </button>
                 ))}
               </div>}
             </div>
@@ -189,7 +207,7 @@ export default function BusinessPicker() {
             const open = openCard === String(b._id);
             const paid = summary?.paidByTenant[String(b._id)] ?? 0;
             return (
-              <article key={b._id} className={`rounded-xl border shadow-sm ${open ? "col-span-full" : ""} ${b.isActive ? "border-white/10 bg-[#061f4b]/70" : "border-amber-400/30 bg-[#061f4b]/50 opacity-90"}`}>
+              <article key={b._id} id={`biz-${b._id}`} className={`scroll-mt-24 rounded-xl border shadow-sm ${open ? "col-span-full" : ""} ${b.isActive ? "border-white/10 bg-[#061f4b]/70" : "border-amber-400/30 bg-[#061f4b]/50 opacity-90"}`}>
                 <button type="button" aria-expanded={open} onClick={() => setOpenCard(open ? null : String(b._id))} className="flex w-full cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-left">
                   <span className={`h-2 w-2 shrink-0 rounded-full ${b.isActive ? "bg-emerald-400" : "bg-amber-400"}`} title={b.isActive ? tr("Inafanya kazi") : tr("Imesimamishwa")} />
                   <span className="min-w-0 flex-1">

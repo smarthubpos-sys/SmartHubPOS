@@ -71,4 +71,19 @@ export async function postSystemJournal(ctx: MutationCtx, input: { scope: Scope;
   return id;
 }
 
+/** A date must be a real calendar day written YYYY-MM-DD (garbage dates would otherwise reach the ledger and break sorting / closed-period checks). */
+export function assertDate(value: string | undefined, label = "Tarehe"): string {
+  const d = String(value ?? "");
+  const ok = /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
+  if (!ok) throw new Error(`${label} si sahihi (tumia mwaka-mwezi-siku, mfano 2026-10-15).`);
+  return d;
+}
+
+/** Optional money / rate values must be real finite numbers: NaN and Infinity slip through plain `<`, `>` comparisons. */
+export function assertFinite(value: number | undefined, label: string): number {
+  const n = value ?? 0;
+  if (!Number.isFinite(n)) throw new Error(`${label} si sahihi.`);
+  return n;
+}
+
 export { roundMoney };

@@ -10,6 +10,7 @@ import { DateRange, ReportTable, Stat } from "@/pages/shared/report.tsx";
 import { fmt, monthStart, num, round2, today, type Row } from "@/pages/shared/report-utils.ts";
 import { tr, errorText, trValue } from "@/lib/i18n.ts";
 import { printElement } from "@/lib/print-area.ts";
+import { useStockRights } from "@/hooks/use-stock-rights.ts";
 
 const selectClass = "h-10 rounded-md border bg-background px-3";
 const loading = <div className="p-6 text-sm text-muted-foreground">{tr("Inapakia taarifa za stock…")}</div>;
@@ -26,6 +27,7 @@ const emptyProduct = { itemCode: "", partNumber: "", name: "", description: "", 
 function ProductsScreen() {
   const data = useQuery(api.inventory.stockRegisters, { light: true });
   const upsert = useMutation(api.products.upsert);
+  const { canAdjust } = useStockRights();
   const [mode, setMode] = useState<"list" | "edit">("list");
   const [editingId, setEditingId] = useState("");
   const [search, setSearch] = useState("");
@@ -153,7 +155,7 @@ function ProductsScreen() {
                   <td className="p-3 text-right tabular-nums">{fmt(p.sellingPrice)}</td><td className="p-3 text-right tabular-nums">{fmt(p.cost)}</td>
                   <td className={`p-3 text-right tabular-nums ${p.currentQty <= 0 ? "text-destructive" : ""}`}>{fmt(p.currentQty, 4)}</td>
                   <td className="p-3">{p.isActive ? tr("Active") : tr("Imezimwa")}</td>
-                  <td className="p-3"><Button size="sm" variant="outline" onClick={() => startEdit(p)}>{tr("Modify")}</Button></td>
+                  <td className="p-3">{canAdjust ? <Button size="sm" variant="outline" onClick={() => startEdit(p)}>{tr("Modify")}</Button> : <span className="text-xs text-muted-foreground" title={tr("Huna ruhusa ya kubadili / kufuta stock")}>—</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -170,12 +172,14 @@ function ProductsScreen() {
 function AdjustmentScreen() {
   const data = useQuery(api.inventory.stockRegisters, { startDate: monthStart(), endDate: today(), light: true });
   const adjust = useMutation(api.inventory.adjust);
+  const rights = useStockRights();
   const [productId, setProductId] = useState("");
   const [counted, setCounted] = useState("");
   const [date, setDate] = useState(today());
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
-  if (!data) return loading;
+  if (!data || !rights.ready) return loading;
+  if (!rights.canAdjust) return <div className="space-y-3"><h1 className="text-2xl font-bold">{tr("Quantity Adjustment")}</h1><p className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm">{tr("Huna ruhusa ya kubadili / kufuta stock. Muombe Super Admin akupe ruhusa hii.")}</p></div>;
   const product = data.products.find((p) => p._id === productId);
   const diff = product && counted !== "" ? round2(num(counted) - product.currentQty) : 0;
   return (
@@ -269,6 +273,7 @@ function QuantityScreen({ kind }: { kind: "item-quantity" | "quantity" | "prices
   // Only the quantity screens compare stock with the whole movement history; the others stay light.
   const data = useQuery(api.inventory.stockRegisters, { light: !(kind === "item-quantity" || kind === "quantity") });
   const reconcile = useMutation(api.inventory.reconcileMovements);
+  const { canAdjust: canReconcile } = useStockRights();
   const [group, setGroup] = useState("");
   if (!data) return loading;
   const titles = { "item-quantity": tr("Item Quantity"), quantity: tr("Quantity Report"), prices: tr("Selling Price Report"), reorder: tr("Stock Reorder Report"), "out-of-stock": tr("Out of Stock Report") };
@@ -303,7 +308,7 @@ function QuantityScreen({ kind }: { kind: "item-quantity" | "quantity" | "prices
       {bad.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/50 bg-amber-500/10 p-4 text-sm">
           <span>{tr("Bidhaa")} {bad.length}  {tr("zina historia ya movement isiyolingana na stock iliyopo (mfano: stock ya kuanzia iliyosajiliwa kabla movements hazijaanza kurekodiwa). Idadi zilizoonyeshwa ni za mfumo; sawazisha historia ili ripoti za movement zilingane.")}</span>
-          <Button size="sm" onClick={() => void save(async () => { const r = await reconcile({}); if (!r.fixed) throw new Error(tr("Hakuna cha kusawazisha.")); }, tr("Historia ya movements imesawazishwa."))}>{tr("Sawazisha historia")}</Button>
+          {canReconcile && <Button size="sm" onClick={() => void save(async () => { const r = await reconcile({}); if (!r.fixed) throw new Error(tr("Hakuna cha kusawazisha.")); }, tr("Historia ya movements imesawazishwa."))}>{tr("Sawazisha historia")}</Button>}
         </div>
       )}
       <ReportTable title={titles[kind]} rows={rows} sumCols={sumCols} />

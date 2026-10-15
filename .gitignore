@@ -29,5 +29,10 @@ tsconfig.tsbuildinfo
 # Environment variables
 .env*
 
-# Private keys — never commit
-jwt_private_key.pem
+# Private keys / certificates - never commit
+*.pem
+*.key
+
+# Local deployment and backup files
+.vercel/
+fix-backup/

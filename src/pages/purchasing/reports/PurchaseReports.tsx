@@ -8,6 +8,7 @@ import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { PurchaseDocumentDialog, StatusBadge } from "@/components/PurchaseDocument.tsx";
 import { statusKey } from "@/lib/purchase-document-utils.ts";
+import { PurchaseDocActions } from "@/components/PurchaseManage.tsx";
 import { formatDate, formatNumber, localDate } from "@/lib/format.ts";
 import { tr, trValue } from "@/lib/i18n.ts";
 import ReportSheet, { DataTable, SectionTitle, type Column, type Header } from "./ReportSheet.tsx";
@@ -64,6 +65,7 @@ function InvoiceList({ header, startDate, endDate, data, openDoc }: R) {
     { key: "outstanding", label: "Deni", align: "right", render: (r) => m(r.outstanding) },
     { key: "status", label: "Hali", align: "center", render: (r) => <StatusBadge status={statusKey(r)} /> },
     { key: "open", label: "", align: "center", render: (r) => <OpenButton id={r._id} open={openDoc} /> },
+    { key: "manage", label: "", align: "center", render: (r) => <PurchaseDocActions kind="invoice" id={r._id} status={r.status} /> },
   ];
   const total = sum(live, (x) => x.total), paid = sum(live, (x) => x.amountPaid), out = sum(live, (x) => x.outstanding);
   return (

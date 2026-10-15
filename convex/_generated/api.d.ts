@@ -34,6 +34,7 @@ import type * as plans from "../plans.js";
 import type * as products from "../products.js";
 import type * as purchaseReports from "../purchaseReports.js";
 import type * as purchasing from "../purchasing.js";
+import type * as purchasingEdit from "../purchasingEdit.js";
 import type * as reportCore from "../reportCore.js";
 import type * as reportEmails from "../reportEmails.js";
 import type * as sales from "../sales.js";
@@ -78,6 +79,7 @@ declare const fullApi: ApiFromModules<{
   products: typeof products;
   purchaseReports: typeof purchaseReports;
   purchasing: typeof purchasing;
+  purchasingEdit: typeof purchasingEdit;
   reportCore: typeof reportCore;
   reportEmails: typeof reportEmails;
   sales: typeof sales;

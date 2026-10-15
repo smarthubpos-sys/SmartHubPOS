@@ -193,6 +193,7 @@ export const repairOldPayments = mutation({
     // supplier payments: same idea (payments made when goods were received sit inside the PUR journal)
     const onReceipt = new Map<string, Doc<"supplierPayments">[]>();
     for (const p of await scopedRows(ctx, user, "supplierPayments")) {
+      if (p.voided) continue; // money came back when its purchase was deleted
       if (p.notes === ON_RECEIPT && p.purchaseId) { const k = String(p.purchaseId); onReceipt.set(k, [...(onReceipt.get(k) ?? []), p]); continue; }
       const scope = scopeOf(p);
       await fix(scope, `SUPPAY-${String(p._id)}`, String(p._id), "credit", [{ accountId: await methodAccount(ctx, scope, { methodId: p.paymentMethodId, method: p.paymentMethod }), amount: p.amount }]);

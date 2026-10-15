@@ -217,7 +217,7 @@ export default function InvoiceEntry() {
                 <label className="flex items-center gap-1 text-xs">{tr("Printer")}<select className="h-9 rounded-md border bg-background px-2" value={paper} onChange={(e) => { const v = e.target.value as Paper; setPaper(v); savePaper(v); }}><option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option></select></label>
                 <Button disabled={!selected} onClick={() => { setJustSaved(null); setPrintToken((n) => n + 1); }}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha invoice iliyochaguliwa")}</Button>
                 {business?.isManager && <Button variant="outline" disabled={!selected || busy} onClick={() => { setJustSaved(null); setReturning(true); }}>{tr("Rejesha bidhaa (sehemu)")}</Button>}
-                {business?.isManager && <Button variant="destructive" disabled={!selected || busy} onClick={() => void cancelSelected()}>{tr("Batilisha invoice iliyochaguliwa")}</Button>}
+                {business?.canVoidInvoice && <Button variant="destructive" disabled={!selected || busy} onClick={() => void cancelSelected()}>{tr("Batilisha invoice iliyochaguliwa")}</Button>}
               </div>
             </div>
             {!recent.invoices.length && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice bado.")}</p>}

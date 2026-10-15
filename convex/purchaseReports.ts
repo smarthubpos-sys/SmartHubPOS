@@ -50,6 +50,7 @@ export const purchaseDocument = query({
       lines.push({ name: product?.name ?? "Product", itemCode: product?.itemCode ?? "", unit: unit?.name ?? "", qty: l.qty, unitCost: l.unitCost, discount: l.discount, total: l.lineTotal });
     }
     const payments = (await ctx.db.query("supplierPayments").withIndex("by_purchase", (q) => q.eq("purchaseId", purchase._id)).collect())
+      .filter((p) => !p.voided)
       .sort((x, y) => x.paymentDate.localeCompare(y.paymentDate))
       .map((p) => ({ date: p.paymentDate, method: p.paymentMethod, reference: p.reference ?? "", amount: p.amount }));
     const creator = await ctx.db.get("users", purchase.createdBy);
@@ -93,7 +94,7 @@ async function movementsOf(ctx: QueryCtx, u: UserLike) {
   const by = new Map<string, Movement[]>();
   const push = (id: Id<"suppliers">, m: Movement) => { const k = String(id); const list = by.get(k) ?? []; list.push(m); by.set(k, list); };
   for (const p of filterScoped(u, purchases).filter((x) => x.status === "posted")) push(p.supplierId, { date: p.purchaseDate, type: "purchase", reference: p.invoiceNo ?? p.internalRef, description: p.supplierInvoiceNo && p.supplierInvoiceNo !== p.invoiceNo ? `Supplier inv. ${p.supplierInvoiceNo}` : "Purchase invoice", charge: p.total, credit: 0, purchaseId: p._id });
-  for (const p of filterScoped(u, payments)) push(p.supplierId, { date: p.paymentDate, type: "payment", reference: p.reference ?? `PAY-${String(p._id).slice(-6)}`, description: p.notes ?? `Payment (${p.paymentMethod})`, charge: 0, credit: p.amount });
+  for (const p of filterScoped(u, payments).filter((x) => !x.voided)) push(p.supplierId, { date: p.paymentDate, type: "payment", reference: p.reference ?? `PAY-${String(p._id).slice(-6)}`, description: p.notes ?? `Payment (${p.paymentMethod})`, charge: 0, credit: p.amount });
   for (const r of filterScoped(u, returns).filter((x) => x.status === "posted")) push(r.supplierId, { date: r.returnDate, type: "return", reference: r.returnRef, description: r.reason ?? "Purchase return", charge: 0, credit: r.total });
   return { by, suppliers: filterBusiness(u, suppliers) as Doc<"suppliers">[] };
 }

@@ -1,3 +1,4 @@
+
 import convexPlugin from "@convex-dev/eslint-plugin";
 import js from "@eslint/js";
 import reactHooks from "eslint-plugin-react-hooks";
@@ -8,7 +9,7 @@ import tseslint from "typescript-eslint";
 import { defineConfig } from "eslint/config";
 
 export default defineConfig([
-  globalIgnores(["dist", "**/_generated/*"]),
+  globalIgnores(["dist", "**/_generated/*", "fix-backup/**", ".vercel/**"]),
   {
     files: ["**/*.{ts,tsx}"],
     extends: [
@@ -21,7 +22,11 @@ export default defineConfig([
     rules: {
       "@typescript-eslint/ban-ts-comment": [
         "error",
-        { "ts-ignore": true, "ts-expect-error": true, "ts-nocheck": true },
+        {
+          "ts-ignore": true,
+          "ts-expect-error": true,
+          "ts-nocheck": true,
+        },
       ],
       "@typescript-eslint/no-unused-vars": "off",
       "prefer-const": "off",
@@ -36,7 +41,7 @@ export default defineConfig([
     },
   },
   {
-    // Backend (convex/) is now fully typed: no explicit `any` anywhere. Keep it that way.
+    // Backend (convex/) is now fully typed: no explicit `any` anywhere.
     files: ["convex/**/*.{ts,tsx}"],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
