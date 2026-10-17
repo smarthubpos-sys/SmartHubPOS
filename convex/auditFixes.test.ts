@@ -30,6 +30,8 @@ describe("audit fixes", () => {
     await t.run(async (ctx) => {
       const branchId = await ctx.db.insert("branches", { tenantId, name: "Bar", code: "DK-D1", isActive: true, createdAt: new Date().toISOString() });
       await ctx.db.patch("users", barUser, { branchId });
+      // A cashier has no purchasing access by default (least privilege); this test is about department scoping, so grant it to the role.
+      await ctx.db.insert("roles", { name: "cashier", displayName: "Cashier", permissions: ["sales.view", "sales.manage", "sales.print", "purchasing.view"], isSystem: true });
     });
     const reg = await asBar.query(api.purchasing.purchasingRegisters, {});
     expect(reg.suppliers.map((s) => s._id)).toContain(supplierId);

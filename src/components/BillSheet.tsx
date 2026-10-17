@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { Empty } from "@/components/page-kit.tsx";
 import { formatDate, formatNumber } from "@/lib/format.ts";
 import { printElement, type Paper } from "@/lib/print-area.ts";
+import { shouldSchedulePrint } from "@/lib/print-policy.ts";
 import { tr } from "@/lib/i18n.ts";
 
 /**
@@ -18,12 +19,20 @@ export default function BillSheet({ invoiceIds, printToken, paper, whatsappEnabl
   const printed = useRef(0);
   const articleRef = useRef<HTMLElement>(null);
 
+  const myPerms = useQuery(api.maintenance.myPermissions, {});
+  const canPrint = !!myPerms?.includes("sales.print");
+
   useEffect(() => {
-    if (!bill || printToken === 0 || printed.current === printToken) return;
-    printed.current = printToken;
-    const t = window.setTimeout(() => printElement(articleRef.current, paper), 150);
+    if (!shouldSchedulePrint({ dataReady: !!bill, allowed: canPrint, token: printToken, lastPrinted: printed.current })) return;
+    // The "printed" marker is set only when the timer really fires: a re-render (e.g. live data update) cancels and reschedules
+    // instead of losing the print, and the same token can never print twice.
+    const t = window.setTimeout(() => {
+      if (printed.current === printToken) return;
+      printed.current = printToken;
+      printElement(articleRef.current, paper);
+    }, 150);
     return () => window.clearTimeout(t);
-  }, [bill, printToken, paper]);
+  }, [bill, canPrint, printToken, paper]);
 
   if (bill === undefined) return <Empty>{tr("Inapakia…")}</Empty>;
   const dp = bill.company.decimalPlaces;
@@ -52,7 +61,7 @@ export default function BillSheet({ invoiceIds, printToken, paper, whatsappEnabl
       <div className="mb-3 flex flex-wrap items-center justify-end gap-2 print:hidden">
         <label className="mr-auto flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><input type="checkbox" checked={whatsappEnabled} onChange={(e) => setWhatsappEnabled(e.target.checked)} />{tr("Washa kutuma bili WhatsApp")}</label>
         {whatsappEnabled && phone && <Button variant="outline" onClick={() => window.open(whatsappUrl, "_blank", "noopener,noreferrer")}><MessageCircle className="mr-1 h-4 w-4" />{tr("Tuma bill WhatsApp")}</Button>}
-        <Button onClick={() => printElement(articleRef.current, paper)}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>
+        {canPrint && <Button onClick={() => printElement(articleRef.current, paper)}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
       </div>
       <article ref={articleRef} data-paper={paper} className={`print-area mx-auto space-y-4 rounded-2xl border bg-card p-6 text-sm print:rounded-none print:border-0 print:p-0 ${paper === "A4" ? "max-w-3xl print:max-w-none" : paper === "58mm" ? "max-w-[58mm]" : "max-w-[80mm]"}`}>
         <header className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
@@ -65,7 +74,8 @@ export default function BillSheet({ invoiceIds, printToken, paper, whatsappEnabl
           </div>
           <div className="text-right">
             <h3 className="text-xl font-bold tracking-wide">{heading}</h3>
-            <p className="text-xs">{tr("Tarehe")}: {formatDate(new Date().toISOString().slice(0, 10))}</p>
+            <p className="text-xs">{tr("Tarehe")}: {bill.savedAt ? `${formatDate(bill.savedAt.slice(0, 10))} ${new Date(bill.savedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : formatDate(new Date().toISOString().slice(0, 10))}</p>
+            {bill.cashier && <p className="text-xs">{tr("Muuzaji")}: {bill.cashier}</p>}
           </div>
         </header>
 
@@ -99,7 +109,7 @@ export default function BillSheet({ invoiceIds, printToken, paper, whatsappEnabl
 
         <footer className="ml-auto max-w-xs space-y-1 border-t pt-3">
           <div className="flex justify-between"><span>{isInvoice ? tr("Jumla ya invoice") : tr("Jumla ya bili")}</span><span className="font-bold">{m(bill.totals.total)}</span></div>
-          <div className="flex justify-between"><span>{tr("Imelipwa")}</span><span>{m(bill.totals.paid)}</span></div>
+          <div className="flex justify-between"><span>{tr("Imelipwa")}{bill.paymentMethods.length > 0 ? ` (${bill.paymentMethods.join(", ")})` : ""}</span><span>{m(bill.totals.paid)}</span></div>
           <div className="flex justify-between border-t pt-1 text-base font-bold"><span>{tr("Deni lililobaki")}</span><span>{m(bill.totals.outstanding)}</span></div>
         </footer>
         {bill.receiptFooter?.trim() && <p className="pt-2 text-center text-xs text-muted-foreground whitespace-pre-wrap break-words">{bill.receiptFooter}</p>}

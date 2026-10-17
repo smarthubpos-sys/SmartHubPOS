@@ -32,6 +32,6 @@ describe("typed argument validators", () => {
   it("still rejects invalid values", async () => {
     const { asAdmin } = await setup();
     await expect(asAdmin.mutation(api.maintenance.saveSetting, { key: "language", value: { language: "fr" } })).rejects.toThrow(/sw au en/);
-    await expect(asAdmin.mutation(api.maintenance.saveSetting, { key: "security", value: { minPasswordLength: 3, sessionTimeoutMinutes: 30 } })).rejects.toThrow(/8–64/);
+    await expect(asAdmin.mutation(api.maintenance.saveSetting, { key: "security", value: { minPasswordLength: 3, sessionTimeoutMinutes: 30 } })).rejects.toThrow(/8.*64/);
   });
 });

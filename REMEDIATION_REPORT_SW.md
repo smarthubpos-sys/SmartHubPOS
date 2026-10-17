@@ -1,5 +1,7 @@
 # SmartHubPOS — Ripoti ya ukaguzi na marekebisho
 
+> Ripoti ya kihistoria. Hatua ya Super Admin sasa inatumia `SUPER_ADMIN_USERNAME` (si `SUPER_ADMIN_EMAIL`); angalia README.md kwa maelekezo ya sasa.
+
 Tarehe: 10 Oktoba 2026
 
 ## Marekebisho yaliyotekelezwa katika nakala hii

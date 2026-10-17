@@ -4,14 +4,15 @@ import { Printer } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { tr } from "@/lib/i18n.ts";
-import { printElement, readPaper, savePaper, type Paper } from "@/lib/print-area.ts";
+import { printElement, type Paper } from "@/lib/print-area.ts";
 
 type ReceiptLine = { label: string; value: string | number };
 type Props = { title: string; reference: string; date: string; partyLabel: string; party: string; amount: number; method?: string; note?: string; lines?: ReceiptLine[] };
 
 export default function TransactionReceipt({ title, reference, date, partyLabel, party, amount, method, note, lines = [] }: Props) {
   const settings = useQuery(api.maintenance.getSettings, {});
-  const [paper, setPaper] = useState<Paper>(readPaper);
+  const hardware = (settings?.app?.hardware ?? {}) as { paperWidth?: string };
+  const paper: Paper = hardware.paperWidth === "a4" ? "A4" : hardware.paperWidth === "58mm" ? "58mm" : "80mm";
   const articleRef = useRef<HTMLElement>(null);
   const company = settings?.company;
   const symbol = company?.currencySymbol ?? "TSh";
@@ -21,7 +22,7 @@ export default function TransactionReceipt({ title, reference, date, partyLabel,
   const print = () => printElement(articleRef.current, paper);
   return <section className="space-y-3">
     <div className="flex flex-wrap items-center gap-2 print:hidden">
-      <label className="text-sm">{tr("Printer")}: <select className="h-9 rounded border bg-background px-2" value={paper} onChange={e => { const value = e.target.value as Paper; setPaper(value); savePaper(value); }}><option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option></select></label>
+      <span className="text-sm text-muted-foreground">{tr("Ukubwa wa karatasi umewekwa kwenye Hardware Setup.")}</span>
       <Button onClick={print}><Printer className="mr-2 h-4 w-4" />{tr("Chapisha risiti")}</Button>
     </div>
     <article ref={articleRef} className={`transaction-receipt mx-auto space-y-2 rounded-xl border bg-card p-4 text-sm ${paper === "A4" ? "max-w-3xl" : paper === "58mm" ? "max-w-[58mm]" : "max-w-[80mm]"}`}>

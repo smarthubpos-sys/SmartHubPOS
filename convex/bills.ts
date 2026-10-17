@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, resolveWriteScope, scopedRows } from "./access";
+import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, resolveWriteScope, scopedRows, requirePermission } from "./access";
 import { getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits } from "./paymentMethods";
 
@@ -23,7 +23,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 export const list = query({
   args: {},
   handler: async (ctx) => {
-    const user = await requireActiveUser(ctx, "accounts");
+    const user = await requirePermission(ctx, "accounts.view", "accounts");
     return (await scopedRows(ctx, user, "bills")).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   },
 });
@@ -31,7 +31,7 @@ export const list = query({
 export const payments = query({
   args: { billId: v.id("bills") },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "accounts");
+    const user = await requirePermission(ctx, "accounts.view", "accounts");
     const bill = await ctx.db.get("bills", a.billId);
     if (!bill || !canAccessRecord(user, bill)) return [];
     return (await ctx.db.query("billPayments").withIndex("by_bill", (q) => q.eq("billId", a.billId)).collect()).sort((x, y) => y.paymentDate.localeCompare(x.paymentDate));

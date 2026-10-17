@@ -9,7 +9,30 @@ SmartHubPOS POS and business management application. See `REMEDIATION_REPORT_SW.
 3. Run `npm run dev` for local development.
 4. Before release, run `npm run build`, `npm run lint`, and `npm test`.
 
-Do not use with real financial or customer data until all release blockers in `REMEDIATION_REPORT_SW.md` are resolved and verified.
+## Quick start
+
+```powershell
+npm ci
+copy .env.example .env.local        # then set VITE_CONVEX_URL (no secrets in git)
+npx convex env set SUPER_ADMIN_USERNAME your-admin-username
+npx convex dev                       # dev deployment: syncs schema + functions
+npm run dev
+```
+
+Required Convex environment variables: `SUPER_ADMIN_USERNAME`, `JWT_PRIVATE_KEY`, `JWKS` (set by `npx @convex-dev/auth`). If biometric/WebAuthn is enabled, also set `APP_ORIGIN` on each Convex deployment to the exact trusted browser origin (scheme + hostname + optional port); biometric verification fails closed if it is missing. Frontend: `VITE_CONVEX_URL`. Never commit `.env*` or `*.pem`.
+
+## Verify before release
+
+```powershell
+npx tsc -b ; npm run lint ; npm test ; npm run build
+```
+
+## Docs
+- `docs/MIGRATION_NOTES.md` - schema changes, behaviour changes, deploy order.
+- `docs/BACKUP_RECOVERY.md` - backup / restore procedure (documented, not yet drilled on production).
+- `docs/PRINTING.md` - paper sizes, auto-print, QZ Tray notes.
+
+Do not use with real financial or customer data until the checklist in `REMEDIATION_REPORT_SW.md` and the "Known limits" in `docs/MIGRATION_NOTES.md` have been reviewed and a dev-deployment test has passed. Offline mode is intentionally not implemented.
 
 
 ## Initial administrator provisioning (username/password)

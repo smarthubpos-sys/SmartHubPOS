@@ -391,7 +391,8 @@ export default defineSchema({
     notes: v.optional(v.string()),
     createdBy: v.id("users"),
     postedAt: v.optional(v.string()),
-  }) .index("by_tenant_date", ["tenantId", "invoiceDate"]) .index("by_tenant_status", ["tenantId", "status"]) .index("by_tenant_no", ["tenantId", "invoiceNo"]) .index("by_scope", ["tenantId", "branchId"])
+    requestKey: v.optional(v.string()), // idempotency key: one client submit = one invoice
+  }) .index("by_tenant_date", ["tenantId", "invoiceDate"]) .index("by_tenant_request_key", ["tenantId", "requestKey"]) .index("by_tenant_status", ["tenantId", "status"]) .index("by_tenant_no", ["tenantId", "invoiceNo"]) .index("by_scope", ["tenantId", "branchId"])
     .index("by_tenant_user_date", ["tenantId", "createdBy", "invoiceDate"])
     .index("by_scope_date", ["tenantId", "branchId", "invoiceDate"])
     .index("by_scope_outstanding", ["tenantId", "branchId", "outstanding"])
@@ -466,6 +467,36 @@ export default defineSchema({
     value: v.number(), // net value of the returned quantity (line discount and invoice discount share removed)
     cost: v.number(), // cost of the returned quantity
   }).index("by_return", ["returnId"]),
+
+  // ── WAREHOUSE / STORE STOCK (separate from shop-floor product.currentQty) ──
+  warehouses: defineTable({
+    tenantId: v.id("tenants"), branchId: v.optional(v.id("branches")),
+    code: v.string(), name: v.string(), kind: v.string(), // warehouse | shop | store
+    isActive: v.boolean(), createdBy: v.id("users"), createdAt: v.string(),
+  }).index("by_tenant", ["tenantId"]).index("by_tenant_code", ["tenantId", "code"]),
+  warehouseStock: defineTable({
+    tenantId: v.id("tenants"), branchId: v.optional(v.id("branches")),
+    warehouseId: v.id("warehouses"), productId: v.id("products"), quantity: v.number(),
+    averageCost: v.number(), updatedAt: v.string(),
+  }).index("by_warehouse", ["warehouseId"]).index("by_product", ["productId"]).index("by_tenant", ["tenantId"]),
+  warehouseMovements: defineTable({
+    tenantId: v.id("tenants"), branchId: v.optional(v.id("branches")), warehouseId: v.id("warehouses"),
+    productId: v.id("products"), movementType: v.string(), quantityIn: v.number(), quantityOut: v.number(),
+    balance: v.number(), unitCost: v.number(), referenceId: v.optional(v.string()), notes: v.optional(v.string()),
+    quantityLost: v.optional(v.number()), // in-transit shortage/damage recorded at receipt (no stock moves; value written off)
+    reason: v.optional(v.string()), idempotencyKey: v.optional(v.string()),
+    createdBy: v.id("users"), createdAt: v.string(),
+  }).index("by_warehouse", ["warehouseId"]).index("by_product", ["productId"]).index("by_tenant_date", ["tenantId", "createdAt"]).index("by_tenant_key", ["tenantId", "idempotencyKey"]),
+  stockTransfers: defineTable({
+    tenantId: v.id("tenants"), branchId: v.optional(v.id("branches")), transferNo: v.string(),
+    fromWarehouseId: v.id("warehouses"), toWarehouseId: v.id("warehouses"), status: v.string(), // pending | in_transit | received | cancelled | rejected
+    idempotencyKey: v.optional(v.string()), closedBy: v.optional(v.id("users")), closedAt: v.optional(v.string()), closeReason: v.optional(v.string()),
+    note: v.optional(v.string()), createdBy: v.id("users"), createdAt: v.string(), dispatchedBy: v.optional(v.id("users")), dispatchedAt: v.optional(v.string()),
+    receivedBy: v.optional(v.id("users")), receivedAt: v.optional(v.string()),
+  }).index("by_tenant", ["tenantId"]).index("by_status", ["status"]).index("by_tenant_no", ["tenantId", "transferNo"]).index("by_tenant_key", ["tenantId", "idempotencyKey"]),
+  stockTransferLines: defineTable({
+    tenantId: v.id("tenants"), transferId: v.id("stockTransfers"), productId: v.id("products"), quantity: v.number(), unitCost: v.number(), receivedQuantity: v.optional(v.number()), damagedQuantity: v.optional(v.number()), differenceNote: v.optional(v.string()),
+  }).index("by_transfer", ["transferId"]).index("by_tenant", ["tenantId"]),
 
   // ── STOCK MOVEMENTS ──────────────────────────────────────────
   stockMovements: defineTable({

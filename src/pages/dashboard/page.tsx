@@ -18,7 +18,7 @@ const tip = { contentStyle: { borderRadius: 12, border: "1px solid var(--border)
 /** Staff (waiters/cashiers set to "own data only") get a personal dashboard; everyone else gets the business dashboard. */
 export default function Dashboard() {
   const business = useQuery(api.tenants.current);
-  return business?.ownDataOnly ? <StaffDashboard /> : <BusinessDashboard />;
+  return business?.ownDataOnly || business?.personalDashboard ? <StaffDashboard /> : <BusinessDashboard />;
 }
 
 function BusinessDashboard() {

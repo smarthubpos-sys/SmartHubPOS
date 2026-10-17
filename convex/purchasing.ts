@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
-import { businessRows, canAccessBusinessRecord, canAccessRecord, filterBusiness, filterScoped, requireActiveUser, resolveWriteScope, requireManagerOrPermission, scopedRows } from "./access";
+import { businessRows, canAccessBusinessRecord, canAccessRecord, filterBusiness, filterScoped, requireActiveUser, resolveWriteScope, requireManagerOrPermission, scopedRows, requirePermission } from "./access";
 import { assertDate, assertFinite, getSystemAccount, methodAccount, postSystemJournal } from "./ledger";
 import { bumpStats } from "./stats";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
@@ -14,7 +14,7 @@ export async function assertSupplierInvoiceFree(ctx: QueryCtx, supplierId: Id<"s
   const clash = rows.find(p => p._id !== exceptId && p.status === "posted" && p.supplierInvoiceNo !== p.invoiceNo && (p.supplierInvoiceNo ?? "").trim().toLowerCase() === key);
   if (clash) throw new Error(`Namba ya invoice ya supplier "${no!.trim()}" tayari imetumika (Purchase ${clash.invoiceNo ?? clash.internalRef}). Usiingize invoice moja mara mbili.`);
 }
-export const listPurchases = query({args:{},handler:async(ctx)=>{const u=await requireActiveUser(ctx, "purchasing");return (await scopedRows(ctx, u, "purchases")).sort((a,b)=>b.purchaseDate.localeCompare(a.purchaseDate));}});
+export const listPurchases = query({args:{},handler:async(ctx)=>{const u=await requirePermission(ctx, "purchasing.view", "purchasing");return (await scopedRows(ctx, u, "purchases")).sort((a,b)=>b.purchaseDate.localeCompare(a.purchaseDate));}});
 export const receivePurchase = mutation({args:{supplierId:v.id("suppliers"),purchaseDate:v.string(),supplierInvoiceNo:v.optional(v.string()),paymentAmount:v.optional(v.number()),paymentMethod:v.optional(v.string()),splits:v.optional(v.array(splitValidator)),notes:v.optional(v.string()),lines:v.array(v.object({productId:v.id("products"),qty:v.number(),unitCost:v.number()}))},handler:async(ctx,a)=>{
  const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"),scope=await resolveWriteScope(ctx, u); if(!a.lines.length)throw new Error("Ongeza angalau bidhaa moja."); assertDate(a.purchaseDate,"Tarehe ya purchase"); assertFinite(a.paymentAmount,"Malipo"); const supplier=await ctx.db.get("suppliers", a.supplierId);if(!canAccessBusinessRecord(u,supplier))throw new Error("Supplier hayupo kwenye branch yako."); await assertSupplierInvoiceFree(ctx,a.supplierId,a.supplierInvoiceNo);
  let subtotal=0;const lines=[] as {productId:typeof a.lines[number]["productId"];qty:number;unitCost:number;total:number}[];
@@ -37,7 +37,7 @@ export const receivePurchase = mutation({args:{supplierId:v.id("suppliers"),purc
 export const supplierStatement = query({
   args: { supplierId: v.id("suppliers"), startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
   handler: async (ctx, a) => {
-    const u = await requireActiveUser(ctx, "purchasing");
+    const u = await requirePermission(ctx, "purchasing.view", "purchasing");
     const supplier = await ctx.db.get("suppliers", a.supplierId);
     if (!canAccessBusinessRecord(u, supplier)) throw new Error("Supplier hayupo kwenye scope yako.");
     const purchases = filterScoped(u, await ctx.db.query("purchases").withIndex("by_supplier", q => q.eq("supplierId", a.supplierId)).collect())
@@ -86,14 +86,14 @@ export const recordSupplierPayment = mutation({
 
 export const purchaseReport = query({
  args:{startDate:v.optional(v.string()),endDate:v.optional(v.string()),supplierId:v.optional(v.id("suppliers"))},
- handler:async(ctx,a)=>{const u=await requireActiveUser(ctx, "purchasing");const purchases=(await scopedRows(ctx, u, "purchases")).filter(p=>p.status==="posted"&&(!a.startDate||p.purchaseDate>=a.startDate)&&(!a.endDate||p.purchaseDate<=a.endDate)&&(!a.supplierId||p.supplierId===a.supplierId));const supplierIds=[...new Set(purchases.map(p=>String(p.supplierId)))];const rows=await Promise.all(supplierIds.map(async id=>{const supplierDocId=ctx.db.normalizeId("suppliers",id);const supplier=supplierDocId?await ctx.db.get("suppliers",supplierDocId):null;const list=purchases.filter(p=>String(p.supplierId)===id);return {supplierId:id,supplierName:supplier?.name??"Supplier",invoiceCount:list.length,total:list.reduce((s,p)=>s+p.total,0),paid:list.reduce((s,p)=>s+p.amountPaid,0),outstanding:list.reduce((s,p)=>s+p.outstanding,0)};}));return {rows,total:purchases.reduce((s,p)=>s+p.total,0),paid:purchases.reduce((s,p)=>s+p.amountPaid,0),outstanding:purchases.reduce((s,p)=>s+p.outstanding,0),invoiceCount:purchases.length};}
+ handler:async(ctx,a)=>{const u=await requirePermission(ctx, "purchasing.reports.view", "purchasing");const purchases=(await scopedRows(ctx, u, "purchases")).filter(p=>p.status==="posted"&&(!a.startDate||p.purchaseDate>=a.startDate)&&(!a.endDate||p.purchaseDate<=a.endDate)&&(!a.supplierId||p.supplierId===a.supplierId));const supplierIds=[...new Set(purchases.map(p=>String(p.supplierId)))];const rows=await Promise.all(supplierIds.map(async id=>{const supplierDocId=ctx.db.normalizeId("suppliers",id);const supplier=supplierDocId?await ctx.db.get("suppliers",supplierDocId):null;const list=purchases.filter(p=>String(p.supplierId)===id);return {supplierId:id,supplierName:supplier?.name??"Supplier",invoiceCount:list.length,total:list.reduce((s,p)=>s+p.total,0),paid:list.reduce((s,p)=>s+p.amountPaid,0),outstanding:list.reduce((s,p)=>s+p.outstanding,0)};}));return {rows,total:purchases.reduce((s,p)=>s+p.total,0),paid:purchases.reduce((s,p)=>s+p.amountPaid,0),outstanding:purchases.reduce((s,p)=>s+p.outstanding,0),invoiceCount:purchases.length};}
 });
 
 /** Read-only registers used by the dedicated Purchasing menu screens. */
 export const purchasingRegisters = query({
   args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
   handler: async (ctx, a) => {
-    const u = await requireActiveUser(ctx, "purchasing");
+    const u = await requirePermission(ctx, "purchasing.view", "purchasing");
     const inRange = (date: string) => (!a.startDate || date >= a.startDate) && (!a.endDate || date <= a.endDate);
     const [purchasesRaw, ordersRaw, grnsRaw, returnsRaw, paymentsRaw, productsRaw, suppliersRaw] = await Promise.all([
       scopedRows(ctx, u, "purchases"), scopedRows(ctx, u, "purchaseOrders"),

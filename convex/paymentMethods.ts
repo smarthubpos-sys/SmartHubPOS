@@ -2,7 +2,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requireActiveUser, requireManager, canAccessRecord, filterScoped, resolveWriteScope, scopedRows, logAudit } from "./access";
+import { requireActiveUser, requireManager, canAccessRecord, filterScoped, resolveWriteScope, scopedRows, logAudit, requirePermission } from "./access";
 import type { UserLike } from "./access";
 import { isMoneyAccount, methodAccount } from "./ledger";
 
@@ -126,7 +126,7 @@ const sumAccount = async (ctx: QueryCtx, accountId: Id<"accounts">) => {
 export const balances = query({
   args: {},
   handler: async (ctx) => {
-    const user = await requireActiveUser(ctx);
+    const user = await requirePermission(ctx, "accounts.view");
     const rows = filterScoped(user, await scopedRows(ctx, user, "paymentMethods")).sort((a, b) => a.sortOrder - b.sortOrder || a._creationTime - b._creationTime);
     const out: Array<{ id: Id<"paymentMethods">; name: string; kind: string; isActive: boolean; accountId?: Id<"accounts">; balance: number }> = [];
     for (const m of rows) {

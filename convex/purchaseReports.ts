@@ -2,7 +2,7 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { businessRows, canAccessRecord, filterBusiness, filterScoped, getCompanySettings, requireActiveUser, scopedRows } from "./access";
+import { businessRows, canAccessRecord, filterBusiness, filterScoped, getCompanySettings, requireActiveUser, scopedRows, requirePermission } from "./access";
 import type { UserLike } from "./access";
 
 const round = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -32,14 +32,14 @@ async function letterhead(ctx: QueryCtx, u: Awaited<ReturnType<typeof requireAct
 
 export const reportHeader = query({
   args: {},
-  handler: async (ctx) => letterhead(ctx, await requireActiveUser(ctx, "purchasing")),
+  handler: async (ctx) => letterhead(ctx, await requirePermission(ctx, "purchasing.reports.view", "purchasing")),
 });
 
 /** Everything needed to print ONE purchase invoice as a formal document (with its payment receipts). */
 export const purchaseDocument = query({
   args: { purchaseId: v.id("purchases") },
   handler: async (ctx, a) => {
-    const u = await requireActiveUser(ctx, "purchasing");
+    const u = await requirePermission(ctx, "purchasing.view", "purchasing");
     const purchase = await ctx.db.get("purchases", a.purchaseId);
     if (!purchase || !canAccessRecord(u, purchase)) throw new Error("Purchase invoice haipatikani.");
     const supplier = await ctx.db.get("suppliers", purchase.supplierId);
@@ -73,7 +73,7 @@ export const purchaseDocument = query({
 export const payablesAgeing = query({
   args: { asOf: v.string() },
   handler: async (ctx, a) => {
-    const u = await requireActiveUser(ctx, "purchasing");
+    const u = await requirePermission(ctx, "purchasing.reports.view", "purchasing");
     const purchases = filterScoped(u, await scopedRows(ctx, u, "purchases")).filter((p) => p.status === "posted" && p.outstanding > 0.004 && p.purchaseDate <= a.asOf);
     const suppliers = new Map(filterBusiness(u, await businessRows(ctx, u, "suppliers")).map((s) => [String(s._id), s]));
     const rows = purchases.map((p) => {
@@ -103,7 +103,7 @@ async function movementsOf(ctx: QueryCtx, u: UserLike) {
 export const supplierBalances = query({
   args: { startDate: v.string(), endDate: v.string() },
   handler: async (ctx, a) => {
-    const u = await requireActiveUser(ctx, "purchasing");
+    const u = await requirePermission(ctx, "purchasing.reports.view", "purchasing");
     const { by, suppliers } = await movementsOf(ctx, u);
     const rows = suppliers.map((s) => {
       const list = by.get(String(s._id)) ?? [];
@@ -122,7 +122,7 @@ export const supplierBalances = query({
 export const supplierLedger = query({
   args: { supplierId: v.id("suppliers"), startDate: v.string(), endDate: v.string() },
   handler: async (ctx, a) => {
-    const u = await requireActiveUser(ctx, "purchasing");
+    const u = await requirePermission(ctx, "purchasing.reports.view", "purchasing");
     const supplier = await ctx.db.get("suppliers", a.supplierId);
     if (!supplier || !canAccessRecord(u, supplier)) throw new Error("Supplier hayupo kwenye scope yako.");
     const { by } = await movementsOf(ctx, u);

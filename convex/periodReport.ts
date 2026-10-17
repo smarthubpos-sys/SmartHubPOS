@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
-import { activeDepartments, allowedBranchIds, isSuperAdmin, logAudit, requireActiveUser } from "./access";
+import { activeDepartments, allowedBranchIds, isSuperAdmin, logAudit, requireActiveUser, requirePermission } from "./access";
 import type { UserLike } from "./access";
 import { accRows, entryRows, isDate, round2, summarize, type JEntry, type Row } from "./reportCore";
 
@@ -35,7 +35,7 @@ async function reportScope(ctx: QueryCtx, user: UserLike, requested: string | un
 export const options = query({
   args: {},
   handler: async (ctx) => {
-    const user = await requireActiveUser(ctx, "accounts");
+    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     const scope = await reportScope(ctx, user, undefined);
     return { departments: scope.departments, fixedDepartment: scope.only, hasDepartments: scope.hasDepartments };
   },
@@ -44,7 +44,7 @@ export const options = query({
 export const chunk = query({
   args: { from: v.string(), to: v.string(), scope: v.optional(v.string()) },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "accounts");
+    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     if (!isDate(a.from) || !isDate(a.to) || a.to < a.from) throw new Error("Tarehe za ripoti si sahihi.");
     const sc = await reportScope(ctx, user, a.scope);
     if (!sc.tenantId) return { tooBig: false, sections: [] as Array<{ bk: string; rows: Row[] }> };
@@ -80,7 +80,7 @@ export const chunk = query({
 export const header = query({
   args: {},
   handler: async (ctx) => {
-    const user = await requireActiveUser(ctx, "accounts");
+    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     if (!user.tenantId) return null;
     const tenant = await ctx.db.get("tenants", user.tenantId);
     const rows = await ctx.db.query("companySettings").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect();
@@ -94,7 +94,7 @@ const sectionValidator = v.object({ bk: v.string(), name: v.string(), rows: v.ar
 export const save = mutation({
   args: { period: v.string(), startDate: v.string(), endDate: v.string(), scope: v.string(), scopeLabel: v.string(), title: v.string(), sections: v.array(sectionValidator) },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "accounts");
+    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
     if (!["day", "month", "year"].includes(a.period)) throw new Error("Aina ya ripoti si sahihi.");
     if (!isDate(a.startDate) || !isDate(a.endDate) || a.endDate < a.startDate) throw new Error("Tarehe za ripoti si sahihi.");
@@ -122,7 +122,7 @@ export const save = mutation({
 export const history = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "accounts");
+    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     const tenantId = user.tenantId;
     if (!tenantId) return [];
     const sc = await reportScope(ctx, user, undefined);
@@ -134,7 +134,7 @@ export const history = query({
 export const getRun = query({
   args: { id: v.id("reportRuns") },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "accounts");
+    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     const r = await ctx.db.get("reportRuns", a.id);
     if (!r || r.tenantId !== user.tenantId) return null;
     const sc = await reportScope(ctx, user, undefined);

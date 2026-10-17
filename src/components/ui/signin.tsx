@@ -16,6 +16,7 @@ export function SignInButton() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [firstSetup, setFirstSetup] = useState(false); // one-time creation of the initial Super Admin (only the SUPER_ADMIN_USERNAME is accepted by the server)
   const [error, setError] = useState("");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -24,7 +25,7 @@ export function SignInButton() {
     setError("");
     try {
       const formData = new FormData();
-      formData.set("flow", "signIn");
+      formData.set("flow", firstSetup ? "signUp" : "signIn");
       const normalizedUsername = username.trim().toLowerCase();
       formData.set("username", normalizedUsername);
       formData.set("email", `${normalizedUsername}@login.smarthub.invalid`);
@@ -61,7 +62,7 @@ export function SignInButton() {
         
         {tr("Nenosiri")}
         <span className="relative block">
-          <Input className="pr-16" type={showPassword ? "text" : "password"} autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder={tr("Nenosiri")} />
+          <Input className="pr-16" type={showPassword ? "text" : "password"} autoComplete={firstSetup ? "new-password" : "current-password"} required minLength={firstSetup ? 10 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={tr("Nenosiri")} />
           <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute inset-y-0 right-2 flex w-9 items-center justify-center rounded-md text-blue-100 transition hover:bg-white/10" aria-label={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")} title={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")}>
             {showPassword ? <EyeOff size={19} strokeWidth={1.8} /> : <Eye size={19} strokeWidth={1.8} />}
           </button>
@@ -70,8 +71,11 @@ export function SignInButton() {
       {error && <p role="alert" className="rounded-lg bg-red-900/40 p-3 text-sm text-red-100">{error}</p>}
       <Button type="submit" disabled={isLoading || busy} className="w-full">
         
-        {tr("Ingia")}
+        {firstSetup ? tr("Fungua akaunti ya msimamizi") : tr("Ingia")}
       </Button>
+      <button type="button" className="text-xs text-blue-100 underline" onClick={() => { setFirstSetup((v) => !v); setError(""); }}>
+        {firstSetup ? tr("Rudi kwenye kuingia") : tr("Usajili wa kwanza wa msimamizi")}
+      </button>
     </form>
   );
 }

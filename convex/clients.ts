@@ -1,6 +1,6 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { requireActiveUser, requireManager, canAccessRecord, logAudit, resolveWriteScope, scopedRows } from "./access";
+import { requireActiveUser, requireManager, isManagerRole, requirePermission, canAccessRecord, logAudit, resolveWriteScope, scopedRows } from "./access";
 
 export const list = query({
   args: {},
@@ -38,7 +38,12 @@ export const upsert = mutation({
     isActive: v.boolean(),
   },
   handler: async (ctx, args) => {
-    const user = await requireManager(ctx);
+    // Managers add and edit customers freely. A seller (waiter / cashier with sales.manage) may only ADD a new customer at the till,
+    // with no opening balance and no credit; credit terms and editing existing customers stay with managers.
+    const isMgr = await isManagerRole(ctx, await requireActiveUser(ctx));
+    const user = isMgr ? await requireManager(ctx) : await requirePermission(ctx, "sales.manage", "sales");
+    if (!isMgr && args.id) throw new Error("Forbidden: only a manager can edit an existing customer.");
+    if (!isMgr) { args = { ...args, openingBalance: 0, creditLimit: undefined, creditPolicy: "block", isActive: true }; }
     const scope = await resolveWriteScope(ctx, user);
     const { id, ...rest } = args;
     const name = rest.name.trim(), code = rest.code.trim();

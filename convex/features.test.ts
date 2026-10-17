@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api";
 import schema from "./schema";
@@ -129,6 +129,19 @@ async function assertion(key: CryptoKeyPair, challenge: string, opts: { counter:
 }
 
 describe("fingerprint / face sign-in (WebAuthn)", () => {
+  // The server fails closed without a trusted origin, so the test deployment must configure one.
+  beforeEach(() => { vi.stubEnv("APP_ORIGIN", "http://localhost:5173"); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("fails closed when APP_ORIGIN is not configured", async () => {
+    vi.stubEnv("APP_ORIGIN", "");
+    const { as, emp } = await setup();
+    const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const spki = new Uint8Array(await crypto.subtle.exportKey("spki", key.publicKey));
+    const reg = await as.mutation(api.biometric.registerOptions, { employeeId: emp });
+    await expect(as.mutation(api.biometric.finishRegistration, { employeeId: emp, challenge: reg.challenge, credentialId: "cred-x", publicKey: b64u(spki), algorithm: -7, clientDataJSON: b64u(enc(JSON.stringify({ type: "webauthn.create", challenge: reg.challenge, origin: "http://localhost:5173" }))) })).rejects.toThrow(/APP_ORIGIN/);
+  });
+
   it("enrolls an employee and verifies signed assertions, rejecting forgeries and replays", async () => {
     const { as, emp } = await setup();
     const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);

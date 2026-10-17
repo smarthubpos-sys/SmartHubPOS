@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, scopedRows } from "./access";
+import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, scopedRows, requirePermission } from "./access";
 
 const TYPES = ["annual", "sick", "maternity", "paternity", "unpaid", "other"];
 const days = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000) + 1;
@@ -27,7 +27,7 @@ export const updateEmployee = mutation({
 export const listLeave = query({
   args: {},
   handler: async (ctx) => {
-    const user = await requireActiveUser(ctx, "hr");
+    const user = await requirePermission(ctx, "payroll.view", "hr");
     const emps = new Map((await scopedRows(ctx, user, "employees")).map((e) => [String(e._id), e]));
     return (await scopedRows(ctx, user, "leaveRequests"))
       .map((l) => ({ ...l, employeeName: emps.get(String(l.employeeId))?.name ?? "-", employeeCode: emps.get(String(l.employeeId))?.employeeCode ?? "" }))
@@ -80,7 +80,7 @@ export const cancelLeave = mutation({
 export const overview = query({
   args: { date: v.string() },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "hr");
+    const user = await requirePermission(ctx, "payroll.view", "hr");
     const employees = (await scopedRows(ctx, user, "employees"));
     const active = employees.filter((e) => e.isActive);
     const att = filterScoped(user, await ctx.db.query("attendance").withIndex("by_date", (q) => q.eq("date", a.date)).collect());

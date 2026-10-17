@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { filterScoped, logAudit, requireActiveUser, requireManager, resolveWriteScope, scopedRows } from "./access";
+import { filterScoped, logAudit, requireActiveUser, requireManager, resolveWriteScope, scopedRows, requirePermission } from "./access";
 import { getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits } from "./paymentMethods";
 
@@ -27,7 +27,7 @@ const DEPOSIT: Record<string, { code: string; name: string }> = {
 export const list = query({
   args: {},
   handler: async (ctx) => {
-    const user = await requireActiveUser(ctx, "accounts");
+    const user = await requirePermission(ctx, "accounts.view", "accounts");
     return (await scopedRows(ctx, user, "capitalReceipts")).sort((a, b) => b.receiptDate.localeCompare(a.receiptDate) || b._creationTime - a._creationTime);
   },
 });

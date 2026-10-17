@@ -19,7 +19,7 @@ export const set = mutation({
 export const dashboardSummary = query({
   args: {},
   handler: async (ctx) => {
-    await requireSuperAdminUser(ctx);
+    const admin = await requireSuperAdminUser(ctx);
     const today = tzToday();
     const tenants = await ctx.db.query("tenants").collect();
     const payments = await ctx.db.query("subscriptionPayments").collect();
@@ -47,11 +47,15 @@ export const dashboardSummary = query({
       if (failed > 0) alerts.push({ key: `fail:${id}`, level: failed >= 10 ? "danger" : "warning", code: "failures", tenantId: id, name: tenant.name, a: failed });
     }
     const rank = { danger: 0, warning: 1, info: 2 } as const;
-    alerts.sort((x, y) => rank[x.level] - rank[y.level]);
+    // Read state per Super Admin. The read key includes what changes the meaning (days left, failure count),
+    // so an alert that gets worse shows up as unread again instead of staying hidden.
+    const readKeys = new Set((await ctx.db.query("notificationReads").withIndex("by_user", (q) => q.eq("userId", admin._id)).collect()).map((r) => r.key));
+    const withRead = alerts.map((al) => { const readKey = `sa:${al.key}:${al.a ?? ""}:${al.b ?? ""}`.slice(0, 200); return { ...al, readKey, read: readKeys.has(readKey) }; });
+    withRead.sort((x, y) => Number(x.read) - Number(y.read) || rank[x.level] - rank[y.level]);
     const paidByTenant: Record<string, number> = {};
     for (const payment of payments) paidByTenant[String(payment.tenantId)] = (paidByTenant[String(payment.tenantId)] ?? 0) + payment.amount;
     return {
-      alerts: alerts.slice(0, 50),
+      alerts: withRead.slice(0, 50),
       paidByTenant,
       totalBusinesses: tenants.length,
       activeBusinesses: tenants.filter((tenant) => tenant.isActive !== false).length,

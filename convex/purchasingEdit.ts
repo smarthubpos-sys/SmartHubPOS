@@ -56,7 +56,7 @@ async function loadPurchase(ctx: QueryCtx, u: Doc<"users">, id: Id<"purchases">)
 export const purchaseForEdit = query({
   args: { purchaseId: v.id("purchases") },
   handler: async (ctx, a) => {
-    const u = await requireActiveUser(ctx, "purchasing");
+    const u = await requirePermission(ctx, "purchasing.edit", "purchasing");
     const purchase = await ctx.db.get("purchases", a.purchaseId);
     if (!purchase || !canAccessRecord(u, purchase)) return null;
     const lines = await ctx.db.query("purchaseLines").withIndex("by_purchase", (q) => q.eq("purchaseId", a.purchaseId)).collect();
@@ -209,7 +209,7 @@ const draftGrns = async (ctx: QueryCtx, orderId: Id<"purchaseOrders">) => (await
 export const orderForEdit = query({
   args: { orderId: v.id("purchaseOrders") },
   handler: async (ctx, a) => {
-    const u = await requireActiveUser(ctx, "purchasing");
+    const u = await requirePermission(ctx, "purchasing.edit", "purchasing");
     const order = await ctx.db.get("purchaseOrders", a.orderId);
     if (!order || !canAccessRecord(u, order)) return null;
     const lines = await ctx.db.query("purchaseOrderLines").withIndex("by_order", (q) => q.eq("orderId", a.orderId)).collect();
@@ -258,7 +258,7 @@ export const cancelPurchaseOrder = mutation({
 export const grnForEdit = query({
   args: { grnId: v.id("goodsReceivedNotes") },
   handler: async (ctx, a) => {
-    const u = await requireActiveUser(ctx, "purchasing");
+    const u = await requirePermission(ctx, "purchasing.edit", "purchasing");
     const grn = await ctx.db.get("goodsReceivedNotes", a.grnId);
     if (!grn || !canAccessRecord(u, grn)) return null;
     const lines = await ctx.db.query("grnLines").withIndex("by_grn", (q) => q.eq("grnId", a.grnId)).collect();

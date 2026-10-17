@@ -47,12 +47,19 @@ export const updateCurrentUser = mutation({
         if (source.tenantId) patch.tenantId = source.tenantId;
         if (source.branchId) patch.branchId = source.branchId;
         if (source.employeeId) patch.employeeId = source.employeeId;
+        // Restrictions must travel with the profile; losing them would silently widen what the user may do.
+        if (source.branchIds?.length) patch.branchIds = source.branchIds;
+        if (source.allDepartments) patch.allDepartments = source.allDepartments;
+        if (source.branchPicked !== undefined) patch.branchPicked = source.branchPicked;
+        if (source.menuAccess) patch.menuAccess = source.menuAccess;
+        if (source.extraPermissions?.length) patch.extraPermissions = source.extraPermissions;
+        if (source.ownDataOnly) patch.ownDataOnly = source.ownDataOnly;
         patch.isActive = source.isActive ?? true;
       } else {
         patch.role = isConfiguredAdmin || !otherSuperAdmin ? "super_admin" : "viewer";
         patch.isActive = true;
       }
-      patch.requirePasswordChange = current.requirePasswordChange ?? false;
+      patch.requirePasswordChange = current.requirePasswordChange ?? source?.requirePasswordChange ?? false;
     }
     if (isConfiguredAdmin && !isSuperAdmin({ role: (patch.role as string) ?? current.role })) {
       patch.role = "super_admin";

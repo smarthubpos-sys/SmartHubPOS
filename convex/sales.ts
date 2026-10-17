@@ -1,8 +1,9 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
+import type { QueryCtx } from "./_generated/server";
 import type { UserLike } from "./access";
-import { canAccessRecord, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, resolveWriteScope, scopedRows, getCompanySettings } from "./access";
+import { canAccessRecord, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope, scopedRows, getCompanySettings } from "./access";
 import { bumpStats } from "./stats";
 import { assertDate, assertFinite, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
@@ -16,7 +17,7 @@ const mine = <T extends { createdBy?: Id<"users"> }>(user: UserLike, rows: T[]):
 export const listInvoices = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "sales");
+    const user = await requirePermission(ctx, "sales.view", "sales");
     if (!user.tenantId) return [];
     const tenantId = user.tenantId;
     const limit = Math.min(Math.max(Math.floor(a.limit ?? 200), 1), 1000);
@@ -29,12 +30,89 @@ export const listInvoices = query({
     return mine(user, filterScoped(user, rows)).reverse();
   },
 });
-export const invoiceDetails = query({ args: { id: v.id("invoices") }, handler: async (ctx, { id }) => { const user = await requireActiveUser(ctx, "sales"); const invoice = await ctx.db.get("invoices", id); if (!canAccessRecord(user, invoice) || (isOwnDataOnly(user) && invoice?.createdBy !== user._id)) return null; return { invoice, lines: await ctx.db.query("invoiceLines").withIndex("by_invoice", q => q.eq("invoiceId", id)).collect() }; } });
+/** Recent invoices for sales screens; requires sales.view, not report access. */
+export const recentInvoices = query({
+  args: {
+    startDate: v.optional(v.string()),
+    endDate: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "sales.view", "sales");
+    if (!user.tenantId) {
+      return { invoices: [], totals: { sales: 0, paid: 0, outstanding: 0 } };
+    }
+
+    const tenantId = user.tenantId;
+    const limit = Math.min(Math.max(Math.floor(a.limit ?? 200), 1), 1000);
+
+    const raw = isOwnDataOnly(user)
+      ? await ctx.db.query("invoices").withIndex("by_tenant_user_date", (q) => {
+          const b = q.eq("tenantId", tenantId).eq("createdBy", user._id);
+          if (a.startDate && a.endDate) return b.gte("invoiceDate", a.startDate).lte("invoiceDate", a.endDate);
+          if (a.startDate) return b.gte("invoiceDate", a.startDate);
+          if (a.endDate) return b.lte("invoiceDate", a.endDate);
+          return b;
+        }).order("desc").take(limit + 1)
+      : user.branchId
+        ? await ctx.db.query("invoices").withIndex("by_scope_date", (q) => {
+            const b = q.eq("tenantId", tenantId).eq("branchId", user.branchId);
+            if (a.startDate && a.endDate) return b.gte("invoiceDate", a.startDate).lte("invoiceDate", a.endDate);
+            if (a.startDate) return b.gte("invoiceDate", a.startDate);
+            if (a.endDate) return b.lte("invoiceDate", a.endDate);
+            return b;
+          }).order("desc").take(limit + 1)
+        : await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => {
+            const b = q.eq("tenantId", tenantId);
+            if (a.startDate && a.endDate) return b.gte("invoiceDate", a.startDate).lte("invoiceDate", a.endDate);
+            if (a.startDate) return b.gte("invoiceDate", a.startDate);
+            if (a.endDate) return b.lte("invoiceDate", a.endDate);
+            return b;
+          }).order("desc").take(limit + 1);
+
+    const invoices = mine(user, filterScoped(user, raw.slice(0, limit)))
+      .filter((inv) => inv.status === "posted");
+
+    const clients = filterScoped(user, await scopedRows(ctx, user, "clients"));
+    const clientNames = new Map(clients.map((client) => [String(client._id), client.name]));
+
+    return {
+      invoices: invoices.map((inv) => ({
+        _id: inv._id,
+        invoiceNo: inv.invoiceNo,
+        date: inv.invoiceDate,
+        clientId: inv.clientId,
+        clientName: clientNames.get(String(inv.clientId)) ?? "Mteja",
+        total: inv.total,
+        amountPaid: inv.amountPaid,
+        outstanding: inv.outstanding,
+        paymentStatus: inv.paymentStatus,
+      })),
+      totals: {
+        sales: money(invoices.reduce((sum, inv) => sum + inv.total, 0)),
+        paid: money(invoices.reduce((sum, inv) => sum + inv.amountPaid, 0)),
+        outstanding: money(invoices.reduce((sum, inv) => sum + inv.outstanding, 0)),
+      },
+    };
+  },
+});
+export const invoiceDetails = query({ args: { id: v.id("invoices") }, handler: async (ctx, { id }) => { const user = await requirePermission(ctx, "sales.view", "sales"); const invoice = await ctx.db.get("invoices", id); if (!canAccessRecord(user, invoice) || (isOwnDataOnly(user) && invoice?.createdBy !== user._id)) return null; const lines = await ctx.db.query("invoiceLines").withIndex("by_invoice", q => q.eq("invoiceId", id)).collect();
+  // Cost of goods is financial data: only managers and people holding a report permission see it (a waiter / cashier gets the lines without it).
+  const seesCost = (await isManagerRole(ctx, user)) || (await roleHasPermission(ctx, user, "sales.reports.view")) || (await roleHasPermission(ctx, user, "accounts.reports.view"));
+  return { invoice, lines: seesCost ? lines : lines.map(({ costAtSale: _cost, ...rest }) => rest) }; } });
 
 export const createInvoice = mutation({
-  args: { clientId: v.id("clients"), invoiceDate: v.string(), lines: v.array(lineValidator), discount: v.optional(v.number()), taxRate: v.optional(v.number()), paymentAmount: v.optional(v.number()), paymentMethod: v.optional(v.string()), paymentMethodId: v.optional(v.id("paymentMethods")), notes: v.optional(v.string()), salesSource: v.optional(v.string()) },
+  args: { clientId: v.id("clients"), invoiceDate: v.string(), lines: v.array(lineValidator), discount: v.optional(v.number()), taxRate: v.optional(v.number()), paymentAmount: v.optional(v.number()), paymentMethod: v.optional(v.string()), paymentMethodId: v.optional(v.id("paymentMethods")), notes: v.optional(v.string()), salesSource: v.optional(v.string()), requestKey: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const user = await requireActiveUser(ctx, "sales"); const scope = await resolveWriteScope(ctx, user);
+    const user = await requirePermission(ctx, "sales.manage", "sales"); const scope = await resolveWriteScope(ctx, user);
+    // Idempotency: a retried / double-clicked submit with the same requestKey returns the invoice already made instead of selling twice.
+    const requestKey = args.requestKey?.trim() || undefined;
+    if (requestKey) {
+      if (requestKey.length > 100) throw new Error("requestKey ni ndefu mno.");
+      const prior = (await ctx.db.query("invoices").withIndex("by_tenant_request_key", (q) => q.eq("tenantId", scope.tenantId).eq("requestKey", requestKey)).collect())
+        .find((i) => i.branchId === scope.branchId && i.createdBy === user._id);
+      if (prior) return { invoiceId: prior._id, invoiceNo: prior.invoiceNo, subtotal: prior.subtotal, taxAmount: prior.taxAmount, total: prior.total, amountPaid: prior.amountPaid, outstanding: prior.outstanding, creditWarning: false, duplicate: true };
+    }
     if (!args.lines.length) throw new Error("Invoice lazima iwe na angalau bidhaa moja.");
     assertDate(args.invoiceDate, "Tarehe ya invoice");
     assertFinite(args.discount, "Discount ya invoice"); assertFinite(args.taxRate, "Tax rate"); assertFinite(args.paymentAmount, "Kiasi kilicholipwa");
@@ -82,7 +160,7 @@ export const createInvoice = mutation({
       if (!clash) break; nextNo++; invoiceNo = `${invoicePrefix}${String(nextNo).padStart(5, "0")}`;
     }
     if (sequence) await ctx.db.patch("salesSequences", sequence._id, { nextNumber: nextNo + 1 }); else await ctx.db.insert("salesSequences", { ...scope, nextNumber: nextNo + 1 });
-    const invoiceId = await ctx.db.insert("invoices", { ...scope, invoiceNo, invoiceDate: args.invoiceDate, clientId: args.clientId, subtotal, discount, taxAmount, total, amountPaid: paid, outstanding: money(total-paid), paymentStatus: paid === total ? "paid" : paid > 0 ? "partial" : "unpaid", status: "posted", salespersonId: user._id, salesSource: args.salesSource, notes: args.notes, createdBy: user._id, postedAt: new Date().toISOString() });
+    const invoiceId = await ctx.db.insert("invoices", { ...scope, invoiceNo, invoiceDate: args.invoiceDate, clientId: args.clientId, subtotal, discount, taxAmount, total, amountPaid: paid, outstanding: money(total-paid), paymentStatus: paid === total ? "paid" : paid > 0 ? "partial" : "unpaid", status: "posted", salespersonId: user._id, salesSource: args.salesSource, notes: args.notes, createdBy: user._id, postedAt: new Date().toISOString(), requestKey });
     await bumpStats(ctx, scope, { receivable: money(total - paid), date: args.invoiceDate, sales: total, collected: paid, invoices: 1 });
     for (const line of prepared) {
       await ctx.db.insert("invoiceLines", { invoiceId, productId: line.productId, qty: line.qty, qtyStr: String(line.qty), unitPrice: line.unitPrice, unitPriceStr: String(line.unitPrice), lineTotal: line.lineTotal, lineTotalStr: String(line.lineTotal), costAtSale: line.cost, discount: line.discount });
@@ -109,7 +187,7 @@ export const createInvoice = mutation({
     ];
     await postSystemJournal(ctx, { scope, userId: user._id, date: args.invoiceDate, reference: `SALE-${invoiceNo}`, description: `Automatic posting for ${invoiceNo}`, sourceType: "sale", sourceId: String(invoiceId), lines: journalLines });
     await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "create_and_post", module: "sales", referenceId: String(invoiceId), referenceType: "invoice", details: `Invoice ${invoiceNo}; total ${total}`, timestamp: new Date().toISOString(), result: "success" });
-    return { invoiceId, invoiceNo, subtotal, taxAmount, total, amountPaid: paid, outstanding: money(total-paid), creditWarning };
+    return { invoiceId, invoiceNo, subtotal, taxAmount, total, amountPaid: paid, outstanding: money(total-paid), creditWarning, duplicate: false };
   }
 });
 
@@ -179,7 +257,7 @@ export const voidInvoice = mutation({
 export const returnableLines = query({
   args: { invoiceId: v.id("invoices") },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "sales");
+    const user = await requirePermission(ctx, "sales.view", "sales");
     const invoice = await ctx.db.get("invoices", a.invoiceId);
     if (!invoice || !canAccessRecord(user, invoice) || (isOwnDataOnly(user) && invoice.createdBy !== user._id)) return null;
     const lines = await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
@@ -347,13 +425,18 @@ export const recordPayment = mutation({ args: { invoiceId: v.id("invoices"), amo
  */
 const REG_CAP = 1500;
 const OPEN_CAP = 5000;
-export const salesRegisters = query({
-  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()), withLines: v.optional(v.boolean()) },
-  handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "sales");
+type RegisterArgs = { startDate?: string; endDate?: string; withLines?: boolean };
+/**
+ * One reader for two different jobs, so the data rules cannot drift apart:
+ *  - basic = false: the full REPORT data (invoice rows, lines with cost / profit / supplier). Caller must hold sales.reports.view.
+ *  - basic = true : what the everyday Sales screens need (clients with balances, payments, unpaid invoices, headline totals).
+ *    It never reads invoice lines, so cost, profit and supplier data cannot leak through it. Caller needs only sales.view.
+ * Business, department and staff-mode (ownDataOnly) limits are applied identically in both.
+ */
+async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: RegisterArgs, basic: boolean) {
     const tenantId = user.tenantId;
     // Only product-level reports need the invoice lines; every other screen skips reading them (much faster).
-    const wantLines = a.withLines !== false;
+    const wantLines = !basic && a.withLines !== false;
     const endDate = a.endDate;
     const inRange = (d: string) => (!a.startDate || d >= a.startDate) && (!a.endDate || d <= a.endDate);
 
@@ -404,6 +487,7 @@ export const salesRegisters = query({
     const invoiceRows = [] as Array<{ _id: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; subtotal: number; discount: number; taxAmount: number; total: number; amountPaid: number; outstanding: number; paymentStatus: string; staff: string; source: string; notes: string }>;
     const lines = [] as Array<{ invoiceId: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; staff: string; source: string; productId: Id<"products">; itemCode: string; productName: string; groupName: string; unit: string; supplierName: string; qty: number; unitPrice: number; discount: number; net: number; cost: number; profit: number }>;
     for (const inv of invoices) {
+      if (basic) continue; // everyday screens get headline totals only, never per-invoice staff / line data
       const staff = await staffOf(inv.salespersonId ?? inv.createdBy);
       invoiceRows.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, paymentStatus: inv.paymentStatus, staff, source: inv.salesSource ?? "—", notes: inv.notes ?? "" });
       if (!wantLines) continue;
@@ -452,5 +536,16 @@ export const salesRegisters = query({
       truncated,
       totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0)), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0)), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), invoices: invoices.length },
     };
-  },
+}
+
+/** Sales reports (profit, cost, by supplier, by staff ...): report permission only. */
+export const salesRegisters = query({
+  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()), withLines: v.optional(v.boolean()) },
+  handler: async (ctx, a) => buildSalesRegister(ctx, await requirePermission(ctx, "sales.reports.view", "sales"), a, false),
+});
+
+/** Everyday Sales screens (Sales Clients, Receive Payment, register totals): sales.view is enough; no cost / profit / supplier data. */
+export const salesRegisterBasic = query({
+  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
+  handler: async (ctx, a) => buildSalesRegister(ctx, await requirePermission(ctx, "sales.view", "sales"), a, true),
 });

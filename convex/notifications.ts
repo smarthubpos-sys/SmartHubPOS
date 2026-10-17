@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { isManagerRole, isSuperAdmin, requireActiveUser, scopedRows } from "./access";
+import { isManagerRole, isSuperAdmin, requireActiveUser, roleHasPermission, scopedRows } from "./access";
 import { announcementApplies } from "./announcements";
 import { planStatus, tzToday } from "./plans";
 import { effectiveModules } from "./permissions";
@@ -17,14 +17,17 @@ export const feed = query({
     const manager = await isManagerRole(ctx, user);
     type Item = { key: string; code: string; level: "danger" | "warning" | "info"; params: Record<string, string | number>; link: string; at: string };
     const items: Item[] = [];
+    // Alerts carry business data, so each kind is shown only to users who hold the matching permission (not just the module).
+    const canStock = await roleHasPermission(ctx, user, "stock.view");
+    const canBills = await roleHasPermission(ctx, user, "accounts.view");
 
-    for (const p of (await scopedRows(ctx, user, "products"))) {
+    for (const p of (canStock ? await scopedRows(ctx, user, "products") : [])) {
       if (!p.isActive) continue;
       if (p.currentQty <= 0) items.push({ key: `out:${p._id}`, code: "out_of_stock", level: "danger", params: { name: p.name }, link: "/stock/reports/out-of-stock", at: a.today });
       else if (p.reorderLevel != null && p.currentQty <= p.reorderLevel) items.push({ key: `low:${p._id}:${p.currentQty}`, code: "low_stock", level: "warning", params: { name: p.name, qty: p.currentQty, level: p.reorderLevel }, link: "/stock/reports/reorder", at: a.today });
     }
     const soon = new Date(Date.parse(a.today) + 3 * 86400000).toISOString().slice(0, 10);
-    for (const b of (await scopedRows(ctx, user, "bills"))) {
+    for (const b of (canBills ? await scopedRows(ctx, user, "bills") : [])) {
       if (b.status === "paid" || b.status === "void") continue;
       const due = Math.round((b.amount - b.paidAmount) * 100) / 100;
       if (b.dueDate < a.today) items.push({ key: `billover:${b._id}`, code: "bill_overdue", level: "danger", params: { vendor: b.vendor, bill: b.billNumber, amount: due, due: b.dueDate }, link: "/accounts/expenses", at: b.dueDate });
@@ -77,7 +80,7 @@ export const markRead = mutation({
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx);
     const have = new Set((await ctx.db.query("notificationReads").withIndex("by_user", (q) => q.eq("userId", user._id)).collect()).map((r) => r.key));
-    for (const key of a.keys.slice(0, 300)) if (!have.has(key)) await ctx.db.insert("notificationReads", { userId: user._id, key, readAt: new Date().toISOString() });
+    for (const key of a.keys.slice(0, 300)) if (key.length > 0 && key.length <= 200 && !have.has(key)) await ctx.db.insert("notificationReads", { userId: user._id, key, readAt: new Date().toISOString() });
     return true;
   },
 });

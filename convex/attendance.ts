@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, scopedRows } from "./access";
+import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, scopedRows, requirePermission } from "./access";
 
 /** Local date/time of the person signing, from the browser's timezone offset (minutes, as Date.getTimezoneOffset). */
 export function localNow(tzOffsetMinutes: number) {
@@ -34,7 +34,7 @@ export async function applyAttendance(ctx: MutationCtx, input: { employee: Doc<"
 export const today = query({
   args: { date: v.string() },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "payroll");
+    const user = await requirePermission(ctx, "payroll.view", "payroll");
     const employees = (await scopedRows(ctx, user, "employees")).filter((e) => e.isActive);
     const records = filterScoped(user, await ctx.db.query("attendance").withIndex("by_date", (q) => q.eq("date", a.date)).collect());
     const byEmp = new Map(records.map((r) => [String(r.employeeId), r]));
@@ -45,7 +45,7 @@ export const today = query({
 export const range = query({
   args: { from: v.string(), to: v.string() },
   handler: async (ctx, a) => {
-    const user = await requireActiveUser(ctx, "payroll");
+    const user = await requirePermission(ctx, "payroll.view", "payroll");
     const records = filterScoped(user, await ctx.db.query("attendance").withIndex("by_date", (q) => q.gte("date", a.from).lte("date", a.to)).collect());
     const names = new Map((await scopedRows(ctx, user, "employees")).map((e) => [String(e._id), e]));
     return records.map((r) => ({ ...r, employeeName: names.get(String(r.employeeId))?.name ?? "-", employeeCode: names.get(String(r.employeeId))?.employeeCode ?? "" })).sort((x, y) => y.date.localeCompare(x.date) || x.employeeName.localeCompare(y.employeeName));

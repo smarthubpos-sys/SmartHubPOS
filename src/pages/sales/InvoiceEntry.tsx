@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Printer } from "lucide-react";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate } from "react-router-dom";
@@ -12,7 +12,8 @@ import { fmt, num, round2, today } from "@/pages/shared/report-utils.ts";
 import { tr, errorText } from "@/lib/i18n.ts";
 import BillSheet from "@/components/BillSheet.tsx";
 import ReturnPanel from "@/pages/sales/ReturnPanel.tsx";
-import { readPaper, savePaper, type Paper } from "@/lib/print-area.ts";
+import type { Paper } from "@/lib/print-area.ts";
+import { tokenAfterSave } from "@/lib/print-policy.ts";
 
 type Line = { productId: string; qty: string; price: string; discount: string };
 const emptyLine = (): Line => ({ productId: "", qty: "1", price: "0", discount: "0" });
@@ -24,8 +25,10 @@ export default function InvoiceEntry() {
   const clients = useQuery(api.clients.list, {});
   const products = useQuery(api.products.listActive, {});
   const units = useQuery(api.products.listUnits, {});
-  const recent = useQuery(api.sales.salesRegisters, { startDate: daysAgo(30), endDate: today(), withLines: false });
+  const recent = useQuery(api.sales.recentInvoices, { startDate: daysAgo(30), endDate: today(), limit: 200 });
   const createInvoice = useMutation(api.sales.createInvoice);
+  // One key per sale attempt: a retry or double click re-sends the same key, so the server never sells twice. Renewed after a successful save.
+  const requestKeyRef = useRef<string>(crypto.randomUUID());
   const voidInvoice = useMutation(api.sales.voidInvoice);
   const business = useQuery(api.tenants.current);
   const settings = useQuery(api.maintenance.getSettings, {});
@@ -36,7 +39,8 @@ export default function InvoiceEntry() {
   const [source, setSource] = useState("Counter");
   const [taxRate, setTaxRate] = useState("0");
   const [invoiceDiscount, setInvoiceDiscount] = useState("0");
-  const [paper, setPaper] = useState<Paper>(readPaper);
+  const hardware = (settings?.app?.hardware ?? {}) as { paperWidth?: string; autoPrintReceipt?: boolean };
+  const paper: Paper = hardware.paperWidth === "a4" ? "A4" : hardware.paperWidth === "58mm" ? "58mm" : "80mm";
   const [whatsappEnabled, setWhatsappEnabled] = useState(() => { try { return localStorage.getItem("smarthub-bill-whatsapp-enabled") !== "false"; } catch { return true; } });
   const changeWhatsapp = (value: boolean) => { setWhatsappEnabled(value); try { localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); } catch { /* storage unavailable */ } };
   // The invoice just saved, and the one picked in the list below: both are shown with the same layout as a Bill.
@@ -117,8 +121,13 @@ export default function InvoiceEntry() {
         clientId: clientId as Id<"clients">, invoiceDate: date,
         lines: lines.map((l) => ({ productId: l.productId as Id<"products">, qty: num(l.qty), unitPrice: num(l.price), discount: num(l.discount) })),
         discount, taxRate: num(taxRate), paymentAmount: 0, paymentMethod: "cash", notes: notes.trim() || undefined, salesSource: source.trim() || undefined,
+        requestKey: requestKeyRef.current,
       });
+      requestKeyRef.current = crypto.randomUUID();
       setSelected(null); setJustSaved(r.invoiceId);
+      // Printing is configured centrally under Maintenance > Hardware Setup.
+      // BillSheet prints only after its saved invoice data is loaded; it never creates another invoice.
+      setPrintToken((n) => tokenAfterSave(n, !!hardware.autoPrintReceipt));
       toast.success(tr("Invoice {0} imehifadhiwa — jumla {1}, deni {2}.", [r.invoiceNo, fmt(r.total), fmt(r.outstanding)]));
       if (r.creditWarning) toast.warning(tr("Onyo: mteja huyu amevuka kikomo chake cha mkopo."));
       setLines([emptyLine()]); setInvoiceDiscount("0"); setNotes("");
@@ -205,7 +214,7 @@ export default function InvoiceEntry() {
 
       {justSaved && <section className="space-y-2 rounded-xl border p-4">
         <div className="flex items-center justify-between gap-2 print:hidden"><h2 className="font-semibold">{tr("Invoice imehifadhiwa")}</h2><Button variant="outline" size="sm" onClick={() => setJustSaved(null)}>{tr("Funga")}</Button></div>
-        <BillSheet kind="invoice" invoiceIds={[justSaved]} printToken={0} paper={paper} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={changeWhatsapp} />
+        <BillSheet kind="invoice" invoiceIds={[justSaved]} printToken={printToken} paper={paper} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={changeWhatsapp} />
       </section>}
       {recent && (
         <>
@@ -214,7 +223,6 @@ export default function InvoiceEntry() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-semibold">{tr("Invoices za siku 30 zilizopita")}</h2>
               <div className="flex flex-wrap items-center gap-2">
-                <label className="flex items-center gap-1 text-xs">{tr("Printer")}<select className="h-9 rounded-md border bg-background px-2" value={paper} onChange={(e) => { const v = e.target.value as Paper; setPaper(v); savePaper(v); }}><option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option></select></label>
                 <Button disabled={!selected} onClick={() => { setJustSaved(null); setPrintToken((n) => n + 1); }}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha invoice iliyochaguliwa")}</Button>
                 {business?.isManager && <Button variant="outline" disabled={!selected || busy} onClick={() => { setJustSaved(null); setReturning(true); }}>{tr("Rejesha bidhaa (sehemu)")}</Button>}
                 {business?.canVoidInvoice && <Button variant="destructive" disabled={!selected || busy} onClick={() => void cancelSelected()}>{tr("Batilisha invoice iliyochaguliwa")}</Button>}

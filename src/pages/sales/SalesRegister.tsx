@@ -59,7 +59,12 @@ export default function SalesRegister() {
   const [end, setEnd] = useState(today());
   const [clientId, setClientId] = useState("");
   const needsLines = [ "reports/analysis", "reports/by-product", "reports/client-product", "reports/product-client", "reports/sold-items", "reports/by-supplier" ].includes(path);
-  const data = useQuery(api.sales.salesRegisters, { startDate: start, endDate: end, withLines: needsLines });
+  // Only the report screens read the report query (sales.reports.view). Everyday screens (payments, clients list, register totals)
+  // use the basic one (sales.view), which never carries cost, profit or supplier data.
+  const isReport = path.startsWith("reports/");
+  const reportData = useQuery(api.sales.salesRegisters, isReport ? { startDate: start, endDate: end, withLines: needsLines } : "skip");
+  const basicData = useQuery(api.sales.salesRegisterBasic, isReport ? "skip" : { startDate: start, endDate: end });
+  const data = isReport ? reportData : basicData;
   const recordPayment = useMutation(api.sales.recordPayment);
   const [pay, setPay] = useState({ invoiceId: "", date: today(), filterClient: "" });
   const methods = usePaymentMethods();

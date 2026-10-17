@@ -13,7 +13,7 @@ const empty = { code: "", name: "", phone: "", email: "", address: "", taxId: ""
 
 export default function SalesClients() {
   const navigate = useNavigate();
-  const data = useQuery(api.sales.salesRegisters, { withLines: false });
+  const data = useQuery(api.sales.salesRegisterBasic, {});
   const upsert = useMutation(api.clients.upsert);
   const [mode, setMode] = useState<"list" | "edit">("list");
   const [id, setId] = useState("");

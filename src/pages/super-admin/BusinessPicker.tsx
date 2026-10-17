@@ -43,8 +43,9 @@ export default function BusinessPicker() {
   // The alerts panel opens by itself once per browser session when something is dangerous; the person can toggle it afterwards.
   const [alertsToggled, setAlertsToggled] = useState<boolean | null>(null);
   const [firstAlertVisit] = useState(() => { try { return !window.sessionStorage.getItem("smarthub.alerts.toast"); } catch { return true; } });
-  const alertCount = summary?.alerts.length ?? 0;
-  const dangerCount = summary?.alerts.filter((a) => a.level === "danger").length ?? 0;
+  const markRead = useMutation(api.notifications.markRead);
+  const alertCount = summary?.alerts.filter((a) => !a.read).length ?? 0;
+  const dangerCount = summary?.alerts.filter((a) => a.level === "danger" && !a.read).length ?? 0;
   const alertsOpen = alertsToggled ?? (firstAlertVisit && dangerCount > 0);
   useEffect(() => {
     if (!summary || dangerCount === 0) return;
@@ -65,6 +66,7 @@ export default function BusinessPicker() {
   type SummaryAlert = NonNullable<typeof summary>["alerts"][number];
   /** Opens what the alert is about: the business card (and its subscription panel for expiry alerts), scrolled into view. */
   function openAlert(a: SummaryAlert) {
+    if (!a.read) void markRead({ keys: [a.readKey] }).catch(() => undefined); // opened = read; the list updates by itself
     const id = String(a.tenantId);
     setTab("businesses");
     setFilter("");
@@ -153,12 +155,12 @@ export default function BusinessPicker() {
                 <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${alertsOpen ? "rotate-180" : ""}`} />
               </button>
               {alertsOpen && <div className="space-y-1.5 border-t border-white/10 p-2">
-                {alertCount === 0 && <p className="px-1 py-1 text-xs text-blue-100">{tr("Hakuna tahadhari. Kila kitu kiko sawa.")}</p>}
+                {summary.alerts.length === 0 && <p className="px-1 py-1 text-xs text-blue-100">{tr("Hakuna tahadhari. Kila kitu kiko sawa.")}</p>}
                 {summary.alerts.map((a) => (
                   <button key={a.key} type="button" onClick={() => openAlert(a)} title={tr("Bonyeza kufungua biashara hii")}
-                    className={`flex w-full cursor-pointer items-start gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${a.level === "danger" ? "bg-red-500/20 text-red-50 hover:bg-red-500/30" : a.level === "warning" ? "bg-amber-300/15 text-amber-50 hover:bg-amber-300/25" : "bg-white/10 text-blue-50 hover:bg-white/20"}`}>
+                    className={`flex w-full cursor-pointer items-start gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${a.read ? "opacity-50" : ""} ${a.level === "danger" ? "bg-red-500/20 text-red-50 hover:bg-red-500/30" : a.level === "warning" ? "bg-amber-300/15 text-amber-50 hover:bg-amber-300/25" : "bg-white/10 text-blue-50 hover:bg-white/20"}`}>
                     <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${a.level === "danger" ? "bg-red-400" : a.level === "warning" ? "bg-amber-300" : "bg-blue-300"}`} />
-                    <span className="min-w-0 flex-1 break-words">{alertText(a)}</span>
+                    <span className={`min-w-0 flex-1 break-words ${a.read ? "" : "font-semibold"}`}>{alertText(a)}</span>
                     <span className="shrink-0 self-center text-[10px] font-semibold underline underline-offset-2">{a.code === "expired" || a.code === "expiring" ? tr("Fungua usajili") : tr("Fungua")}</span>
                   </button>
                 ))}

@@ -2,7 +2,7 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requireActiveUser, isOwnDataOnly, getCompanySettings, filterScoped } from "./access";
+import { requireActiveUser, isOwnDataOnly, isManagerRole, roleHasPermission, getCompanySettings, filterScoped } from "./access";
 import type { UserLike } from "./access";
 import { daysBetween } from "./plans";
 
@@ -21,15 +21,25 @@ async function scopedStats(ctx: QueryCtx, user: UserLike) {
   return user.branchId ? rows.filter((r) => r.branchId === user.branchId) : rows;
 }
 
-function forbidOwnDataOnly(user: UserLike) {
-  if (isOwnDataOnly(user)) throw new Error("Forbidden: personal dashboard only");
+/**
+ * The business dashboard shows purchases, supplier debt, stock value and totals of everybody, so it is for managers and for people who hold a
+ * report permission (e.g. the Accountant). Everyone else (waiter, waitress, cashier ...) gets the personal dashboard with their own sales only.
+ */
+export async function canSeeBusinessDashboard(ctx: QueryCtx, user: UserLike) {
+  if (isOwnDataOnly(user)) return false;
+  if (await isManagerRole(ctx, user)) return true;
+  for (const p of ["accounts.reports.view", "sales.reports.view", "purchasing.reports.view", "stock.reports.view"]) if (await roleHasPermission(ctx, user, p)) return true;
+  return false;
+}
+async function forbidPersonalOnly(ctx: QueryCtx, user: UserLike) {
+  if (!(await canSeeBusinessDashboard(ctx, user))) throw new Error("Forbidden: personal dashboard only");
 }
 
 export const getMetrics = query({
   args: { date: v.string() },
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx, "dashboard");
-    forbidOwnDataOnly(user);
+    await forbidPersonalOnly(ctx, user);
     const empty = { ready: false, todaySales: 0, todayCash: 0, todayPurchaseTotal: 0, totalOutstandingCustomer: 0, totalOutstandingSupplier: 0, lowStockItems: 0, outOfStockItems: 0, inventoryValue: 0, recentInvoices: [] as Doc<"invoices">[], recentPurchases: [] as Doc<"purchases">[], totalProducts: 0 };
     const tenantId = user.tenantId;
     if (!tenantId) return empty;
@@ -75,7 +85,7 @@ export const getCharts = query({
   args: { from: v.string(), today: v.string() },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "dashboard");
-    forbidOwnDataOnly(user);
+    await forbidPersonalOnly(ctx, user);
     const tenantId = user.tenantId;
     const noData = { ready: false, daily: [] as Array<{ date: string; sales: number; purchases: number; collected: number; invoices: number }>, topProducts: [] as Array<{ name: string; total: number }>, stockHealth: { ok: 0, low: 0, out: 0 }, receivable: 0, payable: 0, billsDue: 0, totals: { sales: 0, purchases: 0, invoices: 0 } };
     if (!tenantId) return noData;

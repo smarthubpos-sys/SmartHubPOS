@@ -178,6 +178,9 @@ describe("a user can be given several departments (a waiter selling in Bar and K
     expect(doc?.branchIds).toHaveLength(2);
     expect(doc?.branchId).toBe(bar); // starts in the first ticked department
     expect(doc?.branchPicked).toBe(true);
+    // Least privilege: a cashier has no report access by default, so the cashier ROLE is given sales.reports.view for this test
+    // (the per-user grant list deliberately does not include report permissions).
+    await t.run(async (ctx) => { await ctx.db.insert("roles", { name: "cashier", displayName: "Cashier", permissions: ["sales.view", "sales.manage", "sales.print", "sales.reports.view"], isSystem: true }); });
     const asWaiter = t.withIdentity({ subject: cashBar, tokenIdentifier: "x|9" });
     const cur = await asWaiter.query(api.tenants.current, {});
     expect(cur?.departments.map((d) => d.name).sort()).toEqual(["Bar", "Kitchen"]); // Lounge is not offered

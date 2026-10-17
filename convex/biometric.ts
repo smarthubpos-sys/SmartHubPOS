@@ -62,8 +62,11 @@ async function consumeChallenge(ctx: MutationCtx, challenge: string, purpose: st
 }
 function checkClientData(cd: Record<string, unknown>, type: string, challenge: string) {
   if (cd.type !== type || cd.challenge !== challenge) throw new Error("Uthibitisho wa kifaa umeshindikana.");
-  const expected = process.env.APP_ORIGIN;
-  if (expected && (typeof cd.origin !== "string" || cd.origin !== expected)) throw new Error("Chanzo cha ombi si sahihi.");
+  const expected = process.env.APP_ORIGIN?.trim();
+  // Fail closed: without a configured trusted origin, a credential must never be
+  // accepted from whichever website happens to submit a valid-looking assertion.
+  if (!expected) throw new Error("Biometric haijasanidiwa: weka APP_ORIGIN kwenye mazingira ya Convex.");
+  if (typeof cd.origin !== "string" || cd.origin !== expected) throw new Error("Chanzo cha ombi si sahihi.");
 }
 
 export const listCredentials = query({
@@ -152,7 +155,9 @@ export const authenticate = mutation({
     if (!rpIdHash.every((b, i) => b === authData[i])) throw new Error("Uthibitisho wa kifaa umeshindikana.");
     const flags = authData[32];
     if (!(flags & 0x01) || !(flags & 0x04)) throw new Error("Alama ya kidole au uso haikuthibitishwa kwenye kifaa.");
-    const counter = (authData[33] << 24) | (authData[34] << 16) | (authData[35] << 8) | authData[36];
+    // WebAuthn sign counters are unsigned 32-bit values. Bitwise shifts in JS
+    // produce a signed int and can turn valid high counters into negative values.
+    const counter = new DataView(authData.buffer, authData.byteOffset, authData.byteLength).getUint32(33, false);
     if ((counter > 0 || cred.counter > 0) && counter <= cred.counter) throw new Error("Uthibitisho umekataliwa (huenda umerudiwa).");
     const signed = concat(authData, await sha256(b64uToBytes(a.clientDataJSON)));
     const ok = await verifySignature(cred, signed, b64uToBytes(a.signature));

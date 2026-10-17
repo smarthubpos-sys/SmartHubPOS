@@ -2,7 +2,7 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { activeDepartments, allowedBranchIds, canAccessRecord, getCompanySettings, isOwnDataOnly, requireActiveUser, roleHasPermission, scopedRows } from "./access";
+import { activeDepartments, allowedBranchIds, canAccessRecord, getCompanySettings, isOwnDataOnly, requireActiveUser, roleHasPermission, scopedRows, requirePermission } from "./access";
 import type { UserLike } from "./access";
 
 const money = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -64,6 +64,8 @@ export const billData = query({
   args: { invoiceIds: v.array(v.id("invoices")) },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "bills");
+    // A bill/receipt shows sales data: needs sales.view, or sales.manage (a waiter who may take orders can see what he sold).
+    if (!(await roleHasPermission(ctx, user, "sales.view")) && !(await roleHasPermission(ctx, user, "sales.manage"))) throw new Error("Forbidden: permission \"sales.view\" required");
     if (a.invoiceIds.length === 0) throw new Error("Chagua angalau invoice moja.");
     if (a.invoiceIds.length > MAX_INVOICES) throw new Error("Bili moja isizidi invoice 50.");
     const unique = [...new Set(a.invoiceIds.map(String))];
@@ -110,11 +112,21 @@ export const billData = query({
       }
       out.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, notes: inv.notes ?? "", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, department: inv.branchId ? deptName.get(String(inv.branchId)) ?? "" : "", lines });
     }
+    // Receipt extras: who served the customer, when the sale was saved, and how it was paid (read from this business's own records only).
+    const cashierNames = new Set<string>(); const methods = new Set<string>();
+    for (const inv of invoices) {
+      const by = await ctx.db.get("users", inv.createdBy); if (by) cashierNames.add(by.name ?? by.username ?? "");
+      for (const pay of await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", inv._id)).collect()) if (pay.tenantId === inv.tenantId) methods.add(pay.paymentMethod);
+    }
+    const savedAt = invoices.length ? new Date(Math.min(...invoices.map((x) => x._creationTime))).toISOString() : null;
     const sum = (k: "subtotal" | "discount" | "taxAmount" | "total" | "amountPaid" | "outstanding") => money(out.reduce((n, i) => n + i[k], 0));
     return {
       company: { name: company?.companyName ?? "", address: company?.address ?? "", phone: company?.phone ?? "", email: company?.email ?? "", taxId: company?.taxId ?? "", currencySymbol: company?.currencySymbol ?? "TSh", decimalPlaces: company?.decimalPlaces ?? 0 },
       receiptFooter,
       department,
+      cashier: [...cashierNames].filter(Boolean).join(", "),
+      paymentMethods: [...methods].filter(Boolean),
+      savedAt,
       client: { code: client.code, name: client.name, phone: client.phone ?? "", address: client.address ?? "" },
       invoices: out,
       totals: { subtotal: sum("subtotal"), discount: sum("discount"), tax: sum("taxAmount"), total: sum("total"), paid: sum("amountPaid"), outstanding: sum("outstanding") },

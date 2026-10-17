@@ -23,6 +23,7 @@ export default function UsersPage() {
   const create = useAction(api.maintenance.createUser);
   const reset = useAction(api.maintenance.resetUserPassword);
   const update = useMutation(api.maintenance.updateUser);
+  const rename = useMutation(api.maintenance.renameUsername);
   const { busy, run } = useRun();
   const [f, setF] = useState<Form | null>(null);
   const set = (k: keyof Form, v: string) => setF((p) => (p ? { ...p, [k]: v } : p));
@@ -48,7 +49,7 @@ export default function UsersPage() {
         <Card>
           <div className="grid gap-4 md:grid-cols-2">
             <TextField label={tr("Jina kamili")} value={f.name} onChange={(v) => set("name", v)} />
-            <TextField label={tr("Username")} value={f.username} onChange={(v) => set("username", v.toLowerCase())} disabled={editing} hint={tr("Herufi ndogo/namba, 3–32, bila nafasi. Jina ni la kipekee kwa biashara zote (mfano asha.duka1). Biashara moja inaweza kuwa na admin na watumiaji wengi wa role moja, kila mmoja akiwa na username yake.")} />
+            <TextField label={tr("Username")} value={f.username} onChange={(v) => set("username", v.toLowerCase())} disabled={editing && editingSelf} hint={tr("Herufi ndogo/namba, 3–32, bila nafasi. Jina ni la kipekee kwa biashara zote (mfano asha.duka1). Biashara moja inaweza kuwa na admin na watumiaji wengi wa role moja, kila mmoja akiwa na username yake.")} />
             {!editing && <TextField label={tr("Password ya kuanzia")} type="password" value={f.password} onChange={(v) => set("password", v)} />}
             <SelectField label={tr("Role")} value={f.role} onChange={(v) => set("role", v)} options={roleOptions} />
             {isSuper && f.role !== "super_admin" && (
@@ -111,6 +112,11 @@ export default function UsersPage() {
               // New users: send ownDataOnly only when ticked, so a normal user can always be created even if the backend is a version behind.
               const access = f.role === "super_admin" ? {} : editing ? { ownDataOnly: f.ownDataOnly, extraPermissions: f.extra } : { ...(f.ownDataOnly ? { ownDataOnly: true } : {}), ...(f.extra.length ? { extraPermissions: f.extra } : {}) };
               const menu = f.menuAll ? {} : { menuAccess: f.menu };
+              if (editing) {
+                const original = (users ?? []).find((u) => u._id === f.id)?.username;
+                // Username is changed first and atomically (login key + profile); if it fails nothing else is saved.
+                if (!editingSelf && original && f.username && f.username !== original) await rename({ userId: f.id!, newUsername: f.username });
+              }
               if (editing) await update({ userId: f.id!, name: f.name, role: f.role, tenantId, ...dept, ...(editingSelf ? {} : { ...access, ...(f.menuAll ? { clearMenuAccess: true } : menu) }) });
               else await create({ name: f.name, username: f.username, password: f.password, role: f.role, tenantId, ...dept, ...access, ...menu });
               setF(null);

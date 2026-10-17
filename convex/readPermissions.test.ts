@@ -1,0 +1,52 @@
+import { describe, expect, it } from "vitest";
+import { convexTest } from "convex-test";
+import { api } from "./_generated/api";
+import schema from "./schema";
+import { modules } from "./tes.setup";
+
+/** Read endpoints must check the ACTION permission on the server, not only that the module is switched on. */
+async function setup() {
+  const t = convexTest(schema, modules);
+  const ids = await t.run(async (ctx) => {
+    const tenantId = await ctx.db.insert("tenants", { name: "Shop", code: "S", isActive: true, createdByToken: "t", createdAt: new Date().toISOString() });
+    const mk = (username: string, role: string) => ctx.db.insert("users", { name: username, username, role, tenantId, isActive: true });
+    const cashier = await mk("cash", "cashier"); const waiter = await mk("waiter", "waiter"); const mgr = await mk("mgr", "manager");
+    const warehouseId = await ctx.db.insert("warehouses", { tenantId, code: "W", name: "W", kind: "warehouse", isActive: true, createdBy: mgr, createdAt: new Date().toISOString() });
+    const productId = await ctx.db.insert("products", { tenantId, itemCode: "P", name: "P", openingQty: 0, currentQty: 0, sellingPrice: 1, isActive: true });
+    const clientId = await ctx.db.insert("clients", { tenantId, code: "C", name: "C", openingBalance: 0, creditPolicy: "allow", isActive: true });
+    const invoiceId = await ctx.db.insert("invoices", { tenantId, invoiceNo: "I-1", invoiceDate: "2026-10-16", clientId, subtotal: 1, discount: 0, taxAmount: 0, total: 1, amountPaid: 0, outstanding: 1, paymentStatus: "unpaid", status: "posted", createdBy: mgr });
+    return { cashier, waiter, mgr, warehouseId, productId, invoiceId };
+  });
+  const as = (id: typeof ids.cashier, n: number) => t.withIdentity({ subject: id, tokenIdentifier: `x|${n}` });
+  return { asCashier: as(ids.cashier, 1), asWaiter: as(ids.waiter, 2), asMgr: as(ids.mgr, 3), ...ids };
+}
+
+describe("backend permission checks on reads", () => {
+  it("without payroll.view nobody sees payroll / HR / attendance data", async () => {
+    const { asCashier, asWaiter, asMgr } = await setup();
+    for (const as of [asCashier, asWaiter]) {
+      await expect(as.query(api.hr.overview, { date: "2026-10-16" })).rejects.toThrow(/payroll.view/);
+      await expect(as.query(api.attendance.today, { date: "2026-10-16" })).rejects.toThrow(/payroll.view/);
+      await expect(as.query(api.attendance.range, { from: "2026-10-01", to: "2026-10-16" })).rejects.toThrow(/payroll.view/);
+    }
+    await expect(asMgr.query(api.hr.overview, { date: "2026-10-16" })).resolves.toBeDefined();
+  });
+
+  it("without the accounts / stock / purchasing permissions those registers and reports are refused", async () => {
+    const { asCashier, asWaiter } = await setup();
+    for (const as of [asCashier, asWaiter]) {
+      await expect(as.query(api.capital.list, {})).rejects.toThrow(/accounts.view/);
+      await expect(as.query(api.accounting.profitAndLoss, { startDate: "2026-01-01", endDate: "2026-12-31" })).rejects.toThrow(/accounts.reports.view/);
+      await expect(as.query(api.inventory.stockRegisters, {})).rejects.toThrow(/stock.view/);
+      await expect(as.query(api.purchasing.purchasingRegisters, {})).rejects.toThrow(/purchasing.view/);
+      await expect(as.query(api.paymentMethods.balances, {})).rejects.toThrow(/accounts.view/);
+    }
+  });
+
+  it("without stock.adjust nobody can adjust stock, and without sales.void nobody can void (even a manager lacking the grant for adjust)", async () => {
+    const { asCashier, asMgr, warehouseId, productId, invoiceId } = await setup();
+    await expect(asCashier.mutation(api.warehouses.adjustUp, { warehouseId, productId, quantity: 1, reason: "r" })).rejects.toThrow();
+    await expect(asMgr.mutation(api.warehouses.adjustDown, { warehouseId, productId, quantity: 1, reason: "r" })).rejects.toThrow(/stock.adjust/);
+    await expect(asCashier.mutation(api.sales.voidInvoice, { invoiceId })).rejects.toThrow(/huna ruhusa/);
+  });
+});
