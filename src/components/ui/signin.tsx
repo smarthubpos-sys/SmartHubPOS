@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+﻿import { useState, type FormEvent } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useConvexAuth } from "convex/react";
 import { useNavigate } from "react-router-dom";
@@ -73,9 +73,7 @@ export function SignInButton() {
         
         {firstSetup ? tr("Fungua akaunti ya msimamizi") : tr("Ingia")}
       </Button>
-      <button type="button" className="text-xs text-blue-100 underline" onClick={() => { setFirstSetup((v) => !v); setError(""); }}>
-        {firstSetup ? tr("Rudi kwenye kuingia") : tr("Usajili wa kwanza wa msimamizi")}
-      </button>
     </form>
   );
 }
+
