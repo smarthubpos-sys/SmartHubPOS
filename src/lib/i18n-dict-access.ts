@@ -1,5 +1,8 @@
 /* Translations for: edit business, per-business modules, per-user menus, staff dashboard, fast dashboard. */
 export const ACCESS_DICT: Record<string, { sw: string; en: string }> = {
+  "Huna ruhusa ya kufikia ukurasa huu.": { sw: "Huna ruhusa ya kufikia ukurasa huu.", en: "You do not have permission to access this page." },
+  "Huwezi kufungua sehemu hii kwa kutumia akaunti yako ya sasa. Ikiwa unahitaji ruhusa hii kwa kazi zako, wasiliana na msimamizi wa mfumo.": { sw: "Huwezi kufungua sehemu hii kwa kutumia akaunti yako ya sasa. Ikiwa unahitaji ruhusa hii kwa kazi zako, wasiliana na msimamizi wa mfumo.", en: "You cannot access this section with your current account. If you need this permission for your work, contact the system administrator." },
+  "Rudi Dashboard": { sw: "Rudi Dashboard", en: "Return to Dashboard" },
   "Paneli hii imeshindwa kufunguka.": { sw: "Paneli hii imeshindwa kufunguka.", en: "This panel failed to open." },
   "Jaribu tena": { sw: "Jaribu tena", en: "Try again" },
   "Kuna hitilafu imetokea kwenye ukurasa huu.": { sw: "Kuna hitilafu imetokea kwenye ukurasa huu.", en: "Something went wrong on this page." },

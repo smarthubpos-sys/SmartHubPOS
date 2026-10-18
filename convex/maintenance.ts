@@ -52,7 +52,7 @@ async function securityPolicy(ctx: QueryCtx, user: UserLike) {
   return { ...DEFAULT_SECURITY, ...(map.security ?? {}) };
 }
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Settings (company, system, hardware, tax, numbering, language, security) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Settings (company, system, hardware, tax, numbering, language, security) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 export const getSettings = query({
   args: {},
@@ -80,8 +80,8 @@ export const saveCompany = mutation({
   handler: async (ctx, args) => {
     const user = await requirePermission(ctx, "maintenance.company");
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
-    if (args.decimalPlaces !== undefined && (args.decimalPlaces < 0 || args.decimalPlaces > 6)) throw new Error("Decimal places lazima iwe 0â€“6.");
-    if (args.taxRate !== undefined && (args.taxRate < 0 || args.taxRate > 100)) throw new Error("Tax rate lazima iwe 0â€“100.");
+    if (args.decimalPlaces !== undefined && (args.decimalPlaces < 0 || args.decimalPlaces > 6)) throw new Error("Decimal places lazima iwe 0Ã¢â‚¬â€œ6.");
+    if (args.taxRate !== undefined && (args.taxRate < 0 || args.taxRate > 100)) throw new Error("Tax rate lazima iwe 0Ã¢â‚¬â€œ100.");
     const patch = Object.fromEntries(Object.entries(args).filter(([, val]) => val !== undefined));
     const existing = (await scopedRows(ctx, user, "companySettings")).find((r) => r.branchId === scope.branchId); // the row of THIS scope (business-wide, or the chosen department), never another department's
     let id;
@@ -108,8 +108,8 @@ export const saveSetting = mutation({
     const value = args.value ?? {};
     if (args.key === "security") {
       const s: { minPasswordLength?: unknown; sessionTimeoutMinutes?: unknown } = typeof value === "object" && value !== null ? value : {};
-      if (!(typeof s.minPasswordLength === "number" && s.minPasswordLength >= 8 && s.minPasswordLength <= 64)) throw new Error("Urefu wa password uwe 8â€“64.");
-      if (!(typeof s.sessionTimeoutMinutes === "number" && s.sessionTimeoutMinutes >= 0 && s.sessionTimeoutMinutes <= 1440)) throw new Error("Session timeout iwe 0â€“1440 dakika (0 = imezimwa).");
+      if (!(typeof s.minPasswordLength === "number" && s.minPasswordLength >= 8 && s.minPasswordLength <= 64)) throw new Error("Urefu wa password uwe 8Ã¢â‚¬â€œ64.");
+      if (!(typeof s.sessionTimeoutMinutes === "number" && s.sessionTimeoutMinutes >= 0 && s.sessionTimeoutMinutes <= 1440)) throw new Error("Session timeout iwe 0Ã¢â‚¬â€œ1440 dakika (0 = imezimwa).");
     }
     if (args.key === "language" && !["sw", "en"].includes(String((typeof value === "object" && value !== null ? (value as { language?: unknown }).language : undefined)))) throw new Error("Lugha lazima iwe sw au en.");
     const rows = (await ctx.db.query("appSettings").withIndex("by_key", (q) => q.eq("key", args.key)).collect())
@@ -122,7 +122,7 @@ export const saveSetting = mutation({
   },
 });
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Financial periods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Financial periods Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 export const listPeriods = query({
   args: {},
@@ -203,30 +203,44 @@ export const deletePeriod = mutation({
   },
 });
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Roles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Roles Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 export const listRoles = query({
   args: {},
   handler: async (ctx) => {
-    await requireActiveUser(ctx);
+    await requirePermission(ctx, "maintenance.roles");
     const rows = await ctx.db.query("roles").collect();
     const byName = new Map(rows.map((r) => [r.name, r]));
     const system = SYSTEM_ROLES.map((r) => {
       const row = byName.get(r.name);
-      return { name: r.name, displayName: row?.displayName ?? r.displayName, permissions: row ? permissionsWithNewDefaults(r.name, row.permissions, row.knownKeys) : r.permissions, isSystem: true, customized: !!row };
+      return {
+        name: r.name,
+        displayName: row?.displayName ?? r.displayName,
+        permissions: row
+          ? permissionsWithNewDefaults(r.name, row.permissions, row.knownKeys)
+          : r.permissions,
+        isSystem: true,
+        customized: !!row,
+      };
     });
-    const custom = rows.filter((r) => !SYSTEM_ROLES.some((s) => s.name === r.name))
-      .map((r) => ({ name: r.name, displayName: r.displayName, permissions: r.permissions, isSystem: false, customized: true }));
+    const custom = rows
+      .filter((r) => !SYSTEM_ROLES.some((s) => s.name === r.name))
+      .map((r) => ({
+        name: r.name,
+        displayName: r.displayName,
+        permissions: r.permissions,
+        isSystem: false,
+        customized: true,
+      }));
     return [...system, ...custom];
   },
 });
-
 export const saveRole = mutation({
   args: { name: v.string(), displayName: v.string(), permissions: v.array(v.string()) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.roles");
     const name = normalizeRole(a.name);
-    if (!/^[a-z][a-z0-9_]{1,30}$/.test(name)) throw new Error("Jina la role: herufi ndogo/namba/underscore (2â€“31), likianza na herufi.");
+    if (!/^[a-z][a-z0-9_]{1,30}$/.test(name)) throw new Error("Jina la role: herufi ndogo/namba/underscore (2Ã¢â‚¬â€œ31), likianza na herufi.");
     if (["super_admin", "superadmin"].includes(name)) throw new Error("Role ya Super Admin imehifadhiwa na haiwezi kubadilishwa.");
     if (!a.displayName.trim()) throw new Error("Display name inahitajika.");
     const bad = a.permissions.filter((p) => !ALL_PERMISSION_KEYS.includes(p));
@@ -257,7 +271,7 @@ export const deleteRole = mutation({
   },
 });
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Users Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 /** Keeps only modules the business actually has (the Super Admin decides that per business). */
 /** Permissions such as stock.adjust can be given or taken away by a Super Admin only (role or single user). */
@@ -380,7 +394,7 @@ export const renameUsername = mutation({
   args: { userId: v.id("users"), newUsername: v.string() },
   handler: async (ctx, a): Promise<{ username: string }> => {
     const username = a.newUsername.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3â€“32, bila nafasi.");
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3Ã¢â‚¬â€œ32, bila nafasi.");
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { targetUserId: a.userId }); // active actor + maintenance.users + same business/department rules
     const target = await ctx.db.get("users", a.userId);
     if (!target) throw new Error("Mtumiaji hapatikani.");
@@ -534,7 +548,7 @@ export const createUser = action({
   },
   handler: async (ctx, a): Promise<string> => {
     const username = a.username.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3â€“32, bila nafasi.");
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3Ã¢â‚¬â€œ32, bila nafasi.");
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { role: a.role, tenantId: a.tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, extraPermissions: a.extraPermissions });
     if (a.password.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
     const tenantId = a.tenantId ?? auth.actorTenantId;
@@ -626,7 +640,7 @@ export const markPasswordChanged = internalMutation({
   },
 });
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Audit trail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Audit trail Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 export const listAudit = query({
   args: { module: v.optional(v.string()), limit: v.optional(v.number()) },
@@ -647,7 +661,7 @@ export const listAudit = query({
   },
 });
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Backup (export) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Backup (export) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 export const BACKUP_TABLES = [
   "tenants", "branches", "tenantSettings", "users", "roles", "companySettings", "financialPeriods", "appSettings", "paymentMethods",
@@ -682,7 +696,7 @@ export const recordBackup = mutation({
   },
 });
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Database maintenance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Database maintenance Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 const SCOPED_TABLES = [
   "suppliers", "products", "clients", "productGroups", "unitsOfMeasure", "purchases", "purchaseOrders", "goodsReceivedNotes",
@@ -756,7 +770,7 @@ export const purgeAuditLogs = mutation({
   },
 });
 
-/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Clear Data File (Super Admin + Super Admin password) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Clear Data File (Super Admin + Super Admin password) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
 
 type ClearStep = { table: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean };
 type ClearCategory = { label: string; description: string; steps: ClearStep[]; resetSequences?: ("salesSequences" | "purchaseSequences")[]; rebuildStats?: boolean };
@@ -883,7 +897,7 @@ export const finishClear = internalMutation({
     if (a.categories.some((k) => CLEAR_CATEGORIES[k]?.rebuildStats)) {
       await ctx.scheduler.runAfter(0, internal.stats.requestRebuild, { tenantId: a.tenantId });
     }
-    await logAudit(ctx, actor, { action: "clear_data_file", module: "maintenance", details: `${a.categories.join(", ")} â€” ${a.counts}` });
+    await logAudit(ctx, actor, { action: "clear_data_file", module: "maintenance", details: `${a.categories.join(", ")} Ã¢â‚¬â€ ${a.counts}` });
   },
 });
 
@@ -945,10 +959,15 @@ export const clearDataOverview = query({
 export const myPermissions = query({
   args: {},
   handler: async (ctx) => {
-    const user = await getCurrentProfile(ctx);
-    if (!user) return [];
+    const user = await requireActiveUser(ctx);
     const out: string[] = [];
-    for (const key of ALL_PERMISSION_KEYS) if (await roleHasPermission(ctx, user, key)) out.push(key);
+
+    for (const key of ALL_PERMISSION_KEYS) {
+      if (await roleHasPermission(ctx, user, key)) {
+        out.push(key);
+      }
+    }
+
     return out;
   },
 });

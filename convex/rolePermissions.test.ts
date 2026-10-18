@@ -316,3 +316,45 @@ describe("legacy built-in role default migration", () => {
     expect(permissionsWithNewDefaults("accountant", ["accounts.view"], undefined)).toEqual(["accounts.view"]);
   });
 });
+describe("role list access control", () => {
+  it("waiter and waitress cannot view roles without maintenance.roles permission", async () => {
+    const { as, waiter, waitress } = await setup();
+
+    await expect(
+      as(waiter).query(api.maintenance.listRoles, {})
+    ).rejects.toThrow(/maintenance\.roles/);
+
+    await expect(
+      as(waitress).query(api.maintenance.listRoles, {})
+    ).rejects.toThrow(/maintenance\.roles/);
+  });
+
+  it("a user with maintenance.roles permission can view roles", async () => {
+    const { as, t, tenantA } = await setup();
+
+    const roleManager = await t.run(async (ctx) => {
+      await ctx.db.insert("roles", {
+        name: "rolesmanager",
+        displayName: "Roles Manager",
+        permissions: ["maintenance.roles"],
+        isSystem: false,
+      });
+
+      return await ctx.db.insert("users", {
+        name: "Roles Manager",
+        username: "rolesmanager",
+        role: "rolesmanager",
+        tenantId: tenantA,
+        isActive: true,
+      });
+    });
+
+    const roles = await as(roleManager).query(
+      api.maintenance.listRoles,
+      {}
+    );
+
+    expect(roles.length).toBeGreaterThan(0);
+    expect(roles.some((role) => role.name === "waiter")).toBe(true);
+  });
+});
