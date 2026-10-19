@@ -102,6 +102,26 @@ describe("period report", () => {
     expect(empty.sections).toHaveLength(0);
   });
 
+  it("allows only Super Admin to delete a report snapshot", async () => {
+    const { t, tenantId, asMgr } = await setup();
+    const superId = await t.run((ctx) => ctx.db.insert("users", {
+      name: "Super", username: "super", role: "super_admin",
+      tenantId, isActive: true,
+    }));
+    const asSuper = t.withIdentity({ subject: superId, tokenIdentifier: "x|super" });
+
+    const id = await asMgr.mutation(api.periodReport.save, {
+      period: "day", startDate: date, endDate: date,
+      scope: "all", scopeLabel: "Biashara nzima", title: "Test delete",
+      sections: [],
+    });
+
+    await expect(asMgr.mutation(api.periodReport.deleteRun, { id }))
+      .rejects.toThrow(/Super Admin/);
+
+    await asSuper.mutation(api.periodReport.deleteRun, { id });
+    expect(await asSuper.query(api.periodReport.history, {})).toHaveLength(0);
+  });
   it("saves a snapshot that can be listed and reopened", async () => {
     const { asMgr } = await setup();
     const id = await asMgr.mutation(api.periodReport.save, { period: "day", startDate: date, endDate: date, scope: "all", scopeLabel: "Biashara nzima", title: "Test", sections: [{ bk: "none", name: "Duka", rows: [{ g: "rev", k: "4000", label: "Sales revenue", a: 5000, b: 0, c: 0 }] }] });

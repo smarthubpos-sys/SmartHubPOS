@@ -142,3 +142,31 @@ export const getRun = query({
     return { _id: r._id, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scope: r.scope, scopeLabel: r.scopeLabel, createdByName: r.createdByName, createdAt: r.createdAt, sections: (JSON.parse(r.data) as { sections: Array<{ bk: string; name: string; rows: Row[] }> }).sections };
   },
 });
+
+/** Delete a saved report snapshot. Super Admin only; never deletes accounting transactions. */
+export const deleteRun = mutation({
+  args: { id: v.id("reportRuns") },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
+    if (!isSuperAdmin(user)) {
+      throw new Error("Super Admin pekee ndiye anayeruhusiwa kufuta ripoti.");
+    }
+    if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
+
+    const report = await ctx.db.get("reportRuns", a.id);
+    if (!report || report.tenantId !== user.tenantId) {
+      throw new Error("Ripoti haipo kwenye biashara yako.");
+    }
+
+    await logAudit(ctx, user, {
+      action: "delete_period_report",
+      module: "accounts",
+      referenceId: String(report._id),
+      referenceType: "reportRun",
+      details: `${report.title} ${report.startDate}..${report.endDate}`,
+    });
+
+    await ctx.db.delete("reportRuns", report._id);
+    return { success: true };
+  },
+});

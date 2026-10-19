@@ -208,6 +208,8 @@ export default function PeriodReportPage() {
   const header = useQuery(api.periodReport.header);
   const history = useQuery(api.periodReport.history, {});
   const save = useMutation(api.periodReport.save);
+  const deleteRun = useMutation(api.periodReport.deleteRun);
+  const superAdminInfo = useQuery(api.maintenance.clearDataOverview);
 
   const initialPeriod = (["day", "month", "year"].includes(params.get("period") ?? "") ? params.get("period") : "day") as Period;
   const [period, setPeriod] = useState<Period>(initialPeriod);
@@ -321,7 +323,21 @@ export default function PeriodReportPage() {
                 <td className="whitespace-nowrap tabular-nums">{formatNumber(h.totalExpenses, header?.decimalPlaces ?? 0)}</td>
                 <td className={`whitespace-nowrap tabular-nums font-semibold ${h.netProfit < 0 ? "text-destructive" : ""}`}>{acct(h.netProfit, header?.decimalPlaces ?? 0)}</td>
                 <td className="whitespace-nowrap text-xs text-muted-foreground">{h.createdByName}<br />{new Date(h.createdAt).toLocaleString(getLocale())}</td>
-                <td className="text-right"><Button size="sm" variant="outline" onClick={() => { setResult(null); setOpenId(h._id); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{tr("Fungua")}</Button></td>
+                <td className="text-right">
+  <div className="flex justify-end gap-2">
+    <Button size="sm" variant="outline" onClick={() => { setResult(null); setOpenId(h._id); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{tr("Fungua")}</Button>
+    {superAdminInfo?.isSuperAdmin === true && <Button size="sm" variant="destructive" onClick={async () => {
+      if (!window.confirm(`Una uhakika unataka kufuta ripoti "${periodText(h.period as Period, h.startDate, h.endDate)}"? Kitendo hiki hakiwezi kutenguliwa.`)) return;
+      try {
+        await deleteRun({ id: h._id });
+        if (openId === h._id) { setOpenId(null); setResult(null); }
+        toast.success(tr("Ripoti imefutwa."));
+      } catch (e) {
+        toast.error(errorText(e, tr("Imeshindikana kufuta ripoti.")));
+      }
+    }}>{tr("Futa")}</Button>}
+  </div>
+</td>
               </tr>
             ))}
           </Table>
