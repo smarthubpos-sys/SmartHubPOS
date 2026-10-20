@@ -210,6 +210,8 @@ export default function PeriodReportPage() {
   const save = useMutation(api.periodReport.save);
   const deleteRun = useMutation(api.periodReport.deleteRun);
   const superAdminInfo = useQuery(api.maintenance.clearDataOverview);
+  const myPerms = useQuery(api.maintenance.myPermissions, {});
+  const canDeleteReports = !!myPerms?.includes("accounts.reports.delete");  
 
   const initialPeriod = (["day", "month", "year"].includes(params.get("period") ?? "") ? params.get("period") : "day") as Period;
   const [period, setPeriod] = useState<Period>(initialPeriod);
@@ -326,7 +328,7 @@ export default function PeriodReportPage() {
                 <td className="text-right">
   <div className="flex justify-end gap-2">
     <Button size="sm" variant="outline" onClick={() => { setResult(null); setOpenId(h._id); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{tr("Fungua")}</Button>
-    {superAdminInfo?.isSuperAdmin === true && <Button size="sm" variant="destructive" onClick={async () => {
+    {(superAdminInfo?.isSuperAdmin === true || canDeleteReports) && <Button size="sm" variant="destructive" onClick={async () => {
       if (!window.confirm(`Una uhakika unataka kufuta ripoti "${periodText(h.period as Period, h.startDate, h.endDate)}"? Kitendo hiki hakiwezi kutenguliwa.`)) return;
       try {
         await deleteRun({ id: h._id });

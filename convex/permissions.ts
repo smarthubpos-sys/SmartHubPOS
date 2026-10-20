@@ -31,6 +31,7 @@ export const PERMISSION_GROUPS: { group: string; items: { key: string; label: st
       { key: "purchasing.export", label: "Export purchase data" },
       { key: "purchasing.edit", label: "Edit purchase invoices, purchase orders and GRNs" },
       { key: "purchasing.delete", label: "Delete / cancel purchase invoices, orders, GRNs and purchase returns" },
+      { key: "accounts.reports.delete", label: "Anaweza kufuta ripoti za kipindi (Period Reports)" },
     ],
   },
   { group: "Payroll", items: [{ key: "payroll.view", label: "View payroll" }, { key: "payroll.manage", label: "Manage employees and payroll" }, { key: "payroll.approve", label: "Approve payroll" }, { key: "payroll.reports.view", label: "View payroll reports" }, { key: "payroll.print", label: "Print payroll reports" }, { key: "payroll.export", label: "Export payroll data" }] },

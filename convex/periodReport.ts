@@ -148,9 +148,9 @@ export const deleteRun = mutation({
   args: { id: v.id("reportRuns") },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
-    if (!isSuperAdmin(user)) {
-      throw new Error("Super Admin pekee ndiye anayeruhusiwa kufuta ripoti.");
-    }
+    if (!(await roleHasPermission(ctx, user, "accounts.reports.delete"))) {
+    throw new Error("Huna ruhusa ya kufuta ripoti.");
+   }
     if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
 
     const report = await ctx.db.get("reportRuns", a.id);
