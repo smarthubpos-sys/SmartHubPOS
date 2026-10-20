@@ -5,6 +5,8 @@ import InvoiceEntry from "@/pages/sales/InvoiceEntry.tsx";
 import SalesClients from "@/pages/sales/SalesClients.tsx";
 import SalesRegister from "@/pages/sales/SalesRegister.tsx";
 import { tr } from "@/lib/i18n.ts";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api.js";
 
 const salesMenuItems = [
   {
@@ -36,8 +38,26 @@ const salesMenuItems = [
   },
 ];
 
+
 export default function SalesPage() {
   const navigate = useNavigate();
+
+  const myPerms = useQuery(api.maintenance.myPermissions, {});
+  const canViewReports = !!myPerms?.includes("sales.reports.view");
+
+  const visibleSalesMenuItems = salesMenuItems
+    .map((section) =>
+      section.section === tr("Sales Reports")
+        ? {
+            ...section,
+            items: section.items.filter(
+              (item) =>
+                item.path === "/sales/clients/list" || canViewReports
+            ),
+          }
+        : section
+    )
+    .filter((section) => section.items.length > 0);
 
   return (
     <Routes>
@@ -46,7 +66,7 @@ export default function SalesPage() {
         element={
           <ModuleMenu
             title={tr("Sales")}
-            sections={salesMenuItems}
+            sections={visibleSalesMenuItems}
             onClose={() => navigate("/dashboard")}
           />
         }
