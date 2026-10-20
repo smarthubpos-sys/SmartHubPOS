@@ -60,6 +60,7 @@ export const USER_GRANTABLE_PERMISSIONS: { key: string; label: string }[] = [
   { key: "sales.void", label: "Anaweza kufuta / kubatilisha oda (invoice) za Sales" },
   { key: "purchasing.edit", label: "Anaweza ku-edit Purchase (invoice, order, GRN)" },
   { key: "purchasing.delete", label: "Anaweza kufuta Purchase (invoice, order, GRN, return)" },
+  { key: "accounts.reports.delete", label: "Anaweza kufuta ripoti za kipindi (Period Reports)" },
   { key: "stock.adjust", label: "Anaweza kubadili / kufuta stock (adjustment, kuhariri bidhaa) â€” Super Admin pekee ndiye anayetoa" },
 ];
 
