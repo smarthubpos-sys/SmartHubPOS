@@ -158,6 +158,7 @@ export const SETTING_KEYS: Record<string, string> = {
 export const MODULES: { key: string; label: string; path: string; core?: boolean }[] = [
   { key: "dashboard", label: "Dashboard", path: "/dashboard", core: true },
   { key: "sales", label: "Sales", path: "/sales" },
+  { key: "waiterOrders", label: "Waiter Orders", path: "/waiter-orders" },
   { key: "stock", label: "Stock", path: "/stock" },
   { key: "purchasing", label: "Purchasing", path: "/purchasing" },
   { key: "accounts", label: "Accounts", path: "/accounts" },
