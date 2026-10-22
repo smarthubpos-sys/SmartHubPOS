@@ -60,9 +60,9 @@ type QzTrayApi = {
     setSignaturePromise(callback: () => (resolve: (signature?: string) => void) => void): void;
   };
   websocket: { isActive(): boolean; connect(options: { retries: number; delay: number }): Promise<void> };
-  printers: { find(): Promise<string | string[]> };
+  printers: { find(): Promise<string | string[]>; getDefault?(): Promise<string> };
   configs: { create(name: string): unknown };
-  print(config: unknown, data: Array<{ type: string; format: string; data: string }>): Promise<void>;
+  print(config: unknown, data: Array<{ type: string; format: string; flavor?: string; data: string }>): Promise<void>;
 };
 
 const nav = (): DeviceNavigator => navigator as DeviceNavigator;
@@ -73,19 +73,68 @@ export const deviceSupport = {
 };
 
 /* ───────── Installed printers (QZ Tray) ───────── */
-async function qzConnect() {
-  const mod = await import("qz-tray") as unknown as { default?: QzTrayApi } & QzTrayApi;
-  const qz: QzTrayApi = mod.default ?? mod;
-  qz.security.setCertificatePromise((resolve: () => void) => resolve());
-  qz.security.setSignaturePromise(() => (resolve: () => void) => resolve());
-  if (!qz.websocket.isActive()) await qz.websocket.connect({ retries: 0, delay: 0 });
-  return qz;
+const QZ_CDN = "https://cdn.jsdelivr.net/npm/qz-tray@2.2.4/qz-tray.js";
+let qzApi: QzTrayApi | null = null;
+
+/** Loads the QZ client library: from the bundled npm package, or (if the package is missing) from the CDN. */
+async function loadQz(): Promise<QzTrayApi> {
+  if (qzApi) return qzApi;
+  try {
+    const mod = await import("qz-tray") as unknown as { default?: QzTrayApi } & QzTrayApi;
+    qzApi = mod.default ?? mod;
+    return qzApi;
+  } catch { /* fall through to the CDN copy */ }
+  const w = window as unknown as { qz?: QzTrayApi };
+  if (!w.qz) {
+    await new Promise<void>((resolve, reject) => {
+      const el = document.createElement("script");
+      el.src = QZ_CDN; el.async = true;
+      el.onload = () => resolve();
+      el.onerror = () => reject(new Error(tr("Imeshindikana kupakia maktaba ya QZ Tray. Angalia intaneti.")));
+      document.head.appendChild(el);
+    });
+  }
+  if (!w.qz) throw new Error(tr("Maktaba ya QZ Tray haipatikani."));
+  qzApi = w.qz;
+  return qzApi;
+}
+
+let qzConnecting: Promise<QzTrayApi> | null = null;
+async function qzConnect(): Promise<QzTrayApi> {
+  const qz = await loadQz();
+  // Unsigned mode: QZ Tray shows an "Allow" prompt once; tick "Remember this decision" so it never asks again.
+  qz.security.setCertificatePromise((resolve) => resolve());
+  qz.security.setSignaturePromise(() => (resolve) => resolve());
+  if (qz.websocket.isActive()) return qz;
+  if (!qzConnecting) {
+    qzConnecting = qz.websocket.connect({ retries: 5, delay: 1 })
+      .then(() => qz)
+      .catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error ?? "");
+        throw new Error(`${tr("QZ Tray haijaunganishwa. Hakikisha QZ Tray imewashwa (ikoni karibu na saa ya Windows) kisha jaribu tena.")} ${detail}`.trim());
+      })
+      .finally(() => { qzConnecting = null; });
+  }
+  return qzConnecting;
 }
 
 export async function listInstalledPrinters(): Promise<string[]> {
   const qz = await qzConnect();
   const found = await qz.printers.find();
   return (Array.isArray(found) ? found : [found]).filter(Boolean).map(String).sort((a, b) => a.localeCompare(b));
+}
+
+/** The Windows default printer (used to pre-select a printer so nobody has to type its name). */
+export async function defaultInstalledPrinter(): Promise<string> {
+  const qz = await qzConnect();
+  try { return String((await qz.printers.getDefault?.()) ?? ""); } catch { return ""; }
+}
+
+/** Sends raw ESC/POS bytes to an installed printer through QZ Tray. Bytes are sent as base64 so nothing is altered. */
+export async function printRawViaQz(printerName: string, bytes: Uint8Array) {
+  const qz = await qzConnect();
+  let binary = ""; for (const byte of bytes) binary += String.fromCharCode(byte);
+  await qz.print(qz.configs.create(printerName), [{ type: "raw", format: "command", flavor: "base64", data: btoa(binary) }]);
 }
 
 /* ───────── Direct devices ───────── */
@@ -215,21 +264,29 @@ function browserTestPrint(width: string, name: string) {
 
 export type PrinterSettings = { printerSource: string; receiptPrinter: string; receiptDevice?: DeviceInfo | null; paperWidth: string };
 
-export async function testPrinter(s: PrinterSettings) {
+/** Where the test page went, so the screen can tell the person the truth instead of always saying "sent". */
+export type TestPrintResult = { via: "direct" | "qz" | "browser"; note?: string };
+
+export async function testPrinter(s: PrinterSettings): Promise<TestPrintResult> {
   if (s.printerSource === "direct") {
     const d = s.receiptDevice;
     if (!d) throw new Error(tr("Chagua au unganisha printer kwanza."));
     const bytes = escposTest(d.name, s.paperWidth);
-    if (d.kind === "usb") return sendUsb(d, bytes);
-    if (d.kind === "serial") return sendSerial(d, bytes);
-    return sendBluetooth(d, bytes);
+    if (d.kind === "usb") await sendUsb(d, bytes);
+    else if (d.kind === "serial") await sendSerial(d, bytes);
+    else await sendBluetooth(d, bytes);
+    return { via: "direct" };
   }
+  let qzProblem = "";
   if (s.receiptPrinter) {
     try {
-      const qz = await qzConnect();
-      await qz.print(qz.configs.create(s.receiptPrinter), [{ type: "raw", format: "plain", data: new TextDecoder().decode(escposTest(s.receiptPrinter, s.paperWidth)) }]);
-      return;
-    } catch { /* QZ Tray not running: fall back to the browser print dialog */ }
+      await printRawViaQz(s.receiptPrinter, escposTest(s.receiptPrinter, s.paperWidth));
+      return { via: "qz" };
+    } catch (error) {
+      // QZ Tray not running / printer name wrong / access denied: keep the reason and fall back to the browser print dialog.
+      qzProblem = error instanceof Error ? error.message : String(error ?? "");
+    }
   }
   browserTestPrint(s.paperWidth, s.receiptPrinter);
+  return { via: "browser", note: qzProblem || undefined };
 }

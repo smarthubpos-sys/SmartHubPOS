@@ -3,10 +3,13 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import type { UserLike } from "./access";
-import { canAccessRecord, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope, scopedRows, getCompanySettings } from "./access";
+import { canAccessRecord, isSuperAdmin, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope, getCompanySettings } from "./access";
 import { bumpStats } from "./stats";
+import { visibleClients } from "./clients";
 import { assertDate, assertFinite, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
+
+const sameBusiness = (user: { tenantId?: unknown }, record: { tenantId?: unknown } | null | undefined) => !!record && record.tenantId === user.tenantId;
 
 const lineValidator = v.object({ productId: v.id("products"), qty: v.number(), unitPrice: v.number(), discount: v.optional(v.number()) });
 const money = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -73,7 +76,7 @@ export const recentInvoices = query({
     const invoices = mine(user, filterScoped(user, raw.slice(0, limit)))
       .filter((inv) => inv.status === "posted");
 
-    const clients = filterScoped(user, await scopedRows(ctx, user, "clients"));
+    const clients = await visibleClients(ctx, user);
     const clientNames = new Map(clients.map((client) => [String(client._id), client.name]));
 
     return {
@@ -116,7 +119,10 @@ export const createInvoice = mutation({
     if (!args.lines.length) throw new Error("Invoice lazima iwe na angalau bidhaa moja.");
     assertDate(args.invoiceDate, "Tarehe ya invoice");
     assertFinite(args.discount, "Discount ya invoice"); assertFinite(args.taxRate, "Tax rate"); assertFinite(args.paymentAmount, "Kiasi kilicholipwa");
-    const client = await ctx.db.get("clients", args.clientId); if (!canAccessRecord(user, client)) throw new Error("Mteja hayupo kwenye ofisi/branch yako.");
+    const client = await ctx.db.get("clients", args.clientId);
+    const manager = await isManagerRole(ctx, user);
+    const clientVisible = isSuperAdmin(user) ? sameBusiness(user, client) : canAccessRecord(user, client) && (manager || client?.createdByUser === undefined || client?.createdByUser === user._id);
+    if (!clientVisible) throw new Error("Mteja hayupo kwenye ofisi/branch yako au si mteja wako.");
     const company = await getCompanySettings(ctx, user);
     const allowNegativeStock = !!company?.allowNegativeStock;
     const invoicePrefix = (company?.invoicePrefix ?? "INV-") || "INV-";
@@ -126,7 +132,10 @@ export const createInvoice = mutation({
     let subtotal = 0;
     for (const line of args.lines) {
       if (!Number.isFinite(line.qty) || line.qty <= 0 || !Number.isFinite(line.unitPrice) || line.unitPrice < 0) throw new Error("Kiasi au bei si sahihi.");
-      const product = await ctx.db.get("products", line.productId); if (!product || !canAccessRecord(user, product) || !product.isActive) throw new Error("Bidhaa haipatikani kwenye branch hii.");
+      const product = await ctx.db.get("products", line.productId);
+      // A product is sellable in the user's own department, or when it was saved for "all departments" (no branch) in this business.
+      const productAllowed = !!product && product.isActive && (canAccessRecord(user, product) || (product.branchId === undefined && sameBusiness(user, product)));
+      if (!product || !productAllowed) throw new Error("Bidhaa haipatikani kwenye branch hii.");
       if (!allowNegativeStock && product.currentQty + 1e-8 < (requested.get(String(line.productId)) ?? line.qty)) throw new Error(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, unayouza: ${requested.get(String(line.productId))}`);
       assertFinite(line.discount, "Discount"); const discount = money(line.discount ?? 0); const gross = money(line.qty * line.unitPrice); if (discount < 0 || discount > gross) throw new Error("Discount si sahihi.");
       const lineTotal = money(gross - discount); subtotal += lineTotal; prepared.push({ productId: line.productId, qty: line.qty, unitPrice: line.unitPrice, discount, lineTotal, cost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0 });
@@ -395,7 +404,7 @@ export const recordPayment = mutation({ args: { invoiceId: v.id("invoices"), amo
   if (isOwnDataOnly(user) && invoice.createdBy !== user._id) throw new Error("Invoice haipatikani au haijapostiwa.");
   const { splits, total: amount } = await normaliseSplits(ctx, user, args.splits ?? [{ method: args.paymentMethod ?? "cash", amount: args.amount ?? NaN, reference: args.reference }]);
   if (amount <= 0 || amount > invoice.outstanding + 1e-8) throw new Error("Malipo lazima yawe zaidi ya sifuri na yasizidi deni.");
-  const client = await ctx.db.get("clients", invoice.clientId); if (!canAccessRecord(user, client)) throw new Error("Mteja hayupo kwenye branch yako.");
+  const client = await ctx.db.get("clients", invoice.clientId); if (!(isSuperAdmin(user) ? sameBusiness(user, client) : canAccessRecord(user, client))) throw new Error("Mteja hayupo kwenye branch yako.");
   const refs = splits.map((s) => s.reference).filter((r): r is string => !!r);
   if (new Set(refs).size !== refs.length) throw new Error("Reference moja imetumika mara mbili kwenye risiti hii.");
   if (refs.length) { const prior = await ctx.db.query("customerPayments").withIndex("by_client", q => q.eq("clientId", invoice.clientId)).collect(); if (prior.some(p => p.reference && refs.includes(p.reference) && p.tenantId === scope.tenantId && p.branchId === scope.branchId)) throw new Error("Reference ya malipo imeshatumika; ombi linalofanana limezuiwa."); }
@@ -440,7 +449,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
     const endDate = a.endDate;
     const inRange = (d: string) => (!a.startDate || d >= a.startDate) && (!a.endDate || d <= a.endDate);
 
-    const clients = tenantId ? filterScoped(user, await scopedRows(ctx, user, "clients")) : [];
+    const clients = tenantId ? await visibleClients(ctx, user) : [];
     // A user working in ONE department reads only that department's rows (per-department indexes), so another department's
     // volume can never fill the REG_CAP window and hide this department's invoices.
     const branchId = user.branchId;

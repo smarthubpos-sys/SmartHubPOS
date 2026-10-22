@@ -6,7 +6,7 @@ import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Card, Loading, NoAccess, PageShell, SelectField, TextField, Toggle } from "./_shared";
 import { tr, errorText, setLang } from "@/lib/i18n.ts";
-import { authorizedDevices, deviceSupport, listInstalledPrinters, pairDevice, testPrinter, type DeviceInfo, type DeviceKind } from "@/lib/printers.ts";
+import { authorizedDevices, defaultInstalledPrinter, deviceSupport, listInstalledPrinters, pairDevice, testPrinter, type DeviceInfo, type DeviceKind } from "@/lib/printers.ts";
 
 type Settings = NonNullable<ReturnType<typeof useMaintenanceSettings>>;
 const str = (v: unknown, d = "") => (v === undefined || v === null ? d : String(v));
@@ -220,16 +220,27 @@ function HardwareForm({ s }: { s: Settings }) {
 
   useEffect(() => { void authorizedDevices(activeKind).then(setKnown); }, [activeKind]);
 
-  async function detectInstalled() {
-    setWorking(true); setStatus(tr("Inatafuta printer zilizosakinishwa…"));
+  async function detectInstalled(quiet = false) {
+    setWorking(true); if (!quiet) setStatus(tr("Inatafuta printer zilizosakinishwa…"));
     try {
       const list = await listInstalledPrinters();
       setInstalled(list);
+      // Nobody should have to type a printer name: pick the Windows default (or the only one) when none is chosen yet.
+      if (!f.receiptPrinter && list.length) set("receiptPrinter", list.length === 1 ? list[0] : ((await defaultInstalledPrinter()) || list[0]));
       setStatus(list.length ? tr("Printer {0} zimepatikana.", [list.length]) : tr("Hakuna printer iliyopatikana kwenye mfumo."));
-    } catch {
-      setStatus(tr("Imeshindikana kuunganisha na QZ Tray. Hakikisha QZ Tray imewashwa kwenye kompyuta hii, kisha jaribu tena."));
+    } catch (e) {
+      if (quiet) return; // opening the page without QZ Tray running is not an error
+      const detail = e instanceof Error ? e.message : String(e ?? "");
+      setStatus(detail || tr("Imeshindikana kuunganisha na QZ Tray."));
     } finally { setWorking(false); }
   }
+  // Read the installed printers automatically when the page opens (needs QZ Tray running on this computer).
+  useEffect(() => {
+    if (f.printerSource !== "installed") return;
+    const timer = window.setTimeout(() => { void detectInstalled(true); }, 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f.printerSource]);
   async function pair() {
     if (!deviceSupport[activeKind]()) { setStatus(tr("Kivinjari hiki hakitumii njia hii. Tumia Chrome au Edge.")); return; }
     setWorking(true); setStatus("");
@@ -242,7 +253,12 @@ function HardwareForm({ s }: { s: Settings }) {
   }
   async function test() {
     setWorking(true); setStatus("");
-    try { await testPrinter(f); setStatus(tr("Jaribio la kuchapa limetumwa.")); }
+    try {
+      const r = await testPrinter(f);
+      setStatus(r.via === "browser"
+        ? tr("Dirisha la kuchapa la browser limefunguliwa (si moja kwa moja kwenye printer). Kuchapa moja kwa moja kunahitaji QZ Tray au printer ya moja kwa moja.") + (r.note ? ` ${r.note}` : "")
+        : tr("Jaribio la kuchapa limetumwa."));
+    }
     catch (e) { setStatus(errorText(e, "Imeshindikana kuchapa.")); }
     finally { setWorking(false); }
   }
@@ -264,7 +280,7 @@ function HardwareForm({ s }: { s: Settings }) {
           <div className="grid gap-3 md:grid-cols-2">
             <SelectField label={tr("Jina la receipt printer")} value={f.receiptPrinter} onChange={(v) => set("receiptPrinter", v)} disabled={!ok} options={installedOptions}
               hint={tr("Bonyeza “Tafuta printer” ili kuorodhesha printer zilizosakinishwa. Bila orodha, printer chaguo-msingi hutumika na dirisha la kuchapa hukuruhusu kuchagua.")} />
-            <div className="flex items-end"><Button type="button" variant="outline" disabled={working || !ok} onClick={() => void detectInstalled()}>{tr("Tafuta printer zilizosakinishwa")}</Button></div>
+            <div className="flex items-end"><Button type="button" variant="outline" disabled={working || !ok} onClick={() => void detectInstalled(false)}>{tr("Tafuta printer zilizosakinishwa")}</Button></div>
             {!installed.length && <TextField label={tr("Au andika jina la printer")} value={f.receiptPrinter} onChange={(v) => set("receiptPrinter", v)} disabled={!ok} />}
           </div>
         ) : (

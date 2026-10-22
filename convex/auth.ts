@@ -1,5 +1,8 @@
 import { convexAuth } from "@convex-dev/auth/server";
 import { Password } from "@convex-dev/auth/providers/Password";
+import { ConvexCredentials } from "@convex-dev/auth/providers/ConvexCredentials";
+import { internal } from "./_generated/api";
+import { verifyStaffPin } from "./pinCrypto";
 
 /**
  * Username/password sign-in implemented on Convex Auth.
@@ -25,6 +28,23 @@ export const {
   isAuthenticated,
 } = convexAuth({
   providers: [
+    ConvexCredentials({
+      id: "staffPin",
+      authorize: async (credentials, ctx) => {
+        const username = String(credentials.username ?? "").trim().toLowerCase();
+        const pin = String(credentials.pin ?? "");
+        if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username) || !/^\d{4}$/.test(pin)) return null;
+        const record = await ctx.runQuery(internal.maintenance.staffPinRecord, { username });
+        if (!record || record.isActive !== true || record.pinLoginEnabled !== true || !record.pinHash) return null;
+        const now = Date.now();
+        if ((record.pinLockedUntil ?? 0) > now) return null;
+        const valid = await verifyStaffPin(pin, record.pinHash);
+        const accepted = await ctx.runMutation(internal.maintenance.recordStaffPinAttempt, {
+          userId: record.userId, expectedPinHash: record.pinHash, success: valid, now,
+        });
+        return accepted ? { userId: record.userId } : null;
+      },
+    }),
     Password({
       profile(params) {
         const emailValue = String(params.email ?? "").trim().toLowerCase();

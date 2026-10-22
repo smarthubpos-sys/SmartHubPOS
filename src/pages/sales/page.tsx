@@ -2,6 +2,7 @@ import { useNavigate, Routes, Route } from "react-router-dom";
 import ModuleMenu from "@/pages/layout/_components/ModuleMenu.tsx";
 import { ShoppingCart, CreditCard, UserPlus, List, FileText, BarChart2, Receipt, Users, Package, Tag, Activity, User, X } from "lucide-react";
 import InvoiceEntry from "@/pages/sales/InvoiceEntry.tsx";
+import WaiterOrdersPage from "@/pages/waiter-orders/page.tsx";
 import SalesClients from "@/pages/sales/SalesClients.tsx";
 import SalesRegister from "@/pages/sales/SalesRegister.tsx";
 import { tr } from "@/lib/i18n.ts";
@@ -72,6 +73,7 @@ export default function SalesPage() {
         }
       />
       <Route path="invoicing" element={<InvoiceEntry />} />
+      <Route path="waiter-orders" element={<WaiterOrdersPage />} />
       <Route path="clients" element={<SalesClients />} />
       <Route path="*" element={<SalesRegister />} />
     </Routes>

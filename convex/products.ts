@@ -1,14 +1,48 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requireActiveUser, requireManagerOrPermission, requirePermission, roleHasPermission, canAccessRecord, filterScoped, resolveWriteScope, scopedRows } from "./access";
+import type { QueryCtx } from "./_generated/server";
+import { requireActiveUser, requireManagerOrPermission, requirePermission, roleHasPermission, canAccessRecord, isSuperAdmin, resolveWriteScope, scopedRows } from "./access";
 import { getSystemAccount, postSystemJournal, roundMoney } from "./ledger";
+
+type Scope = { tenantId?: Id<"tenants">; branchId?: Id<"branches"> };
+type ViewUser = { tenantId?: Id<"tenants"> };
+
+/**
+ * Catalog visibility rule:
+ *  - an item saved while ONE department/branch was selected belongs to that branch and shows only there;
+ *  - an item saved while "all departments" was selected has no branch and shows in EVERY branch of the business.
+ * (scopedRows already returns the user's own branch rows; the branch-less rows of the same business are added here.)
+ */
+const isBranchless = (user: ViewUser, record: Scope | null | undefined) => !!record && record.branchId === undefined && record.tenantId === user.tenantId;
+const mergeById = <R extends { _id: unknown }>(own: R[], shared: R[]): R[] => { const seen = new Set(own.map((r) => String(r._id))); return [...own, ...shared.filter((r) => !seen.has(String(r._id)))]; };
+const canSeeCatalogItem = (user: Parameters<typeof canAccessRecord>[0], record: (Scope & { _id?: unknown }) | null | undefined) => !!record && (canAccessRecord(user, record as never) || isBranchless(user, record));
+const canEditCatalogItem = (user: Parameters<typeof canAccessRecord>[0], record: (Scope & { _id?: unknown }) | null | undefined) => !!record && (canAccessRecord(user, record as never) || (isSuperAdmin(user) && record.tenantId === user.tenantId));
+
+async function visibleProducts(ctx: QueryCtx, user: Parameters<typeof scopedRows>[1]) {
+  const own = await scopedRows(ctx, user, "products");
+  const tenantId = user.tenantId;
+  if (!tenantId) return own;
+  return mergeById(own, await ctx.db.query("products").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", undefined)).collect());
+}
+async function visibleGroups(ctx: QueryCtx, user: Parameters<typeof scopedRows>[1]) {
+  const own = await scopedRows(ctx, user, "productGroups");
+  const tenantId = user.tenantId;
+  if (!tenantId) return own;
+  return mergeById(own, await ctx.db.query("productGroups").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", undefined)).collect());
+}
+async function visibleUnits(ctx: QueryCtx, user: Parameters<typeof scopedRows>[1]) {
+  const own = await scopedRows(ctx, user, "unitsOfMeasure");
+  const tenantId = user.tenantId;
+  if (!tenantId) return own;
+  return mergeById(own, await ctx.db.query("unitsOfMeasure").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", undefined)).collect());
+}
 
 export const list = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
-    return (await scopedRows(ctx, user, "products"));
+    return await visibleProducts(ctx, user);
   },
 });
 
@@ -16,7 +50,7 @@ export const listActive = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
-    return (await scopedRows(ctx, user, "products")).filter((p) => p.isActive);
+    return (await visibleProducts(ctx, user)).filter((p) => p.isActive);
   },
 });
 
@@ -25,7 +59,7 @@ export const getById = query({
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx);
     const record = await ctx.db.get("products", args.id);
-    return canAccessRecord(user, record) ? record : null;
+    return record && canSeeCatalogItem(user, record) ? record : null;
   },
 });
 
@@ -55,6 +89,12 @@ export const upsert = mutation({
     // New product: stock.manage (or manager). Changing / deactivating an EXISTING product: only with the stock.adjust permission.
     const user = args.id ? await requirePermission(ctx, "stock.adjust") : await requireManagerOrPermission(ctx, "stock.manage");
     const scope = await resolveWriteScope(ctx, user);
+    // Saved in the department the user works in; with "all departments" selected there is no branch and every branch sees it.
+    const writeScope: Scope = { tenantId: scope.tenantId, branchId: scope.branchId };
+    // When editing, duplicates are checked inside the record's own scope (a business-wide product stays business-wide).
+    const editing = args.id ? await ctx.db.get("products", args.id) : null;
+    if (args.id && (!editing || !canEditCatalogItem(user, editing))) throw new Error("Forbidden: record is outside your office/branch");
+    const duplicateScope: Scope = editing ? { tenantId: editing.tenantId, branchId: editing.branchId } : writeScope;
 
     const { id, openingQty, openingCost, ...data } = args;
     const itemCode = data.itemCode.trim();
@@ -67,17 +107,17 @@ export const upsert = mutation({
 
     // Duplicate checks are limited to the user's own office/branch.
     const sameCode = (await ctx.db.query("products").withIndex("by_itemCode", (q) => q.eq("itemCode", itemCode)).collect())
-      .filter((p) => p.tenantId === scope.tenantId && p.branchId === scope.branchId && p._id !== id);
+      .filter((p) => p.tenantId === duplicateScope.tenantId && p.branchId === duplicateScope.branchId && p._id !== id);
     if (sameCode.length) throw new Error(`Item code ${itemCode} tayari ipo.`);
     if (barcode) {
       const sameBarcode = (await ctx.db.query("products").withIndex("by_barcode", (q) => q.eq("barcode", barcode)).collect())
-        .filter((p) => p.tenantId === scope.tenantId && p.branchId === scope.branchId && p._id !== id);
+        .filter((p) => p.tenantId === duplicateScope.tenantId && p.branchId === duplicateScope.branchId && p._id !== id);
       if (sameBarcode.length) throw new Error(`Barcode ${barcode} tayari inatumika na bidhaa nyingine.`);
     }
 
     if (id) {
-      const existingRecord = await ctx.db.get("products", id);
-      if (!existingRecord || !canAccessRecord(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
+      const existingRecord = editing;
+      if (!existingRecord) throw new Error("Forbidden: record is outside your office/branch");
       await ctx.db.patch("products", id, clean); // never touches currentQty / openingQty / cost
       const changes: string[] = [];
       if (existingRecord.sellingPrice !== clean.sellingPrice) changes.push(`bei ${existingRecord.sellingPrice} -> ${clean.sellingPrice}`);
@@ -94,7 +134,7 @@ export const upsert = mutation({
 
     const productId = await ctx.db.insert("products", {
       ...clean,
-      ...scope,
+      ...writeScope,
       openingQty: qty,
       currentQty: qty,
       weightedAvgCost: cost,
@@ -103,12 +143,12 @@ export const upsert = mutation({
     if (qty > 0) {
       // Opening balance is recorded as a stock movement so every stock report reconciles.
       const today = new Date().toISOString().slice(0, 10);
-      await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId, movementType: "opening", referenceId: String(productId), referenceType: "product", qtyIn: qty, qtyOut: 0, runningBalance: qty, unitCost: cost, notes: "Opening stock", createdBy: user._id });
+      await ctx.db.insert("stockMovements", { ...writeScope, movementDate: today, productId, movementType: "opening", referenceId: String(productId), referenceType: "product", qtyIn: qty, qtyOut: 0, runningBalance: qty, unitCost: cost, notes: "Opening stock", createdBy: user._id });
       const value = roundMoney(qty * cost);
       if (value > 0) {
-        const inventory = await getSystemAccount(ctx, scope, "1200", "Inventory", "asset");
-        const equity = await getSystemAccount(ctx, scope, "3000", "Opening balance equity", "equity");
-        await postSystemJournal(ctx, { scope, userId: user._id, date: today, reference: `OPEN-${String(productId)}`, description: `Opening stock: ${clean.name}`, sourceType: "opening_stock", sourceId: String(productId), lines: [{ accountId: inventory, debit: value, credit: 0, description: "Opening stock" }, { accountId: equity, debit: 0, credit: value, description: "Opening balance equity" }] });
+        const inventory = await getSystemAccount(ctx, writeScope, "1200", "Inventory", "asset");
+        const equity = await getSystemAccount(ctx, writeScope, "3000", "Opening balance equity", "equity");
+        await postSystemJournal(ctx, { scope: writeScope, userId: user._id, date: today, reference: `OPEN-${String(productId)}`, description: `Opening stock: ${clean.name}`, sourceType: "opening_stock", sourceId: String(productId), lines: [{ accountId: inventory, debit: value, credit: 0, description: "Opening stock" }, { accountId: equity, debit: 0, credit: value, description: "Opening balance equity" }] });
       }
     }
     await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "create_product", module: "inventory", referenceId: String(productId), referenceType: "product", details: `${clean.name} (${itemCode}); bei ${clean.sellingPrice}; opening ${qty}`, timestamp: new Date().toISOString(), result: "success" });
@@ -121,7 +161,7 @@ export const listGroups = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
-    return (await scopedRows(ctx, user, "productGroups"));
+    return await visibleGroups(ctx, user);
   },
 });
 
@@ -139,7 +179,7 @@ export const upsertGroup = mutation({
     const { id, ...data } = args;
     if (id) {
       const existingRecord = await ctx.db.get("productGroups", id);
-      if (!canAccessRecord(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
+      if (!canEditCatalogItem(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
       await ctx.db.patch("productGroups", id, data);
       return id;
     }
@@ -152,7 +192,7 @@ export const listUnits = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
-    return (await scopedRows(ctx, user, "unitsOfMeasure"));
+    return await visibleUnits(ctx, user);
   },
 });
 
@@ -169,7 +209,7 @@ export const upsertUnit = mutation({
     const { id, ...data } = args;
     if (id) {
       const existingRecord = await ctx.db.get("unitsOfMeasure", id);
-      if (!canAccessRecord(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
+      if (!canEditCatalogItem(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
       await ctx.db.patch("unitsOfMeasure", id, data);
       return id;
     }

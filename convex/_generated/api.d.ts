@@ -30,6 +30,7 @@ import type * as paymentMethods from "../paymentMethods.js";
 import type * as payroll from "../payroll.js";
 import type * as periodReport from "../periodReport.js";
 import type * as permissions from "../permissions.js";
+import type * as pinCrypto from "../pinCrypto.js";
 import type * as plans from "../plans.js";
 import type * as products from "../products.js";
 import type * as purchaseReports from "../purchaseReports.js";
@@ -76,6 +77,7 @@ declare const fullApi: ApiFromModules<{
   payroll: typeof payroll;
   periodReport: typeof periodReport;
   permissions: typeof permissions;
+  pinCrypto: typeof pinCrypto;
   plans: typeof plans;
   products: typeof products;
   purchaseReports: typeof purchaseReports;

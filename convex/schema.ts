@@ -52,6 +52,10 @@ export default defineSchema({
     menuAccess: v.optional(v.array(v.string())), // sidebar modules this user may open (missing = all the business has)
     extraPermissions: v.optional(v.array(v.string())), // permissions given to this ONE user on top of his role (e.g. "sales.void")
     ownDataOnly: v.optional(v.boolean()), // staff mode: sees only his own sales/bills and a personal dashboard
+    pinLoginEnabled: v.optional(v.boolean()),
+    pinHash: v.optional(v.string()),
+    pinFailedAttempts: v.optional(v.number()),
+    pinLockedUntil: v.optional(v.number()),
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("email", ["email"])
     .index("phone", ["phone"])
@@ -353,6 +357,7 @@ export default defineSchema({
   clients: defineTable({
     tenantId: v.optional(v.id("tenants")),
     branchId: v.optional(v.id("branches")),
+    createdByUser: v.optional(v.id("users")), // owner of a customer added by a waiter/cashier
     code: v.string(),
     name: v.string(),
     phone: v.optional(v.string()),
@@ -842,6 +847,33 @@ export default defineSchema({
   }).index("by_user", ["userId"]),
 
   // ── HELP & SUPPORT ──
+  // WAITER ORDERS
+  waiterOrders: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    branchId: v.optional(v.id("branches")),
+    customerName: v.string(),
+    tableNumber: v.optional(v.string()),
+    waiterId: v.id("users"),
+    waiterName: v.string(),
+    status: v.string(),
+    lines: v.array(v.object({
+      productId: v.id("products"),
+      productName: v.string(),
+      qty: v.number(),
+      unitPrice: v.number(),
+      lineTotal: v.number(),
+    })),
+    total: v.number(),
+    notes: v.optional(v.string()),
+    createdAt: v.string(),
+    updatedAt: v.string(),
+    handledBy: v.optional(v.id("users")),
+    handledAt: v.optional(v.string()),
+  })
+    .index("by_scope_status", ["tenantId", "branchId", "status"])
+    .index("by_waiter", ["waiterId"])
+    .index("by_created", ["createdAt"]),
+
   supportTickets: defineTable({
     tenantId: v.optional(v.id("tenants")),
     branchId: v.optional(v.id("branches")),

@@ -3,6 +3,7 @@ import type { QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import { hashStaffPin } from "./pinCrypto";
 import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
 import {
   activeDepartments, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
@@ -304,7 +305,31 @@ export const listUsers = query({
     // A user tied to one department only manages (and sees) the users of that department.
     const limit = departmentLimit(user);
     const visible = limit ? tenantRows.filter((r) => insideLimit(departmentScope(r), limit)) : tenantRows;
-    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], ownDataOnly: r.ownDataOnly === true }));
+    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], ownDataOnly: r.ownDataOnly === true, pinLoginEnabled: r.pinLoginEnabled === true, hasPin: !!r.pinHash }));
+  },
+});
+
+export const staffPinRecord = internalQuery({
+  args: { username: v.string() },
+  handler: async (ctx, a) => {
+    const user = await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", a.username)).first();
+    if (!user || user.tokenIdentifier !== undefined) return null;
+    return { userId: user._id, pinHash: user.pinHash, pinLoginEnabled: user.pinLoginEnabled === true, isActive: user.isActive !== false, pinFailedAttempts: user.pinFailedAttempts ?? 0, pinLockedUntil: user.pinLockedUntil };
+  },
+});
+
+export const recordStaffPinAttempt = internalMutation({
+  args: { userId: v.id("users"), expectedPinHash: v.string(), success: v.boolean(), now: v.number() },
+  handler: async (ctx, a) => {
+    const user = await ctx.db.get("users", a.userId);
+    if (!user || user.tokenIdentifier !== undefined || user.isActive === false || user.pinLoginEnabled !== true || user.pinHash !== a.expectedPinHash || (user.pinLockedUntil ?? 0) > a.now) return false;
+    if (a.success) {
+      await ctx.db.patch("users", user._id, { pinFailedAttempts: 0, pinLockedUntil: undefined, lastLogin: new Date(a.now).toISOString() });
+      return true;
+    }
+    const attempts = (user.pinFailedAttempts ?? 0) + 1;
+    await ctx.db.patch("users", user._id, { pinFailedAttempts: attempts, pinLockedUntil: attempts >= 5 ? a.now + 10 * 60 * 1000 : undefined });
+    return false;
   },
 });
 
@@ -473,6 +498,35 @@ export const updateUser = mutation({
     if (a.extraPermissions !== undefined) { assertSuperAdminKeysUnchanged(actor, target.extraPermissions, a.extraPermissions); patch.extraPermissions = cleanExtraPermissions(a.extraPermissions); }
     await ctx.db.patch("users", a.userId, patch);
     await logAudit(ctx, actor, { action: "update_user", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${target.username ?? target.name}: ${Object.keys(patch).join(", ")}` });
+    return true;
+  },
+});
+
+export const saveStaffPin = internalMutation({
+  args: { userId: v.id("users"), actorId: v.id("users"), pinHash: v.optional(v.string()), enabled: v.boolean() },
+  handler: async (ctx, a) => {
+    const target = await ctx.db.get("users", a.userId);
+    if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
+    if (a.enabled && !(a.pinHash ?? target.pinHash)) throw new Error("Weka PIN ya tarakimu 4 kabla ya kuwasha Staff PIN.");
+    await ctx.db.patch("users", a.userId, {
+      ...(a.pinHash ? { pinHash: a.pinHash } : {}),
+      pinLoginEnabled: a.enabled,
+      pinFailedAttempts: 0,
+      pinLockedUntil: undefined,
+    });
+    const actor = await ctx.db.get("users", a.actorId);
+    await logAudit(ctx, actor, { action: "configure_staff_pin", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${target.username ?? target.name}: ${a.enabled ? "enabled" : "disabled"}${a.pinHash ? ", PIN reset" : ""}` });
+    return true;
+  },
+});
+
+export const setStaffPin = action({
+  args: { userId: v.id("users"), pin: v.optional(v.string()), enabled: v.boolean() },
+  handler: async (ctx, a) => {
+    if (a.pin !== undefined && !/^\d{4}$/.test(a.pin)) throw new Error("PIN lazima iwe tarakimu 4.");
+    const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { targetUserId: a.userId });
+    const pinHash = a.pin === undefined ? undefined : await hashStaffPin(a.pin);
+    await ctx.runMutation(internal.maintenance.saveStaffPin, { userId: a.userId, actorId: auth.actorId, pinHash, enabled: a.enabled });
     return true;
   },
 });

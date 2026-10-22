@@ -1,12 +1,34 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { requireActiveUser, requireManager, isManagerRole, requirePermission, canAccessRecord, logAudit, resolveWriteScope, scopedRows } from "./access";
+import type { QueryCtx } from "./_generated/server";
+
+/** Super Admin may open any customer of the selected business, whatever department it belongs to. */
+const inSameBusiness = (user: { tenantId?: unknown }, record: { tenantId?: unknown } | null) => !!record && record.tenantId === user.tenantId;
+import { requireActiveUser, requireManager, isManagerRole, isSuperAdmin, requirePermission, canAccessRecord, logAudit, resolveWriteScope, scopedRows } from "./access";
+
+/**
+ * Who sees which customer:
+ *  - Super Admin: every customer of the selected business (all departments)
+ *  - Manager: customers of his branch
+ *  - Waiter / cashier: only customers he created. Old customers saved before ownership tracking existed
+ *    (no createdByUser) stay visible inside their branch so existing data is not lost.
+ */
+export async function visibleClients(ctx: QueryCtx, user: Parameters<typeof scopedRows>[1]) {
+  if (isSuperAdmin(user)) {
+    const tenantId = user.tenantId;
+    if (!tenantId) return await scopedRows(ctx, user, "clients"); // no business set up (single-business install)
+    return await ctx.db.query("clients").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect();
+  }
+  const rows = await scopedRows(ctx, user, "clients");
+  if (await isManagerRole(ctx, user)) return rows;
+  return rows.filter((client) => client.createdByUser === undefined || client.createdByUser === user._id);
+}
 
 export const list = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
-    return (await scopedRows(ctx, user, "clients"));
+    return await visibleClients(ctx, user);
   },
 });
 
@@ -15,7 +37,12 @@ export const getById = query({
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx);
     const record = await ctx.db.get("clients", args.id);
-    return canAccessRecord(user, record) ? record : null;
+    if (!record) return null;
+    if (isSuperAdmin(user)) return inSameBusiness(user, record) ? record : null;
+    if (!canAccessRecord(user, record)) return null;
+    // Legacy customers have no owner field; keep them visible inside their existing branch rather than orphaning them.
+    if (!(await isManagerRole(ctx, user)) && record.createdByUser !== undefined && record.createdByUser !== user._id) return null;
+    return record;
   },
 });
 
@@ -52,7 +79,7 @@ export const upsert = mutation({
     const data = { ...rest, name, code };
     // The record keeps the business/department it was created in; a new one uses the user's scope.
     const existingRecord = id ? await ctx.db.get("clients", id) : null;
-    if (id && !canAccessRecord(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
+    if (id && !(isSuperAdmin(user) ? inSameBusiness(user, existingRecord) : canAccessRecord(user, existingRecord))) throw new Error("Forbidden: record is outside your office/branch");
     const target = existingRecord ? { tenantId: existingRecord.tenantId, branchId: existingRecord.branchId } : scope;
     // Client codes are unique only inside the same tenant + branch (checked for new AND edited customers).
     // A different business (or department) must be free to reuse the same code/phone.
@@ -66,7 +93,7 @@ export const upsert = mutation({
       await logAudit(ctx, user, { action: "update_client", module: "sales", referenceId: String(id), referenceType: "client", details: `${code} ${name}` });
       return id;
     }
-    const newId = await ctx.db.insert("clients", { ...data, ...scope });
+    const newId = await ctx.db.insert("clients", { ...data, ...scope, createdByUser: user._id });
     await logAudit(ctx, user, { action: "create_client", module: "sales", referenceId: String(newId), referenceType: "client", details: `${code} ${name}` });
     return newId;
   },

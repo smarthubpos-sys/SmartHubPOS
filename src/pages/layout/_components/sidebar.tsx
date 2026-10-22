@@ -13,6 +13,7 @@ const groups = [
   { title: tr("Kazi Kuu"), items: [
     { label: tr("Dashboard"), icon: LayoutDashboard, path: "/dashboard", module: "dashboard" },
     { label: tr("Sales"), icon: ShoppingCart, path: "/sales", module: "sales" },
+    { label: tr("Waiter Orders"), icon: Receipt, path: "/sales/waiter-orders", module: "sales" },
     { label: tr("Stock"), icon: Package, path: "/stock", module: "stock" },
     { label: tr("Purchasing"), icon: Truck, path: "/purchasing", module: "purchasing" },
   ] },
@@ -89,3 +90,4 @@ export default function Sidebar({ open: openProp, onToggle, mobile = false, onNa
     </aside>
   );
 }
+

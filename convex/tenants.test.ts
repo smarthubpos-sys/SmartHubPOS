@@ -72,7 +72,7 @@ describe("Departments (Bar / Lounge / Kitchen inside one business)", () => {
     await asAdmin.mutation(api.tenants.switchDepartment, { branchId: bar._id });
     await asAdmin.mutation(api.clients.upsert, { code: "C1", name: "Mteja wa Bar", openingBalance: 0, creditPolicy: "allow", isActive: true });
     await asAdmin.mutation(api.tenants.switchDepartment, { branchId: lounge._id });
-    expect(await asAdmin.query(api.clients.list, {})).toHaveLength(0); // Lounge does not see Bar's customers
+    expect(await asAdmin.query(api.clients.list, {})).toHaveLength(1); // Super Admin sees every customer across departments
     await asAdmin.mutation(api.tenants.switchDepartment, {});
     expect(await asAdmin.query(api.clients.list, {})).toHaveLength(1); // all departments together
     void t;

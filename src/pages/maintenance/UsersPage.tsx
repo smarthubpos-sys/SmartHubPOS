@@ -11,8 +11,8 @@ import { ALL_MODULE_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, USER_GRANTABLE_PERMISSIO
 import { useStockRights } from "@/hooks/use-stock-rights.ts";
 import { tr } from "@/lib/i18n.ts";
 
-type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; extra: string[] };
-const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, extra: [] };
+type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; extra: string[]; pin: string; pinLoginEnabled: boolean; hasPin: boolean };
+const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, extra: [], pin: "", pinLoginEnabled: false, hasPin: false };
 
 export default function UsersPage() {
   const { user: me } = useAuth();
@@ -22,6 +22,7 @@ export default function UsersPage() {
   const offices = useQuery(api.maintenance.listOffices, {});
   const create = useAction(api.maintenance.createUser);
   const reset = useAction(api.maintenance.resetUserPassword);
+  const setStaffPin = useAction(api.maintenance.setStaffPin);
   const update = useMutation(api.maintenance.updateUser);
   const rename = useMutation(api.maintenance.renameUsername);
   const { busy, run } = useRun();
@@ -52,6 +53,14 @@ export default function UsersPage() {
             <TextField label={tr("Username")} value={f.username} onChange={(v) => set("username", v.toLowerCase())} disabled={editing && editingSelf} hint={tr("Herufi ndogo/namba, 3–32, bila nafasi. Jina ni la kipekee kwa biashara zote (mfano asha.duka1). Biashara moja inaweza kuwa na admin na watumiaji wengi wa role moja, kila mmoja akiwa na username yake.")} />
             {!editing && <TextField label={tr("Password ya kuanzia")} type="password" value={f.password} onChange={(v) => set("password", v)} />}
             <SelectField label={tr("Role")} value={f.role} onChange={(v) => set("role", v)} options={roleOptions} />
+            <div className="space-y-2 rounded-xl border p-3 md:col-span-2">
+                <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+                  <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.pinLoginEnabled} onChange={(e) => setF((p) => (p ? { ...p, pinLoginEnabled: e.target.checked } : p))} />
+                  {tr("Ruhusu kuingia kwa Staff PIN")}
+                </label>
+                <TextField label={tr("PIN mpya ya tarakimu 4 (hiari ikiwa tayari ipo)")} type="password" value={f.pin} onChange={(v) => setF((p) => (p ? { ...p, pin: v.replace(/\D/g, "").slice(0, 4) } : p))} hint={f.hasPin ? tr("Acha wazi ili kubakiza PIN iliyopo. Weka PIN mpya ili kuibadilisha.") : tr("PIN haitahifadhiwa kama maandishi ya kawaida.")} />
+                <p className="text-xs text-muted-foreground">{tr("Baada ya majaribio 5 yasiyo sahihi, PIN itafungwa kwa dakika 10.")}</p>
+              </div>
             {isSuper && f.role !== "super_admin" && (
               <SelectField label={tr("Ofisi")} value={f.tenantId} onChange={(v) => setF((p) => (p ? { ...p, tenantId: v, branchIds: [], allDepartments: false } : p))} options={[["", tr("— chagua ofisi —")], ...(offices?.tenants ?? []).map((t) => [t._id, t.name] as [string, string])]} />
             )}
@@ -106,6 +115,8 @@ export default function UsersPage() {
             <Button disabled={busy} onClick={() => void run(async () => {
               if (!f.name.trim() || (!editing && !f.username)) throw new Error(tr("Jina na username vinahitajika."));
               if (needsBranch) throw new Error(tr("Chagua idara za mtumiaji huyu (tiki moja au zaidi) au washa 'Idara zote'."));
+              if (f.pin && !/^\d{4}$/.test(f.pin)) throw new Error(tr("PIN lazima iwe tarakimu 4."));
+              if (f.pinLoginEnabled && !f.pin && !f.hasPin) throw new Error(tr("Weka PIN ya tarakimu 4 kabla ya kuruhusu Staff PIN."));
               const tenantId = (f.tenantId || undefined) as Id<"tenants"> | undefined;
               // Department access: ticked departments (1 = tied to it, 2+ = switches between them) or all departments.
               const dept = editingSelf || branches.length === 0 ? {} : { branchIds: (f.allDepartments ? [] : f.branchIds) as Id<"branches">[], allDepartments: f.allDepartments };
@@ -117,8 +128,18 @@ export default function UsersPage() {
                 // Username is changed first and atomically (login key + profile); if it fails nothing else is saved.
                 if (!editingSelf && original && f.username && f.username !== original) await rename({ userId: f.id!, newUsername: f.username });
               }
-              if (editing) await update({ userId: f.id!, name: f.name, role: f.role, tenantId, ...dept, ...(editingSelf ? {} : { ...access, ...(f.menuAll ? { clearMenuAccess: true } : menu) }) });
-              else await create({ name: f.name, username: f.username, password: f.password, role: f.role, tenantId, ...dept, ...access, ...menu });
+              let savedUserId: Id<"users">;
+              if (editing) {
+                await update({ userId: f.id!, name: f.name, role: f.role, tenantId, ...dept, ...(editingSelf ? {} : { ...access, ...(f.menuAll ? { clearMenuAccess: true } : menu) }) });
+                savedUserId = f.id!;
+              } else {
+                const createdId = await create({ name: f.name, username: f.username, password: f.password, role: f.role, tenantId, ...dept, ...access, ...menu });
+                savedUserId = createdId as Id<"users">;
+              }
+              if (editing || f.pin || f.pinLoginEnabled) {
+                try { await setStaffPin({ userId: savedUserId, ...(f.pin ? { pin: f.pin } : {}), enabled: f.pinLoginEnabled }); }
+                catch (e) { throw new Error(`${editing ? "" : tr("Mtumiaji ameundwa, lakini PIN haikuhifadhiwa. Fungua Modify kuweka PIN tena. ")}${e instanceof Error ? e.message : ""}`.trim(), { cause: e }); }
+              }
               setF(null);
             }, editing ? tr("Mtumiaji amesasishwa.") : tr("Mtumiaji ameundwa."))}>{tr("Hifadhi")}</Button>
             <Button variant="outline" onClick={() => setF(null)}>{tr("Ghairi")}</Button>
@@ -149,7 +170,7 @@ export default function UsersPage() {
                   <td className="p-3">{u.isActive ? tr("Active") : tr("Disabled")}</td>
                   <td className="p-3">
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, extra: u.extraPermissions })}>{tr("Modify")}</Button>
+                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, extra: u.extraPermissions, pin: "", pinLoginEnabled: u.pinLoginEnabled, hasPin: u.hasPin })}>{tr("Modify")}</Button>
                       <Button size="sm" variant="outline" onClick={() => { const p = prompt(tr("Password mpya ya {0}:", [u.username])); if (p) void run(() => reset({ userId: u._id, newPassword: p }), tr("Password imebadilishwa; ataingia upya.")); }}>{tr("Reset password")}</Button>
                       {String(me?._id) !== String(u._id) && (
                         <Button size="sm" variant="outline" onClick={() => void run(() => update({ userId: u._id, isActive: !u.isActive }), u.isActive ? tr("Amezimwa.") : tr("Amewashwa."))}>{u.isActive ? tr("Disable") : tr("Enable")}</Button>
