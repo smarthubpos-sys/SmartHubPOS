@@ -41,6 +41,8 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
   const [code, setCode] = useState("");
   const [currency, setCurrency] = useState("TZS");
   const [modules, setModules] = useState<string[]>(ALL_MODULE_KEYS);
+  const [waiterOrdersEnabled, setWaiterOrdersEnabled] = useState(false);
+  const [waiterOrderMode, setWaiterOrderMode] = useState<"cashier" | "print">("cashier");
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -52,6 +54,8 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
     setCode(data.code);
     setCurrency(data.currency);
     setModules(data.modules ?? ALL_MODULE_KEYS);
+    setWaiterOrdersEnabled(data.waiterOrdersEnabled ?? false);
+    setWaiterOrderMode(data.waiterOrderMode ?? "cashier");
     setLoaded(true);
   }
 
@@ -60,7 +64,7 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
     setBusy(true);
     try {
       const everything = ALL_MODULE_KEYS.every((k) => modules.includes(k));
-      await update({ tenantId, name, code, currency, ...(everything ? { allModules: true } : { modules }) });
+      await update({ tenantId, name, code, currency, waiterOrdersEnabled, waiterOrderMode, ...(everything ? { allModules: true } : { modules }) });
       toast.success(tr("Biashara imesasishwa."));
       onDone?.();
     } catch (err) { toast.error(errorText(err, "Hitilafu imetokea.")); }
@@ -78,6 +82,20 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
       </div>
 
       <div className="space-y-2">
+        <div className="space-y-3 rounded-lg border border-white/20 p-3">
+          <p className="font-medium">{tr("Waiter Orders settings")}</p>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={waiterOrdersEnabled} onChange={(e) => setWaiterOrdersEnabled(e.target.checked)} />
+            {tr("Washa Waiter Orders kwa biashara hii")}
+          </label>
+          <label className="grid gap-1">
+            {tr("Namna ya waiter orders")}
+            <select value={waiterOrderMode} onChange={(e) => setWaiterOrderMode(e.target.value as "cashier" | "print")} disabled={!waiterOrdersEnabled} className="h-10 rounded-md border bg-white px-3 text-slate-900">
+              <option value="cashier">{tr("Tuma kwa cashier")}</option>
+              <option value="print">{tr("Mhudumu achapishe mwenyewe")}</option>
+            </select>
+          </label>
+        </div>
         <p className="font-medium">{tr("Huduma (sidebar) alizolipia")}</p>
         <p className="text-xs opacity-80">{tr("Biashara itaona na kutumia huduma zilizotiwa tiki tu. Dashboard na Help ziko kila wakati. Meneja wa biashara anaweza kupunguza zaidi kwa kila mtumiaji.")}</p>
         <div className="flex flex-wrap gap-2">

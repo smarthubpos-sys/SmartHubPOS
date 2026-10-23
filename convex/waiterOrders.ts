@@ -1,4 +1,4 @@
-﻿import { mutation, query } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requirePermission, resolveWriteScope } from "./access";
 
@@ -8,6 +8,12 @@ export const list = query({
     const user = await requirePermission(ctx, "sales.view", "sales");
     const scope = await resolveWriteScope(ctx, user);
     if (!scope.tenantId) return [];
+    const tenantId = scope.tenantId;
+    const settings = await ctx.db.query("tenantSettings")
+      .withIndex("by_tenant", q => q.eq("tenantId", tenantId))
+      .first();
+    if (settings?.waiterOrdersEnabled !== true ||
+        (settings.waiterOrderMode ?? "cashier") !== "cashier") return [];
     const rows = await ctx.db.query("waiterOrders")
       .withIndex("by_scope_status", q =>
         q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)
@@ -30,6 +36,16 @@ export const send = mutation({
     const user = await requirePermission(ctx, "sales.manage", "sales");
     const scope = await resolveWriteScope(ctx, user);
     if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
+    const tenantId = scope.tenantId;
+    const settings = await ctx.db.query("tenantSettings")
+      .withIndex("by_tenant", q => q.eq("tenantId", tenantId))
+      .first();
+    if (settings?.waiterOrdersEnabled !== true) {
+      throw new Error("Waiter Orders imezimwa kwa biashara hii.");
+    }
+    if ((settings.waiterOrderMode ?? "cashier") !== "cashier") {
+      throw new Error("Mode hii ni ya kuchapisha oda, si kutuma kwa cashier.");
+    }
     const customerName = args.customerName.trim();
     if (!customerName) throw new Error("Weka jina la mteja.");
     if (args.lines.length === 0) throw new Error("Ongeza angalau bidhaa moja.");

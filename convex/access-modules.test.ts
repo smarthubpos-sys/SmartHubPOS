@@ -100,11 +100,11 @@ describe("edit business", () => {
     const { t, asMgr, tenantId } = await setup();
     const adminId = await t.run((ctx) => ctx.db.insert("users", { name: "Boss", username: "boss", role: "super_admin", isActive: true }));
     const asAdmin = t.withIdentity({ subject: adminId, tokenIdentifier: "x|9" });
-    await expect(asMgr.mutation(api.tenants.update, { tenantId, name: "X", code: "X", currency: "TZS" })).rejects.toThrow(/Super Admin/);
-    await asAdmin.mutation(api.tenants.update, { tenantId, name: "Bar Mpya", code: "bm", currency: "kes", modules: ["sales", "stock"] });
+    await expect(asMgr.mutation(api.tenants.update, { tenantId, name: "X", code: "X", currency: "TZS", waiterOrdersEnabled: false, waiterOrderMode: "cashier" })).rejects.toThrow(/Super Admin/);
+    await asAdmin.mutation(api.tenants.update, { tenantId, name: "Bar Mpya", code: "bm", currency: "kes", modules: ["sales", "stock"], waiterOrdersEnabled: false, waiterOrderMode: "cashier" });
     const e = await asAdmin.query(api.tenants.getEditable, { tenantId });
     expect(e).toMatchObject({ name: "Bar Mpya", code: "BM", currency: "KES", modules: ["dashboard", "sales", "stock", "help"] });
-    await asAdmin.mutation(api.tenants.update, { tenantId, name: "Bar Mpya", code: "BM", currency: "KES", allModules: true });
+    await asAdmin.mutation(api.tenants.update, { tenantId, name: "Bar Mpya", code: "BM", currency: "KES", allModules: true, waiterOrdersEnabled: false, waiterOrderMode: "cashier" });
     expect((await asAdmin.query(api.tenants.getEditable, { tenantId }))?.modules).toBeNull();
   });
 });

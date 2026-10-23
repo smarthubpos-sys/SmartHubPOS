@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ type Line = { productId: string; qty: string };
 
 export default function WaiterOrdersPage() {
   const user = useQuery(api.users.getCurrentUser);
+  const business = useQuery(api.tenants.current);
   const products = useQuery(api.products.listActive);
   const orders = useQuery(waiterApi.list);
   const sendOrder = useMutation(waiterApi.send);
@@ -109,7 +110,7 @@ export default function WaiterOrdersPage() {
         </p>
       </header>
 
-      {!cashier && <section className="space-y-4 rounded-xl border p-4 sm:p-5">
+      {business?.waiterOrdersEnabled === true && !cashier && <section className="space-y-4 rounded-xl border p-4 sm:p-5">
         <h2 className="font-semibold">{tr("Oda mpya")}</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1 text-sm">{tr("Jina la mteja")}
@@ -143,7 +144,7 @@ export default function WaiterOrdersPage() {
         </label>
         <p className="text-lg font-bold">{tr("Jumla")}: {total.toLocaleString()}</p>
         <div className="flex flex-wrap gap-2">
-          <Button disabled={busy} onClick={() => {
+          {business?.waiterOrderMode === "print" && <Button disabled={busy} onClick={() => {
             const fakeOrder = {
               customerName: customer || "-",
               tableNumber: table,
@@ -157,8 +158,8 @@ export default function WaiterOrdersPage() {
               notes,
             };
             printOrder(fakeOrder);
-          }}>{tr("Print")}</Button>
-          <Button disabled={busy} onClick={() => void send()}>{busy ? tr("Inatuma...") : tr("Send")}</Button>
+          }}>{tr("Print")}</Button>}
+          {business?.waiterOrderMode !== "print" && <Button disabled={busy} onClick={() => void send()}>{busy ? tr("Inatuma...") : tr("Send")}</Button>}
         </div>
       </section>}
 
