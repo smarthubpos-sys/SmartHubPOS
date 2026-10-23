@@ -1,3 +1,4 @@
+import { surfaceError } from "./surfaceError";
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -107,6 +108,7 @@ export const invoiceDetails = query({ args: { id: v.id("invoices") }, handler: a
 export const createInvoice = mutation({
   args: { clientId: v.id("clients"), invoiceDate: v.string(), lines: v.array(lineValidator), discount: v.optional(v.number()), taxRate: v.optional(v.number()), paymentAmount: v.optional(v.number()), paymentMethod: v.optional(v.string()), paymentMethodId: v.optional(v.id("paymentMethods")), notes: v.optional(v.string()), salesSource: v.optional(v.string()), requestKey: v.optional(v.string()) },
   handler: async (ctx, args) => {
+    try {
     const user = await requirePermission(ctx, "sales.manage", "sales"); const scope = await resolveWriteScope(ctx, user);
     // Idempotency: a retried / double-clicked submit with the same requestKey returns the invoice already made instead of selling twice.
     const requestKey = args.requestKey?.trim() || undefined;
@@ -197,6 +199,7 @@ export const createInvoice = mutation({
     await postSystemJournal(ctx, { scope, userId: user._id, date: args.invoiceDate, reference: `SALE-${invoiceNo}`, description: `Automatic posting for ${invoiceNo}`, sourceType: "sale", sourceId: String(invoiceId), lines: journalLines });
     await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "create_and_post", module: "sales", referenceId: String(invoiceId), referenceType: "invoice", details: `Invoice ${invoiceNo}; total ${total}`, timestamp: new Date().toISOString(), result: "success" });
     return { invoiceId, invoiceNo, subtotal, taxAmount, total, amountPaid: paid, outstanding: money(total-paid), creditWarning, duplicate: false };
+    } catch (e) { throw surfaceError(e); }
   }
 });
 

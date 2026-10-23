@@ -57,7 +57,7 @@ export const PERMISSION_GROUPS: { group: string; items: { key: string; label: st
 
 /** Permissions that can also be given to ONE user directly (on top of his role) from the Users form. */
 export const USER_GRANTABLE_PERMISSIONS: { key: string; label: string }[] = [
-  { key: "sales.void", label: "Anaweza kufuta / kubatilisha oda (invoice) za Sales" },
+  { key: "sales.void", label: "Anaweza kufuta / kubatilisha oda (invoice za Sales na oda za Waiter)" },
   { key: "purchasing.edit", label: "Anaweza ku-edit Purchase (invoice, order, GRN)" },
   { key: "purchasing.delete", label: "Anaweza kufuta Purchase (invoice, order, GRN, return)" },
   { key: "accounts.reports.delete", label: "Anaweza kufuta ripoti za kipindi (Period Reports)" },

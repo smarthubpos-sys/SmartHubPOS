@@ -44,6 +44,7 @@ import type * as stats from "../stats.js";
 import type * as subscriptions from "../subscriptions.js";
 import type * as suppliers from "../suppliers.js";
 import type * as support from "../support.js";
+import type * as surfaceError from "../surfaceError.js";
 import type * as tenants from "../tenants.js";
 import type * as users from "../users.js";
 import type * as waiterOrders from "../waiterOrders.js";
@@ -93,6 +94,7 @@ declare const fullApi: ApiFromModules<{
   subscriptions: typeof subscriptions;
   suppliers: typeof suppliers;
   support: typeof support;
+  surfaceError: typeof surfaceError;
   tenants: typeof tenants;
   users: typeof users;
   waiterOrders: typeof waiterOrders;

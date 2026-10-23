@@ -109,6 +109,26 @@ describe("Waiter / Waitress switches (Edit Business)", () => {
     expect((await asWaitress.query(api.notifications.feed, { today })).items.filter((i) => i.code === "waiter_order_received")).toHaveLength(0);
   });
 
+  it("Futa oda needs the sales.void permission, returns the stock once and hides the order from the cashier", async () => {
+    const { t, asBoss, asWaiter, tenantId, productId } = await setup();
+    const cashierId = await t.run(async (ctx) => ctx.db.insert("users", { name: "Cash", username: "cash", role: "cashier", tenantId, isActive: true }));
+    const asCashier = t.withIdentity({ subject: cashierId, tokenIdentifier: "x|9" });
+    await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterEnabled: true, waitressEnabled: true });
+    const qty = async () => (await t.run(async (ctx) => ctx.db.get("products", productId)))?.currentQty;
+    const id = await asWaiter.mutation(api.waiterOrders.place, { customerName: "M", lines: [{ productId, qty: 4 }] });
+    await asWaiter.mutation(api.waiterOrders.sendToCashier, { orderId: id });
+    expect(await qty()).toBe(6);
+    await expect(asCashier.mutation(api.waiterOrders.cancel, { orderId: id })).rejects.toThrow();
+    await expect(asWaiter.mutation(api.waiterOrders.cancel, { orderId: id })).rejects.toThrow();
+    expect(await qty()).toBe(6);
+    await t.run(async (ctx) => ctx.db.patch("users", cashierId, { role: "manager" }));
+    await asCashier.mutation(api.waiterOrders.cancel, { orderId: id });
+    await asCashier.mutation(api.waiterOrders.cancel, { orderId: id }); // second time changes nothing
+    expect(await qty()).toBe(10);
+    expect(await asCashier.query(api.waiterOrders.list, {})).toEqual([]);
+    expect((await asWaiter.query(api.waiterOrders.list, {})).map((o) => o.status)).toEqual(["cancelled"]);
+  });
+
   it("Weka Order refuses more than the stock on hand and leaves stock untouched", async () => {
     const { t, asBoss, asWaiter, tenantId, productId } = await setup();
     await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterEnabled: true, waitressEnabled: true });

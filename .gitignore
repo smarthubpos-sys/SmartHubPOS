@@ -36,3 +36,5 @@ tsconfig.tsbuildinfo
 # Local deployment and backup files
 .vercel/
 fix-backup/
+.vercel
+.env*

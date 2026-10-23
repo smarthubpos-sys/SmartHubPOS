@@ -14,6 +14,7 @@ import BillSheet from "@/components/BillSheet.tsx";
 import ReturnPanel from "@/pages/sales/ReturnPanel.tsx";
 import type { Paper } from "@/lib/print-area.ts";
 import { tokenAfterSave } from "@/lib/print-policy.ts";
+import { printWaiterOrder } from "@/lib/print-waiter-order.ts";
 
 type Line = { productId: string; qty: string; price: string; discount: string };
 const emptyLine = (): Line => ({ productId: "", qty: "1", price: "0", discount: "0" });
@@ -31,6 +32,16 @@ export default function InvoiceEntry() {
   const requestKeyRef = useRef<string>(crypto.randomUUID());
   const voidInvoice = useMutation(api.sales.voidInvoice);
   const business = useQuery(api.tenants.current);
+  // Waiter / waitress (when Waiter Orders is ON for their role): this window does "Weka Order" -> Send / Print instead of saving an invoice.
+  const me = useQuery(api.users.getCurrentUser);
+  const myRole = String(me?.role ?? "").toLowerCase();
+  const waiterMode = (myRole === "waiter" && business?.waiterEnabled === true) || (myRole === "waitress" && business?.waitressEnabled === true);
+  const placeOrder = useMutation(api.waiterOrders.place);
+  const sendToCashier = useMutation(api.waiterOrders.sendToCashier);
+  const markPrinted = useMutation(api.waiterOrders.markPrinted);
+  const myOrders = useQuery(api.waiterOrders.list, waiterMode ? {} : "skip");
+  const [placedId, setPlacedId] = useState<Id<"waiterOrders"> | null>(null);
+  const [tableNo, setTableNo] = useState("");
   const settings = useQuery(api.maintenance.getSettings, {});
   const allowNegative = !!settings?.company?.allowNegativeStock; // same switch the server uses (Maintenance > Company)
 
@@ -100,6 +111,32 @@ export default function InvoiceEntry() {
       setSelected(null); setReturning(false); setJustSaved(null); setPrintToken(0);
     } catch (e) { toast.error(errorText(e, "Imeshindikana kubatilisha invoice.")); }
     finally { setBusy(false); }
+  };
+
+  const placedOrder = placedId ? (myOrders ?? []).find((o) => o._id === placedId) : undefined;
+  const weka = async () => {
+    if (!clientId) { toast.error(tr("Chagua mteja.")); return; }
+    const used = lines.filter((l) => l.productId);
+    if (!used.length) { toast.error(tr("Ongeza angalau bidhaa moja.")); return; }
+    if (lines.some((l) => !l.productId || !(num(l.qty) > 0))) { toast.error(tr("Kila mstari uwe na bidhaa na quantity zaidi ya sifuri.")); return; }
+    const customerName = (clients ?? []).find((c) => String(c._id) === clientId)?.name ?? "";
+    setBusy(true);
+    try {
+      const id = await placeOrder({ customerName, tableNumber: tableNo.trim() || undefined, notes: notes.trim() || undefined, lines: lines.map((l) => ({ productId: l.productId as Id<"products">, qty: num(l.qty) })) });
+      setPlacedId(id); setLines([emptyLine()]); setNotes(""); setTableNo("");
+      toast.success(tr("Oda imewekwa. Stock imepungua. Sasa chagua Send au Print."));
+    } catch (e) { toast.error(errorText(e, "Imeshindikana kuweka oda.")); }
+    finally { setBusy(false); }
+  };
+  const sendPlaced = async () => {
+    if (!placedId) return;
+    try { await sendToCashier({ orderId: placedId }); toast.success(tr("Oda imetumwa kwa cashier.")); setPlacedId(null); }
+    catch (e) { toast.error(errorText(e, "Imeshindikana kutuma oda.")); }
+  };
+  const printPlaced = async () => {
+    if (!placedId || !placedOrder) return;
+    printWaiterOrder(placedOrder);
+    try { await markPrinted({ orderId: placedId }); } catch { /* printing already happened; the record is only informational */ }
   };
 
   const submit = async () => {
@@ -209,8 +246,23 @@ export default function InvoiceEntry() {
             <div className={balance > 0 ? "text-destructive" : ""}>{tr("Deni:")} <b className="tabular-nums">{fmt(balance)}</b></div>
           </div>
         </div>
-        <div className="mt-4"><Button disabled={busy} onClick={() => void submit()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi Invoice")}</Button></div>
+        {waiterMode
+          ? <div className="mt-4 flex flex-wrap items-end gap-3">
+              <label className="grid gap-1 text-sm">{tr("Namba ya meza (hiari)")}<Input value={tableNo} onChange={(e) => setTableNo(e.target.value)} /></label>
+              <Button disabled={busy} onClick={() => void weka()}>{busy ? tr("Inaweka...") : tr("Weka Order")}</Button>
+            </div>
+          : <div className="mt-4"><Button disabled={busy} onClick={() => void submit()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi Invoice")}</Button></div>}
       </section>
+
+      {waiterMode && placedId && <section className="space-y-3 rounded-xl border p-4">
+        <h2 className="font-semibold">{tr("Oda imewekwa")}{placedOrder ? ` — ${placedOrder.customerName}` : ""}</h2>
+        <p className="text-sm text-muted-foreground">{tr("Send na Print havipunguzi stock.")}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => void sendPlaced()}>{tr("Send")}</Button>
+          <Button variant="outline" disabled={!placedOrder} onClick={() => void printPlaced()}><Printer className="mr-1 h-4 w-4" />{tr("Print")}</Button>
+          <Button variant="ghost" onClick={() => setPlacedId(null)}>{tr("Funga")}</Button>
+        </div>
+      </section>}
 
       {justSaved && <section className="space-y-2 rounded-xl border p-4">
         <div className="flex items-center justify-between gap-2 print:hidden"><h2 className="font-semibold">{tr("Invoice imehifadhiwa")}</h2><Button variant="outline" size="sm" onClick={() => setJustSaved(null)}>{tr("Funga")}</Button></div>

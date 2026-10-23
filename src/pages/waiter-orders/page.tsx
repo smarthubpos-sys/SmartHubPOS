@@ -6,11 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { tr, errorText } from "@/lib/i18n.ts";
+import { printWaiterOrder, type PrintableOrder } from "@/lib/print-waiter-order.ts";
 
 const waiterApi = api.waiterOrders;
 
 type Order = Doc<"waiterOrders">;
-type PrintableOrder = Pick<Order, "customerName" | "waiterName" | "total"> & { tableNumber?: string; notes?: string; lines: Array<{ productName: string; qty: number; lineTotal: number }> };
 type Line = { productId: string; qty: string };
 
 export default function WaiterOrdersPage() {
@@ -22,6 +22,7 @@ export default function WaiterOrdersPage() {
   const markHandled = useMutation(waiterApi.markHandled);
   const sendToCashier = useMutation(waiterApi.sendToCashier);
   const markPrinted = useMutation(waiterApi.markPrinted);
+  const cancelOrder = useMutation(waiterApi.cancel);
 
   const [customer, setCustomer] = useState("");
   const [table, setTable] = useState("");
@@ -82,8 +83,18 @@ export default function WaiterOrdersPage() {
   }
 
   async function printPlaced(order: Order) {
-    printOrder(order);
-    try { await markPrinted({ orderId: order._id }); } catch { /* printing already happened; the record is only informational */ }
+    printWaiterOrder(order);
+    try { await markPrinted({ orderId: order._id }); } catch { /* printing already happened; record is informational */ }
+  }
+
+  async function remove(order: Order) {
+    if (!window.confirm(tr("Futa oda hii? Stock itarudishwa."))) return;
+    try {
+      await cancelOrder({ orderId: order._id });
+      toast.success(tr("Oda imefutwa. Stock imerudishwa."));
+    } catch (error) {
+      toast.error(errorText(error, tr("Imeshindikana kufuta oda.")));
+    }
   }
 
   async function receiveAndPrint(order: Order) {
@@ -94,35 +105,7 @@ export default function WaiterOrdersPage() {
       return;
     }
     toast.success(tr("Oda imepokelewa. Mhudumu amearifiwa."));
-    printOrder(order);
-  }
-
-  function printOrder(order: PrintableOrder) {
-    const content = [
-      "SMARTHUB POS - ODA",
-      `Mteja: ${order.customerName}`,
-      `Meza: ${order.tableNumber || "-"}`,
-      `Waiter: ${order.waiterName}`,
-      "------------------------------",
-      ...order.lines.map((line) =>
-        `${line.productName} x ${line.qty} = ${Number(line.lineTotal).toLocaleString()}`
-      ),
-      "------------------------------",
-      `JUMLA: ${Number(order.total).toLocaleString()}`,
-      order.notes ? `Maelezo: ${order.notes}` : "",
-    ].filter(Boolean).join("\n");
-
-    const win = window.open("", "_blank", "width=420,height=650");
-    if (!win) {
-      toast.error(tr("Ruhusu popup ili kuchapisha oda."));
-      return;
-    }
-    win.document.write(`<html><head><title>Oda</title><style>body{font:14px monospace;padding:20px;white-space:pre-wrap}</style></head><body></body></html>`);
-    win.document.body.textContent = content;
-    win.document.close();
-    win.focus();
-    win.print();
-    win.close();
+    printWaiterOrder(order);
   }
 
   return (
@@ -179,7 +162,7 @@ export default function WaiterOrdersPage() {
             <div>
               <h3 className="font-semibold">{order.customerName} {order.tableNumber ? `· ${tr("Meza")} ${order.tableNumber}` : ""}</h3>
               <p className="text-sm text-muted-foreground">{tr("Waiter")}: {order.waiterName} · {new Date(order.createdAt).toLocaleString()}</p>
-              <p className="text-sm">{tr("Hali")}: {order.status === "placed" ? tr("Imewekwa (haijatumwa)") : order.status === "pending" ? tr("Inasubiri cashier") : tr("Imepokelewa")}</p>
+              <p className="text-sm">{tr("Hali")}: {order.status === "cancelled" ? tr("Imefutwa") : order.status === "placed" ? tr("Imewekwa (haijatumwa)") : order.status === "pending" ? tr("Inasubiri cashier") : tr("Imepokelewa")}</p>
             </div>
             <strong>{Number(order.total).toLocaleString()}</strong>
           </div>
@@ -191,8 +174,9 @@ export default function WaiterOrdersPage() {
           {order.notes && <p className="text-sm">{tr("Maelezo")}: {order.notes}</p>}
           <div className="flex flex-wrap gap-2">
             {!cashier && order.status === "placed" && <Button onClick={() => void send(order._id)}>{tr("Send")}</Button>}
+            {business?.canVoidInvoice && order.status !== "cancelled" && <Button variant="outline" onClick={() => void remove(order)}>{tr("Futa oda")}</Button>}
             {/* Cashier Print = receive + print: the waiter is notified that the order was received. Waiter Print only prints. */}
-            {cashier
+            {order.status === "cancelled" ? null : cashier
               ? (order.status === "pending" || order.status === "accepted") && <Button onClick={() => void receiveAndPrint(order)}>{tr("Print")}</Button>
               : <Button variant="outline" onClick={() => void printPlaced(order)}>{tr("Print")}</Button>}
           </div>

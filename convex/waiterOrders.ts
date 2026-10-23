@@ -1,7 +1,8 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { surfaceError } from "./surfaceError";
 import type { Id } from "./_generated/dataModel";
-import { getCompanySettings, requirePermission, resolveWriteScope } from "./access";
+import { getCompanySettings, logAudit, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
 import { waiterOrdersAllowedFor } from "./waiterSettings";
 
 export const list = query({
@@ -22,7 +23,7 @@ export const list = query({
     const role = String(user.role ?? "").toLowerCase();
     const isWaiterRole = role === "waiter" || role === "waitress";
     // A waiter sees only his own orders (placed, sent or received). Everyone else (cashier / manager) sees only orders that were SENT.
-    const visible = rows.filter(r => isWaiterRole ? r.waiterId === user._id : r.status !== "placed");
+    const visible = rows.filter(r => isWaiterRole ? r.waiterId === user._id : r.status !== "placed" && r.status !== "cancelled");
     return visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200);
   },
 });
@@ -42,6 +43,7 @@ export const place = mutation({
     })),
   },
   handler: async (ctx, args) => {
+    try {
     const user = await requirePermission(ctx, "sales.manage", "sales");
     const scope = await resolveWriteScope(ctx, user);
     if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
@@ -128,6 +130,7 @@ export const place = mutation({
       });
     }
     return orderId;
+    } catch (e) { throw surfaceError(e); }
   },
 });
 
@@ -149,6 +152,7 @@ async function ownOrder(ctx: Parameters<typeof resolveWriteScope>[0], orderId: I
 export const sendToCashier = mutation({
   args: { orderId: v.id("waiterOrders") },
   handler: async (ctx, args) => {
+    try {
     const { order } = await ownOrder(ctx, args.orderId);
     if (order.status === "placed") {
       const now = new Date().toISOString();
@@ -157,6 +161,7 @@ export const sendToCashier = mutation({
       throw new Error("Oda hii haiwezi kutumwa.");
     }
     return order._id;
+    } catch (e) { throw surfaceError(e); }
   },
 });
 
@@ -164,15 +169,18 @@ export const sendToCashier = mutation({
 export const markPrinted = mutation({
   args: { orderId: v.id("waiterOrders") },
   handler: async (ctx, args) => {
+    try {
     const { order } = await ownOrder(ctx, args.orderId);
     await ctx.db.patch("waiterOrders", order._id, { printedAt: new Date().toISOString() });
     return order._id;
+    } catch (e) { throw surfaceError(e); }
   },
 });
 
 export const markHandled = mutation({
   args: { orderId: v.id("waiterOrders") },
   handler: async (ctx, args) => {
+    try {
     const user = await requirePermission(ctx, "sales.manage", "sales");
     const scope = await resolveWriteScope(ctx, user);
     const order = await ctx.db.get("waiterOrders", args.orderId);
@@ -191,5 +199,51 @@ export const markHandled = mutation({
       updatedAt: new Date().toISOString(),
     });
     return order._id;
+    } catch (e) { throw surfaceError(e); }
+  },
+});
+
+/**
+ * "Futa oda": only users / roles given the "sales.void" permission (Role Management). Stock reduced by "Weka Order" goes back,
+ * once. The order is kept with status "cancelled" (never deleted) and leaves the cashier queue.
+ */
+export const cancel = mutation({
+  args: { orderId: v.id("waiterOrders") },
+  handler: async (ctx, args) => {
+    try {
+    const user = await requirePermission(ctx, "sales.manage", "sales");
+    if (!(await roleHasPermission(ctx, user, "sales.void"))) throw new Error("Huna ruhusa ya kufuta oda.");
+    const scope = await resolveWriteScope(ctx, user);
+    const order = await ctx.db.get("waiterOrders", args.orderId);
+    if (!order || order.tenantId !== scope.tenantId || order.branchId !== scope.branchId) {
+      throw new Error("Oda haipo kwenye biashara au tawi lako.");
+    }
+    if (order.status === "cancelled") return order._id;
+    const now = new Date().toISOString();
+    if (order.stockDeducted) {
+      for (const line of order.lines) {
+        const product = await ctx.db.get("products", line.productId);
+        if (!product) continue;
+        const balance = product.currentQty + line.qty;
+        await ctx.db.patch("products", line.productId, { currentQty: balance });
+        await ctx.db.insert("stockMovements", {
+          ...scope,
+          movementDate: now.slice(0, 10),
+          productId: line.productId,
+          movementType: "waiter_order_cancel",
+          referenceId: String(order._id),
+          referenceType: "waiterOrder",
+          qtyIn: line.qty,
+          qtyOut: 0,
+          runningBalance: balance,
+          unitCost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0,
+          createdBy: user._id,
+        });
+      }
+    }
+    await ctx.db.patch("waiterOrders", order._id, { status: "cancelled", stockDeducted: false, cancelledAt: now, cancelledBy: user._id, updatedAt: now });
+    await logAudit(ctx, user, { action: "cancel_waiter_order", module: "sales", referenceId: String(order._id), referenceType: "waiterOrder", details: `${order.customerName}; total ${order.total}` });
+    return order._id;
+    } catch (e) { throw surfaceError(e); }
   },
 });
