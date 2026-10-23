@@ -47,7 +47,7 @@ await ctx.db.patch("tenants", args.tenantId,patch);
 const settings=await ctx.db.query("tenantSettings").withIndex("by_tenant",q=>q.eq("tenantId",args.tenantId)).first();
 // Waiter / Waitress switches are independent. A field that is not sent is left exactly as saved, so editing other details never resets them.
 const cur=resolveWaiterSettings(settings);const waiterEnabled=args.waiterEnabled??(args.waiterOrdersEnabled!==undefined?args.waiterOrdersEnabled:cur.waiterEnabled);const waitressEnabled=args.waitressEnabled??(args.waiterOrdersEnabled!==undefined?args.waiterOrdersEnabled:cur.waitressEnabled);
-const waiterPatch={waiterEnabled,waitressEnabled,waiterOrdersEnabled:waiterEnabled||waitressEnabled,waiterOrderMode:args.waiterOrderMode??cur.waiterOrderMode};
+const waiterPatch={waiterEnabled,waitressEnabled,waiterOrdersEnabled:waiterEnabled||waitressEnabled,waiterOrderMode:(waiterEnabled||waitressEnabled)?(args.waiterOrderMode??cur.waiterOrderMode):cur.waiterOrderMode};
 if(settings)await ctx.db.patch("tenantSettings", settings._id,{defaultCurrency:currency,...waiterPatch});else await ctx.db.insert("tenantSettings",{tenantId:args.tenantId,traIntegrationEnabled:false,stockControlEnabled:true,defaultCurrency:currency,...waiterPatch});
 await logAudit(ctx,actor,{action:"update_business",module:"super-admin",referenceId:String(args.tenantId),details:`${name} (${code}) ${args.allModules?"all modules":args.modules?args.modules.join(","):""}`});
 return args.tenantId;}});

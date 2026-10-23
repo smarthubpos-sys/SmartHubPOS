@@ -47,6 +47,45 @@ describe("Waiter / Waitress switches (Edit Business)", () => {
     expect(await asBoss.query(api.tenants.getEditable, { tenantId })).toMatchObject({ name: "Bar Mpya", currency: "KES", waiterEnabled: false, waitressEnabled: true, waiterOrderMode: "print" });
   });
 
+  it("the mode cannot be changed while Waiter and Waitress are both OFF, and survives until one is switched on", async () => {
+    const { asBoss, tenantId } = await setup();
+    await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterEnabled: true, waitressEnabled: false, waiterOrderMode: "print" });
+    await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterEnabled: false, waitressEnabled: false, waiterOrderMode: "cashier" });
+    expect(await asBoss.query(api.tenants.getEditable, { tenantId })).toMatchObject({ waiterEnabled: false, waitressEnabled: false, waiterOrdersEnabled: false, waiterOrderMode: "print" });
+  });
+
+  it("saves name, code, currency and modules with and without a tenantSettings record", async () => {
+    const { t, asBoss, tenantId, otherTenant } = await setup();
+    await asBoss.mutation(api.tenants.update, { tenantId, name: "Bar Mpya", code: "bar2", currency: "kes", modules: ["sales"] });
+    expect(await asBoss.query(api.tenants.getEditable, { tenantId })).toMatchObject({ name: "Bar Mpya", code: "BAR2", currency: "KES" });
+    await t.run(async (ctx) => { await ctx.db.insert("tenantSettings", { tenantId: otherTenant, traIntegrationEnabled: false, stockControlEnabled: true, defaultCurrency: "TZS" }); });
+    await asBoss.mutation(api.tenants.update, { tenantId: otherTenant, name: "Other 2", code: "OTH", currency: "usd", allModules: true });
+    expect(await asBoss.query(api.tenants.getEditable, { tenantId: otherTenant })).toMatchObject({ name: "Other 2", currency: "USD", modules: null });
+  });
+
+  it("sending a waiter order to the cashier does not reduce stock (print mode has no server mutation)", async () => {
+    const { t, asBoss, asWaiter, tenantId, productId } = await setup();
+    await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterEnabled: true, waitressEnabled: true, waiterOrderMode: "cashier" });
+    await asWaiter.mutation(api.waiterOrders.send, order(productId));
+    expect((await t.run(async (ctx) => ctx.db.get("products", productId)))?.currentQty).toBe(10);
+  });
+
+  it("cashier mode: waiter sends, cashier sees it pending and accepts it, stock stays the same; print mode has no queue", async () => {
+    const { t, asBoss, asWaiter, tenantId, productId } = await setup();
+    const cashierId = await t.run(async (ctx) => ctx.db.insert("users", { name: "Cash", username: "cash", role: "cashier", tenantId, isActive: true }));
+    const asCashier = t.withIdentity({ subject: cashierId, tokenIdentifier: "x|9" });
+    await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterEnabled: true, waitressEnabled: false, waiterOrderMode: "cashier" });
+    const id = await asWaiter.mutation(api.waiterOrders.send, order(productId));
+    const queue = await asCashier.query(api.waiterOrders.list, {});
+    expect(queue.map((o) => o.status)).toEqual(["pending"]);
+    await asCashier.mutation(api.waiterOrders.markHandled, { orderId: id });
+    expect((await asCashier.query(api.waiterOrders.list, {}))[0].status).toBe("accepted");
+    expect((await t.run(async (ctx) => ctx.db.get("products", productId)))?.currentQty).toBe(10);
+    await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterOrderMode: "print" });
+    expect(await asCashier.query(api.waiterOrders.list, {})).toEqual([]);
+    await expect(asWaiter.mutation(api.waiterOrders.send, order(productId))).rejects.toThrow();
+  });
+
   it("an old client that only sends the single waiterOrdersEnabled flag still works (sets both)", async () => {
     const { asBoss, tenantId } = await setup();
     await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterOrdersEnabled: true });

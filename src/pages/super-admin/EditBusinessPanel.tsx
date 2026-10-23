@@ -70,7 +70,13 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
       await update({ tenantId, name, code, currency, waiterEnabled, waitressEnabled, waiterOrderMode, ...(everything ? { allModules: true } : { modules }) });
       toast.success(tr("Biashara imesasishwa."));
       onDone?.();
-    } catch (err) { toast.error(errorText(err, "Hitilafu imetokea.")); }
+    } catch (err) {
+      // Show the real server message; a bare "Server Error" is shown together with the raw text so the cause can be traced in the Convex logs.
+      const clear = errorText(err);
+      const raw = err instanceof Error ? err.message.split("\n").map((l) => l.trim()).filter(Boolean).join(" · ").slice(0, 300) : "";
+      toast.error(clear && clear !== tr("Hitilafu imetokea.") ? clear : `${tr("Imeshindikana kuhifadhi mabadiliko.")}${raw ? ` (${raw})` : ""}`, { duration: 10000 });
+      console.error("tenants.update failed", err);
+    }
     finally { setBusy(false); }
   }
 
