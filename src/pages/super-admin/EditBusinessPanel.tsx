@@ -7,6 +7,7 @@ import { X, Plus } from "lucide-react";
 import { ALL_MODULE_KEYS, MODULE_PRESETS } from "@/convex/permissions";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
+import { Switch } from "@/components/ui/switch.tsx";
 import ModulePicker from "@/components/module-picker.tsx";
 import { errorText, tr } from "@/lib/i18n.ts";
 
@@ -41,7 +42,8 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
   const [code, setCode] = useState("");
   const [currency, setCurrency] = useState("TZS");
   const [modules, setModules] = useState<string[]>(ALL_MODULE_KEYS);
-  const [waiterOrdersEnabled, setWaiterOrdersEnabled] = useState(false);
+  const [waiterEnabled, setWaiterEnabled] = useState(false);
+  const [waitressEnabled, setWaitressEnabled] = useState(false);
   const [waiterOrderMode, setWaiterOrderMode] = useState<"cashier" | "print">("cashier");
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -54,7 +56,8 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
     setCode(data.code);
     setCurrency(data.currency);
     setModules(data.modules ?? ALL_MODULE_KEYS);
-    setWaiterOrdersEnabled(data.waiterOrdersEnabled ?? false);
+    setWaiterEnabled(data.waiterEnabled ?? false);
+    setWaitressEnabled(data.waitressEnabled ?? false);
     setWaiterOrderMode(data.waiterOrderMode ?? "cashier");
     setLoaded(true);
   }
@@ -64,7 +67,7 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
     setBusy(true);
     try {
       const everything = ALL_MODULE_KEYS.every((k) => modules.includes(k));
-      await update({ tenantId, name, code, currency, waiterOrdersEnabled, waiterOrderMode, ...(everything ? { allModules: true } : { modules }) });
+      await update({ tenantId, name, code, currency, waiterEnabled, waitressEnabled, waiterOrderMode, ...(everything ? { allModules: true } : { modules }) });
       toast.success(tr("Biashara imesasishwa."));
       onDone?.();
     } catch (err) { toast.error(errorText(err, "Hitilafu imetokea.")); }
@@ -84,13 +87,17 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
       <div className="space-y-2">
         <div className="space-y-3 rounded-lg border border-white/20 p-3">
           <p className="font-medium">{tr("Waiter Orders settings")}</p>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={waiterOrdersEnabled} onChange={(e) => setWaiterOrdersEnabled(e.target.checked)} />
-            {tr("Washa Waiter Orders kwa biashara hii")}
-          </label>
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="enable-waiter" className="cursor-pointer">{tr("Enable Waiter")}</label>
+            <Switch id="enable-waiter" checked={waiterEnabled} onCheckedChange={setWaiterEnabled} aria-label={tr("Enable Waiter")} />
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="enable-waitress" className="cursor-pointer">{tr("Enable Waitress")}</label>
+            <Switch id="enable-waitress" checked={waitressEnabled} onCheckedChange={setWaitressEnabled} aria-label={tr("Enable Waitress")} />
+          </div>
           <label className="grid gap-1">
             {tr("Namna ya waiter orders")}
-            <select value={waiterOrderMode} onChange={(e) => setWaiterOrderMode(e.target.value as "cashier" | "print")} disabled={!waiterOrdersEnabled} className="h-10 rounded-md border bg-white px-3 text-slate-900">
+            <select value={waiterOrderMode} onChange={(e) => setWaiterOrderMode(e.target.value as "cashier" | "print")} disabled={!waiterEnabled && !waitressEnabled} className="h-10 rounded-md border bg-white px-3 text-slate-900">
               <option value="cashier">{tr("Tuma kwa cashier")}</option>
               <option value="print">{tr("Mhudumu achapishe mwenyewe")}</option>
             </select>

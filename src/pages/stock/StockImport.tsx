@@ -1,12 +1,12 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, CheckCircle2, Download, FileSpreadsheet, Upload } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, Download, FileSpreadsheet, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/convex/_generated/api.js";
 import { Button } from "@/components/ui/button.tsx";
 import { Empty, PageHeader, Panel, Pill, Stat, Table } from "@/components/page-kit.tsx";
-import { downloadProductTemplate, parseProductFile, type ParsedRow } from "@/lib/excel.ts";
+import { checkProductFile, downloadProductTemplate, markFileDuplicates, parseProductFile, type ParsedRow } from "@/lib/excel.ts";
 import { formatNumber } from "@/lib/format.ts";
 import { errorText, tr } from "@/lib/i18n.ts";
 import { useStockRights } from "@/hooks/use-stock-rights.ts";
@@ -28,7 +28,9 @@ export default function StockImport() {
 
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
-  const [done, setDone] = useState<{ created: number; updated: number; errors: number } | null>(null);
+  const importing = useRef(false); // blocks a second click / second file while an import is running
+  type Failure = { line: number; name: string; message: string };
+  const [done, setDone] = useState<{ created: number; updated: number; errors: number; failed: Failure[]; stoppedAt?: string } | null>(null);
 
   const count = (s: Checked["status"]) => rows.filter((r) => r.status === s).length;
 
@@ -38,40 +40,60 @@ export default function StockImport() {
     for (let i = 0; i < good.length; i += CHUNK) {
       const chunk = good.slice(i, i + CHUNK);
       const res = await importBatch({ rows: chunk.map((c) => c.row), dryRun: true, updateExisting: update });
-      res.results.forEach((r) => results.set(chunk[r.row].line, r));
+      // Keep ONLY status / code / message from the server. Its result also has a `row` field (the row's index); spreading it over the
+      // parsed row replaced the product data (`row`) with a number, so the preview showed blank names and the import sent invalid arguments.
+      res.results.forEach((r) => results.set(chunk[r.row].line, { status: r.status, itemCode: r.itemCode, message: r.message }));
     }
-    setRows(parsed.map((p) => p.error ? { ...p, status: "error" as const, message: p.error } : { ...p, ...(results.get(p.line) ?? { status: "error" as const }) }));
+    setRows(parsed.map((p) => {
+      if (p.error) return { ...p, status: "error" as const, message: p.error };
+      const res = results.get(p.line);
+      return res ? { ...p, ...res } : { ...p, status: "error" as const, message: tr("Seva haikurudisha jibu kwa safu hii.") };
+    }));
   }
 
   async function onFile(file: File | undefined) {
-    if (!file) return;
+    if (!file || importing.current) return;
     setBusy(true); setDone(null); setFileName(file.name);
     try {
-      if (!/\.xlsx$/i.test(file.name)) throw new Error(tr("Tumia faili la Excel (.xlsx) lililotolewa na mfumo."));
+      const problem = checkProductFile(file); // type, empty and size checks happen before anything is read
+      if (problem) throw new Error(problem);
       const { rows: parsed, missing } = await parseProductFile(file);
       if (missing.length) throw new Error(tr("Faili halina vichwa vya safu vinavyotarajiwa: {0}. Pakua template ya mfumo.", [missing.join(", ")]));
       if (!parsed.length) throw new Error(tr("Faili halina bidhaa."));
-      await check(parsed, updateExisting);
-    } catch (e) { setRows([]); toast.error(errorText(e, "Imeshindikana kusoma faili.")); }
+      await check(markFileDuplicates(parsed), updateExisting);
+    } catch (e) { setRows([]); setFileName(""); toast.error(errorText(e, "Imeshindikana kusoma faili.")); }
     finally { setBusy(false); if (input.current) input.current.value = ""; }
   }
 
   async function importNow() {
     const valid = rows.filter((r) => r.status !== "error");
-    if (!valid.length) return;
+    if (!valid.length || importing.current) return;
+    importing.current = true;
     setBusy(true);
     let created = 0, updated = 0;
-    try {
-      for (let i = 0; i < valid.length; i += CHUNK) {
-        setProgress(tr("Inaingiza {0} / {1}…", [Math.min(i + CHUNK, valid.length), valid.length]));
-        const res = await importBatch({ rows: valid.slice(i, i + CHUNK).map((v) => v.row), dryRun: false, updateExisting });
+    const failed: Failure[] = [];
+    let stoppedAt: string | undefined;
+    for (let i = 0; i < valid.length; i += CHUNK) {
+      setProgress(tr("Inaingiza {0} / {1}…", [Math.min(i + CHUNK, valid.length), valid.length]));
+      const chunk = valid.slice(i, i + CHUNK);
+      try {
+        const res = await importBatch({ rows: chunk.map((v) => v.row), dryRun: false, updateExisting });
         created += res.created; updated += res.updated;
+        // Rows the server refused at save time (e.g. changed since the preview) are reported, never dropped silently.
+        for (const r of res.results) if (r.status === "error") failed.push({ line: chunk[r.row].line, name: chunk[r.row].row.name, message: r.message ?? "" });
+      } catch (e) {
+        stoppedAt = errorText(e, "Imeshindikana kuingiza bidhaa.");
+        for (const v of valid.slice(i)) failed.push({ line: v.line, name: v.row.name, message: tr("Haikuingizwa (uingizaji ulisimama).") });
+        break;
       }
-      setDone({ created, updated, errors: rows.length - valid.length });
-      setRows([]); setFileName("");
-      toast.success(tr("Bidhaa zimeingizwa: {0} mpya, {1} zimeboreshwa.", [created, updated]));
-    } catch (e) { toast.error(errorText(e, "Imeshindikana kuingiza bidhaa.")); }
-    finally { setBusy(false); setProgress(""); }
+    }
+    setDone({ created, updated, errors: rows.length - valid.length, failed, stoppedAt });
+    setRows([]); setFileName("");
+    const problems = failed.length + (rows.length - valid.length);
+    if (stoppedAt) toast.error(tr("Uingizaji umesimama: {0} mpya, {1} zimeboreshwa kabla ya kosa. Angalia ripoti hapa chini.", [created, updated]));
+    else if (problems) toast.warning(tr("Imekamilika kwa makosa: {0} mpya, {1} zimeboreshwa, {2} hazikuingizwa.", [created, updated, problems]));
+    else toast.success(tr("Bidhaa zimeingizwa: {0} mpya, {1} zimeboreshwa.", [created, updated]));
+    importing.current = false; setBusy(false); setProgress("");
   }
 
   const tone = (s: Checked["status"]) => (s === "new" ? "green" : s === "update" ? "blue" : "rose");
@@ -101,7 +123,19 @@ export default function StockImport() {
       </div>
 
       {done && (
-        <Panel><div className="flex items-center gap-3 text-sm"><CheckCircle2 className="h-5 w-5 text-emerald-600" />{tr("Imekamilika: bidhaa {0} mpya, {1} zimeboreshwa, {2} zilizo na makosa hazikuingizwa.", [done.created, done.updated, done.errors])}</div></Panel>
+        <Panel>
+          <div className="flex items-center gap-3 text-sm">
+            {done.stoppedAt || done.failed.length ? <AlertTriangle className="h-5 w-5 text-amber-600" /> : <CheckCircle2 className="h-5 w-5 text-emerald-600" />}
+            {tr("Imekamilika: bidhaa {0} mpya, {1} zimeboreshwa, {2} zilizo na makosa hazikuingizwa.", [done.created, done.updated, done.errors + done.failed.length])}
+          </div>
+          {done.stoppedAt && <p className="mt-2 text-sm text-destructive">{tr("Uingizaji ulisimama: {0}", [done.stoppedAt])} {tr("Bidhaa zilizoingizwa tayari zimehifadhiwa; pakia faili tena kuendelea (zilizopo hazitarudiwa).")}</p>}
+          {done.failed.length > 0 && (
+            <ul className="mt-2 max-h-48 list-disc space-y-1 overflow-auto pl-6 text-xs text-muted-foreground">
+              {done.failed.slice(0, 50).map((f) => <li key={f.line}>{tr("Safu {0}: {1} — {2}", [f.line, f.name, f.message ? errorText(new Error(f.message)) : ""])}</li>)}
+              {done.failed.length > 50 && <li>{tr("…na nyingine {0}.", [done.failed.length - 50])}</li>}
+            </ul>
+          )}
+        </Panel>
       )}
 
       {rows.length > 0 && (

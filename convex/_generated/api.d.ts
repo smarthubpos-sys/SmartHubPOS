@@ -47,6 +47,7 @@ import type * as support from "../support.js";
 import type * as tenants from "../tenants.js";
 import type * as users from "../users.js";
 import type * as waiterOrders from "../waiterOrders.js";
+import type * as waiterSettings from "../waiterSettings.js";
 import type * as warehouses from "../warehouses.js";
 
 import type {
@@ -95,6 +96,7 @@ declare const fullApi: ApiFromModules<{
   tenants: typeof tenants;
   users: typeof users;
   waiterOrders: typeof waiterOrders;
+  waiterSettings: typeof waiterSettings;
   warehouses: typeof warehouses;
 }>;
 

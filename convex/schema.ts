@@ -23,7 +23,7 @@ export default defineSchema({
     clicks: v.optional(v.number()), // banner: how many times users opened its link
   }).index("by_active", ["isActive"]),
   branches: defineTable({ tenantId: v.id("tenants"), name: v.string(), code: v.string(), isActive: v.boolean(), createdAt: v.string() }).index("by_tenant", ["tenantId"]).index("by_tenant_code", ["tenantId", "code"]),
-  tenantSettings: defineTable({ tenantId: v.id("tenants"), traIntegrationEnabled: v.boolean(), stockControlEnabled: v.boolean(), traEnvironment: v.optional(v.string()), traTaxpayerId: v.optional(v.string()), defaultCurrency: v.string(), waiterOrdersEnabled: v.optional(v.boolean()), waiterOrderMode: v.optional(v.union(v.literal("cashier"), v.literal("print"))) }).index("by_tenant", ["tenantId"]),
+  tenantSettings: defineTable({ tenantId: v.id("tenants"), traIntegrationEnabled: v.boolean(), stockControlEnabled: v.boolean(), traEnvironment: v.optional(v.string()), traTaxpayerId: v.optional(v.string()), defaultCurrency: v.string(), waiterOrdersEnabled: v.optional(v.boolean()), waiterEnabled: v.optional(v.boolean()), waitressEnabled: v.optional(v.boolean()), waiterOrderMode: v.optional(v.union(v.literal("cashier"), v.literal("print"))) }).index("by_tenant", ["tenantId"]),
 
   // ── USERS & AUTH ──────────────────────────────────────────────
   users: defineTable({

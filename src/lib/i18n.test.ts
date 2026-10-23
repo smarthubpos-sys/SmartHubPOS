@@ -5,6 +5,7 @@ import { EXTRA_DICT } from "./i18n-dict-subscriptions.ts";
 import { ACCESS_DICT } from "./i18n-dict-access.ts";
 import { SUPERADMIN_DICT, INVOICING_DICT, DEPT_DICT } from "./i18n-dict-superadmin.ts";
 import { PREPORT_DICT } from "./i18n-dict-preports.ts";
+import { IMPORT_DICT } from "./i18n-dict-import.ts";
 import { tr, trMessage, trValue, errorText, getLang, setLang } from "./i18n.ts";
 
 const placeholders = (s: string) => (s.match(/\{\d+\}/g) ?? []).sort().join(",");
@@ -16,7 +17,7 @@ describe("single-language dictionary", () => {
   });
 
   it("has a Kiswahili and an English text for every entry, with matching placeholders", () => {
-    for (const [key, v] of [...Object.entries(DICT), ...Object.entries(SERVER_DICT), ...Object.entries(EXTRA_DICT), ...Object.entries(ACCESS_DICT), ...Object.entries(SUPERADMIN_DICT), ...Object.entries(INVOICING_DICT), ...Object.entries(DEPT_DICT), ...Object.entries(PREPORT_DICT)]) {
+    for (const [key, v] of [...Object.entries(DICT), ...Object.entries(SERVER_DICT), ...Object.entries(EXTRA_DICT), ...Object.entries(ACCESS_DICT), ...Object.entries(SUPERADMIN_DICT), ...Object.entries(INVOICING_DICT), ...Object.entries(DEPT_DICT), ...Object.entries(PREPORT_DICT), ...Object.entries(IMPORT_DICT)]) {
       expect(v.sw, key).toBeTruthy();
       expect(v.en, key).toBeTruthy();
       expect(placeholders(v.sw), key).toBe(placeholders(key));

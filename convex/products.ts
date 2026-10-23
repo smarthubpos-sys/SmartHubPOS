@@ -254,7 +254,7 @@ export const importBatch = mutation({
     type KnownProduct = Partial<Doc<"products">> & { _id: Id<"products"> };
     const byCode = new Map<string, KnownProduct>(products.map((p) => [norm(p.itemCode), p]));
     const byBarcode = new Map<string, KnownProduct>(products.filter((p) => p.barcode).map((p) => [norm(p.barcode), p]));
-    const byName = new Map(products.map((p) => [norm(p.name), p]));
+    const byName = new Map<string, KnownProduct>(products.map((p) => [norm(p.name), p]));
     const groupByName = new Map(groups.flatMap((g) => [[norm(g.name), g._id], [norm(g.code), g._id]] as const));
     const unitByName = new Map(units.flatMap((u) => [[norm(u.name), u._id], [norm(u.code), u._id]] as const));
     const groupCodes = new Set(groups.map((g) => g.code.toUpperCase()));
@@ -288,6 +288,9 @@ export const importBatch = mutation({
       if (barcodeOwner && existing && barcodeOwner._id !== existing._id) { fail(`Barcode ${barcode} tayari inatumika na bidhaa nyingine.`); continue; }
       if (!existing && barcodeOwner) { fail(`Barcode ${barcode} tayari inatumika na bidhaa nyingine.`); continue; }
       if (!existing && code && byCode.has(norm(code))) { fail(`Item code ${code} tayari ipo.`); continue; }
+      // A new product needs a selling price (the template marks it required), and must not repeat the name of one that already exists under another code.
+      if (!existing && r.sellingPrice === undefined) { fail("Bei ya kuuzia inahitajika."); continue; }
+      if (!existing) { const sameName = byName.get(norm(name)); if (sameName) { fail(`Jina ${name} tayari lipo (msimbo ${sameName.itemCode}). Tumia msimbo huo kuboresha bidhaa hiyo.`); continue; } }
 
       // resolve / create group and unit by name
       let groupId = r.group?.trim() ? groupByName.get(norm(r.group)) : undefined;
@@ -330,6 +333,7 @@ export const importBatch = mutation({
         openingQty: qty, currentQty: qty, weightedAvgCost: cost, lastPurchaseCost: cost > 0 ? cost : undefined, isActive: true,
       });
       byCode.set(norm(itemCode), { _id: productId, itemCode });
+      byName.set(norm(name), { _id: productId, itemCode });
       if (barcode) byBarcode.set(norm(barcode), { _id: productId });
       if (qty > 0) {
         await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId, movementType: "opening", referenceId: String(productId), referenceType: "product", qtyIn: qty, qtyOut: 0, runningBalance: qty, unitCost: cost, notes: "Opening stock (Excel import)", createdBy: user._id });

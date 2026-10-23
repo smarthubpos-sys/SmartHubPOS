@@ -32,6 +32,9 @@ export default function WaiterOrdersPage() {
   const role = String(user?.role ?? "").toLowerCase();
   const cashier = ["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role);
 
+  // Waiter and Waitress each follow their own switch (Super Admin > Edit Business); other roles need at least one on.
+  const roleEnabled = role === "waitress" ? business?.waitressEnabled === true : role === "waiter" ? business?.waiterEnabled === true : business?.waiterOrdersEnabled === true;
+
   async function send() {
     if (!customer.trim()) {
       toast.error(tr("Weka jina la mteja."));
@@ -110,7 +113,7 @@ export default function WaiterOrdersPage() {
         </p>
       </header>
 
-      {business?.waiterOrdersEnabled === true && !cashier && <section className="space-y-4 rounded-xl border p-4 sm:p-5">
+      {roleEnabled && !cashier && <section className="space-y-4 rounded-xl border p-4 sm:p-5">
         <h2 className="font-semibold">{tr("Oda mpya")}</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1 text-sm">{tr("Jina la mteja")}

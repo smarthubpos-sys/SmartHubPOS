@@ -1,0 +1,21 @@
+/* Texts for the Excel product import and the Waiter / Waitress switches (Kiswahili is the source text; English alongside). */
+export const IMPORT_DICT: Record<string, { sw: string; en: string }> = {
+  "Namba hasi haikubaliki kwenye safu ya {0}.": { sw: "Namba hasi haikubaliki kwenye safu ya {0}.", en: "Negative numbers are not allowed in the {0} column." },
+  "Bei ya kuuzia inahitajika.": { sw: "Bei ya kuuzia inahitajika.", en: "Selling price is required." },
+  "Faili la .xls la zamani halitumiki. Lifungue kwenye Excel, kisha Save As .xlsx.": { sw: "Faili la .xls la zamani halitumiki. Lifungue kwenye Excel, kisha Save As .xlsx.", en: "The old .xls format is not supported. Open it in Excel and use Save As .xlsx." },
+  "Faili ni tupu.": { sw: "Faili ni tupu.", en: "The file is empty." },
+  "Faili ni kubwa mno (kikomo 10 MB).": { sw: "Faili ni kubwa mno (kikomo 10 MB).", en: "The file is too large (limit 10 MB)." },
+  "Bidhaa hii imerudiwa kwenye faili (safu {0}).": { sw: "Bidhaa hii imerudiwa kwenye faili (safu {0}).", en: "This product is repeated in the file (row {0})." },
+  "Jina {0} tayari lipo (msimbo {1}). Tumia msimbo huo kuboresha bidhaa hiyo.": { sw: "Jina {0} tayari lipo (msimbo {1}). Tumia msimbo huo kuboresha bidhaa hiyo.", en: "The name {0} already exists (code {1}). Use that code to update that product." },
+  "Haikuingizwa (uingizaji ulisimama).": { sw: "Haikuingizwa (uingizaji ulisimama).", en: "Not imported (the import stopped)." },
+  "Uingizaji umesimama: {0} mpya, {1} zimeboreshwa kabla ya kosa. Angalia ripoti hapa chini.": { sw: "Uingizaji umesimama: {0} mpya, {1} zimeboreshwa kabla ya kosa. Angalia ripoti hapa chini.", en: "The import stopped: {0} new and {1} updated before the error. See the report below." },
+  "Imekamilika kwa makosa: {0} mpya, {1} zimeboreshwa, {2} hazikuingizwa.": { sw: "Imekamilika kwa makosa: {0} mpya, {1} zimeboreshwa, {2} hazikuingizwa.", en: "Finished with errors: {0} new, {1} updated, {2} not imported." },
+  "Uingizaji ulisimama: {0}": { sw: "Uingizaji ulisimama: {0}", en: "The import stopped: {0}" },
+  "Bidhaa zilizoingizwa tayari zimehifadhiwa; pakia faili tena kuendelea (zilizopo hazitarudiwa).": { sw: "Bidhaa zilizoingizwa tayari zimehifadhiwa; pakia faili tena kuendelea (zilizopo hazitarudiwa).", en: "Products already imported are saved; upload the file again to continue (existing ones will not be duplicated)." },
+  "Safu {0}: {1} — {2}": { sw: "Safu {0}: {1} — {2}", en: "Row {0}: {1} — {2}" },
+  "…na nyingine {0}.": { sw: "…na nyingine {0}.", en: "…and {0} more." },
+  "Seva haikurudisha jibu kwa safu hii.": { sw: "Seva haikurudisha jibu kwa safu hii.", en: "The server returned no result for this row." },
+  "Waiter Orders settings": { sw: "Mipangilio ya Waiter Orders", en: "Waiter Orders settings" },
+  "Enable Waiter": { sw: "Washa Waiter", en: "Enable Waiter" },
+  "Enable Waitress": { sw: "Washa Waitress", en: "Enable Waitress" },
+};

@@ -102,7 +102,7 @@ describe("changing / deleting stock is a permission given by the Super Admin", (
     await expect(asMgr.mutation(api.products.upsert, editArgs(productId))).rejects.toThrow(/stock.adjust/);
     await expect(asMgr.mutation(api.products.importBatch, { rows: [{ name: "Chai" }], dryRun: false, updateExisting: true })).rejects.toThrow(/ruhusa/);
     await asMgr.mutation(api.products.upsert, { itemCode: "P2", name: "Chai", sellingPrice: 500, isActive: true });
-    const res = await asMgr.mutation(api.products.importBatch, { rows: [{ name: "Kahawa" }], dryRun: false, updateExisting: false });
+    const res = await asMgr.mutation(api.products.importBatch, { rows: [{ name: "Kahawa", sellingPrice: 700 }], dryRun: false, updateExisting: false });
     expect(res.created).toBe(1);
   });
 

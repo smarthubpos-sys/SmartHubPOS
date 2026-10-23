@@ -110,6 +110,7 @@ export async function parseProductFile(file: File): Promise<{ rows: ParsedRow[];
   const aliasToKey = new Map<string, Key>();
   for (const c of PRODUCT_COLUMNS) for (const a of c.aliases) aliasToKey.set(a, c.key);
 
+  let bestMatch = new Set<Key>(); // the best partial header row seen, so the error names only what is really missing
   for (const ws of wb.worksheets) {
     if (ws.state === "hidden") continue;
     let headerRow = 0;
@@ -118,6 +119,7 @@ export async function parseProductFile(file: File): Promise<{ rows: ParsedRow[];
       if (headerRow) return;
       const found = new Map<Key, number>();
       row.eachCell((cell, col) => { const k = aliasToKey.get(norm(cellValue(cell.value))); if (k && !found.has(k)) found.set(k, col); });
+      if (found.size > bestMatch.size) bestMatch = new Set(found.keys());
       if (found.has("name") && found.has("sellingPrice")) { headerRow = rowNumber; found.forEach((c, k) => colOf.set(k, c)); }
     });
     if (!headerRow) continue;
@@ -132,13 +134,47 @@ export async function parseProductFile(file: File): Promise<{ rows: ParsedRow[];
       let error: string | undefined;
       for (const k of ["sellingPrice", "buyingPrice", "quantity", "reorderLevel"] as const) {
         const n = toNumber(get(k));
-        if (n === "bad") error = tr("Namba si sahihi kwenye safu ya {0}.", [PRODUCT_COLUMNS.find((c) => c.key === k)!.label()]);
+        const label = PRODUCT_COLUMNS.find((c) => c.key === k)!.label();
+        if (n === "bad") error = tr("Namba si sahihi kwenye safu ya {0}.", [label]);
+        else if (n !== undefined && n < 0) error = tr("Namba hasi haikubaliki kwenye safu ya {0}.", [label]);
         else if (n !== undefined) item[k] = n;
       }
+      if (item.sellingPrice === undefined && !error) error = tr("Bei ya kuuzia inahitajika.");
       if (!name) error = tr("Jina la bidhaa linahitajika.");
       rows.push({ line: r, row: item, error });
     }
     return { rows, missing: [] };
   }
-  return { rows: [], missing: PRODUCT_COLUMNS.filter((c) => c.required).map((c) => c.label()) };
+  return { rows: [], missing: PRODUCT_COLUMNS.filter((c) => c.required && !bestMatch.has(c.key)).map((c) => c.label()) };
 }
+
+export const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+
+/** Checks the chosen file before it is read. Returns a user-facing message, or null when the file may be parsed. */
+export function checkProductFile(file: { name: string; size?: number }): string | null {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".xls")) return tr("Faili la .xls la zamani halitumiki. Lifungue kwenye Excel, kisha Save As .xlsx.");
+  if (!name.endsWith(".xlsx")) return tr("Tumia faili la Excel (.xlsx) lililotolewa na mfumo.");
+  if (file.size === 0) return tr("Faili ni tupu.");
+  if (file.size !== undefined && file.size > MAX_IMPORT_BYTES) return tr("Faili ni kubwa mno (kikomo 10 MB).");
+  return null;
+}
+
+/**
+ * Flags repeats inside ONE file (same name, item code or barcode) across the WHOLE file. The server only sees 400 rows at a time,
+ * so a repeat in two different batches would otherwise pass the preview and fail (or double-create) while importing.
+ * The first occurrence is kept; later ones get an error. Rows that already have an error are left as they are.
+ */
+export function markFileDuplicates(rows: ParsedRow[]): ParsedRow[] {
+  const names = new Map<string, number>(), codes = new Map<string, number>(), barcodes = new Map<string, number>();
+  const key = (s?: string) => (s ?? "").trim().toLowerCase();
+  return rows.map((p) => {
+    if (p.error) return p;
+    const n = key(p.row.name), c = key(p.row.itemCode), bc = key(p.row.barcode);
+    const first = names.get(n) ?? (c ? codes.get(c) : undefined) ?? (bc ? barcodes.get(bc) : undefined);
+    if (first !== undefined) return { ...p, error: tr("Bidhaa hii imerudiwa kwenye faili (safu {0}).", [first]) };
+    names.set(n, p.line); if (c) codes.set(c, p.line); if (bc) barcodes.set(bc, p.line);
+    return p;
+  });
+}
+

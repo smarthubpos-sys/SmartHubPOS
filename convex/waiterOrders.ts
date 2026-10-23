@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { requirePermission, resolveWriteScope } from "./access";
+import { resolveWaiterSettings, waiterOrdersAllowedFor } from "./waiterSettings";
 
 export const list = query({
   args: {},
@@ -12,8 +13,8 @@ export const list = query({
     const settings = await ctx.db.query("tenantSettings")
       .withIndex("by_tenant", q => q.eq("tenantId", tenantId))
       .first();
-    if (settings?.waiterOrdersEnabled !== true ||
-        (settings.waiterOrderMode ?? "cashier") !== "cashier") return [];
+    if (!waiterOrdersAllowedFor(user.role, settings) ||
+        resolveWaiterSettings(settings).waiterOrderMode !== "cashier") return [];
     const rows = await ctx.db.query("waiterOrders")
       .withIndex("by_scope_status", q =>
         q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)
@@ -40,10 +41,10 @@ export const send = mutation({
     const settings = await ctx.db.query("tenantSettings")
       .withIndex("by_tenant", q => q.eq("tenantId", tenantId))
       .first();
-    if (settings?.waiterOrdersEnabled !== true) {
+    if (!waiterOrdersAllowedFor(user.role, settings)) {
       throw new Error("Waiter Orders imezimwa kwa biashara hii.");
     }
-    if ((settings.waiterOrderMode ?? "cashier") !== "cashier") {
+    if (resolveWaiterSettings(settings).waiterOrderMode !== "cashier") {
       throw new Error("Mode hii ni ya kuchapisha oda, si kutuma kwa cashier.");
     }
     const customerName = args.customerName.trim();
