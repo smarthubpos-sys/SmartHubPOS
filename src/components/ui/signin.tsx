@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+﻿import { useState, type FormEvent } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useConvexAuth } from "convex/react";
 import { useNavigate } from "react-router-dom";
@@ -82,13 +82,13 @@ export function SignInButton() {
       ) : (
         <div className="grid gap-2 text-sm text-blue-100">
           <label className="grid gap-1">{tr("PIN ya wafanyakazi")}
-            <Input inputMode="numeric" autoComplete="one-time-code" type="password" required minLength={4} maxLength={4} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="••••" />
+            <Input inputMode="numeric" autoComplete="one-time-code" type="password" required minLength={4} maxLength={4} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="PIN" />
           </label>
           <div className="grid grid-cols-3 gap-2">
-            {(["1", "2", "3", "4", "5", "6", "7", "8", "9"] as const).map((digit) => <Button key={digit} type="button" variant="outline" disabled={busy || pin.length >= 4} onClick={() => setPin((p) => (p.length < 4 ? p + digit : p))}>{digit}</Button>)}
-            <Button type="button" variant="outline" disabled={busy || !pin} onClick={() => setPin("")}>{tr("Futa")}</Button>
-            <Button type="button" variant="outline" disabled={busy || pin.length >= 4} onClick={() => setPin((p) => (p.length < 4 ? p + "0" : p))}>0</Button>
-            <Button type="button" variant="outline" disabled={busy || !pin} onClick={() => setPin((p) => p.slice(0, -1))}>⌫</Button>
+            {(["1", "2", "3", "4", "5", "6", "7", "8", "9"] as const).map((digit) => <Button key={digit} type="button" variant="secondary" className="min-h-12 bg-white text-slate-900 text-lg font-bold hover:bg-slate-200 disabled:opacity-100 disabled:bg-slate-200 disabled:text-slate-500" disabled={busy || pin.length >= 4} onClick={() => setPin((p) => (p.length < 4 ? p + digit : p))}>{digit}</Button>)}
+            <Button type="button" variant="secondary" className="min-h-12 bg-amber-300 text-slate-900 font-bold hover:bg-amber-200 disabled:opacity-100 disabled:bg-amber-100 disabled:text-slate-500" disabled={busy || !pin} onClick={() => setPin("")}>{tr("Futa")}</Button>
+            <Button type="button" variant="secondary" className="min-h-12 bg-white text-slate-900 text-lg font-bold hover:bg-slate-200 disabled:opacity-100 disabled:bg-slate-200 disabled:text-slate-500" disabled={busy || pin.length >= 4} onClick={() => setPin((p) => (p.length < 4 ? p + "0" : p))}>0</Button>
+            <Button type="button" variant="secondary" className="min-h-12 bg-sky-300 text-slate-900 font-bold hover:bg-sky-200 disabled:opacity-100 disabled:bg-sky-100 disabled:text-slate-500" disabled={busy || !pin} onClick={() => setPin((p) => p.slice(0, -1))}>⌫</Button>
           </div>
         </div>
       )}
