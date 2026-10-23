@@ -136,7 +136,19 @@ export async function printRawViaQz(printerName: string, bytes: Uint8Array) {
   let binary = ""; for (const byte of bytes) binary += String.fromCharCode(byte);
   await qz.print(qz.configs.create(printerName), [{ type: "raw", format: "command", flavor: "base64", data: btoa(binary) }]);
 }
-
+/** Print HTML receipt through the selected installed printer using QZ Tray. */
+export async function printHtmlViaQz(printerName: string, html: string) {
+  const qz = await qzConnect();
+  const config = qz.configs.create(printerName);
+  await qz.print(config, [
+    {
+      type: "pixel",
+      format: "html",
+      flavor: "plain",
+      data: html,
+    },
+  ]);
+}
 /* ───────── Direct devices ───────── */
 const BLE_SERVICES = [
   "000018f0-0000-1000-8000-00805f9b34fb",

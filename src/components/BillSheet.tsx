@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+﻿import { useEffect, useRef } from "react";
 import { useQuery } from "convex/react";
 import { MessageCircle, Printer } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
@@ -6,7 +6,8 @@ import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Empty } from "@/components/page-kit.tsx";
 import { formatDate, formatNumber } from "@/lib/format.ts";
-import { printElement, type Paper } from "@/lib/print-area.ts";
+import { buildReceiptHtml, printElement, type Paper } from "@/lib/print-area.ts";
+import { printHtmlViaQz } from "@/lib/printers.ts";
 import { shouldSchedulePrint } from "@/lib/print-policy.ts";
 import { tr } from "@/lib/i18n.ts";
 
@@ -18,32 +19,57 @@ export default function BillSheet({ invoiceIds, printToken, paper, whatsappEnabl
   const bill = useQuery(api.customerBills.billData, { invoiceIds });
   const printed = useRef(0);
   const articleRef = useRef<HTMLElement>(null);
+const settings = useQuery(api.maintenance.getSettings, {});
+const hardware = (settings?.app?.hardware ?? {}) as {
+  printerSource?: string;
+  receiptPrinter?: string;
+};
 
   const myPerms = useQuery(api.maintenance.myPermissions, {});
   const canPrint = !!myPerms?.includes("sales.print");
 
+  const printReceipt = async () => {
+    const el = articleRef.current;
+    if (!el) return;
+
+    if (hardware.printerSource === "installed" && hardware.receiptPrinter?.trim()) {
+      try {
+        await printHtmlViaQz(
+          hardware.receiptPrinter,
+          buildReceiptHtml(el, paper),
+        );
+        return;
+      } catch (error) {
+        console.error("QZ Tray printing failed; using browser print.", error);
+      }
+    }
+
+    printElement(el, paper);
+  };
+
   useEffect(() => {
+    if (settings === undefined) return;
     if (!shouldSchedulePrint({ dataReady: !!bill, allowed: canPrint, token: printToken, lastPrinted: printed.current })) return;
-    // The "printed" marker is set only when the timer really fires: a re-render (e.g. live data update) cancels and reschedules
-    // instead of losing the print, and the same token can never print twice.
+
     const t = window.setTimeout(() => {
       if (printed.current === printToken) return;
       printed.current = printToken;
-      printElement(articleRef.current, paper);
+      void printReceipt();
     }, 150);
-    return () => window.clearTimeout(t);
-  }, [bill, canPrint, printToken, paper]);
 
-  if (bill === undefined) return <Empty>{tr("Inapakia…")}</Empty>;
+    return () => window.clearTimeout(t);
+  }, [bill, canPrint, printToken, paper, settings, hardware.printerSource, hardware.receiptPrinter]);
+
+  if (bill === undefined) return <Empty>{tr("Inapakiaâ€¦")}</Empty>;
   const dp = bill.company.decimalPlaces;
   const m = (n: number) => `${bill.company.currencySymbol} ${formatNumber(n, dp)}`;
   const number = (n: number) => formatNumber(n, Number.isInteger(n) ? 0 : 2);
   const isInvoice = kind === "invoice";
   const heading = isInvoice ? (bill.department?.trim() || "Sales") : tr("BILI");
   const whatsappText = [
-    `${bill.company.name || "Biashara"} — ${heading}`,
+    `${bill.company.name || "Biashara"} â€” ${heading}`,
     `${tr("Mteja")}: ${bill.client.name}`,
-    ...bill.invoices.flatMap((inv) => [`${tr("Invoice")} ${inv.invoiceNo} (${formatDate(inv.date)})`, ...inv.lines.map((l) => `${l.name} × ${number(l.qty)} = ${m(l.lineTotal)}`), `${tr("Jumla ya invoice")}: ${m(inv.total)}`]),
+    ...bill.invoices.flatMap((inv) => [`${tr("Invoice")} ${inv.invoiceNo} (${formatDate(inv.date)})`, ...inv.lines.map((l) => `${l.name} Ã— ${number(l.qty)} = ${m(l.lineTotal)}`), `${tr("Jumla ya invoice")}: ${m(inv.total)}`]),
     `${isInvoice ? tr("Jumla ya invoice") : tr("Jumla ya bili")}: ${m(bill.totals.total)}`,
     `${tr("Imelipwa")}: ${m(bill.totals.paid)}`,
     `${tr("Deni lililobaki")}: ${m(bill.totals.outstanding)}`,
@@ -61,7 +87,7 @@ export default function BillSheet({ invoiceIds, printToken, paper, whatsappEnabl
       <div className="mb-3 flex flex-wrap items-center justify-end gap-2 print:hidden">
         <label className="mr-auto flex items-center gap-2 rounded-md border px-3 py-2 text-sm"><input type="checkbox" checked={whatsappEnabled} onChange={(e) => setWhatsappEnabled(e.target.checked)} />{tr("Washa kutuma bili WhatsApp")}</label>
         {whatsappEnabled && phone && <Button variant="outline" onClick={() => window.open(whatsappUrl, "_blank", "noopener,noreferrer")}><MessageCircle className="mr-1 h-4 w-4" />{tr("Tuma bill WhatsApp")}</Button>}
-        {canPrint && <Button onClick={() => printElement(articleRef.current, paper)}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
+        {canPrint && <Button onClick={() => { void printReceipt(); }}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
       </div>
       <article ref={articleRef} data-paper={paper} className={`print-area mx-auto space-y-4 rounded-2xl border bg-card p-6 text-sm print:rounded-none print:border-0 print:p-0 ${paper === "A4" ? "max-w-3xl print:max-w-none" : paper === "58mm" ? "max-w-[58mm]" : "max-w-[80mm]"}`}>
         <header className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
@@ -69,7 +95,7 @@ export default function BillSheet({ invoiceIds, printToken, paper, whatsappEnabl
             <h2 className="text-lg font-bold">{bill.company.name || tr("Biashara")}</h2>
             {!isInvoice && bill.department && <p className="text-xs text-muted-foreground">{tr("Idara")}: {bill.department}</p>}
             {bill.company.address && <p className="text-xs">{bill.company.address}</p>}
-            {(bill.company.phone || bill.company.email) && <p className="text-xs">{[bill.company.phone, bill.company.email].filter(Boolean).join(" · ")}</p>}
+            {(bill.company.phone || bill.company.email) && <p className="text-xs">{[bill.company.phone, bill.company.email].filter(Boolean).join(" Â· ")}</p>}
             {bill.company.taxId && <p className="text-xs">TIN: {bill.company.taxId}</p>}
           </div>
           <div className="text-right">
@@ -88,7 +114,7 @@ export default function BillSheet({ invoiceIds, printToken, paper, whatsappEnabl
 
         {bill.invoices.map((inv) => (
           <section key={inv._id} className="break-inside-avoid">
-            <div className="mb-1 flex justify-between font-semibold"><span>{tr("Invoice")} {inv.invoiceNo}{inv.department && bill.department?.includes(" + ") ? ` · ${inv.department}` : ""}</span><span>{formatDate(inv.date)}</span></div>
+            <div className="mb-1 flex justify-between font-semibold"><span>{tr("Invoice")} {inv.invoiceNo}{inv.department && bill.department?.includes(" + ") ? ` Â· ${inv.department}` : ""}</span><span>{formatDate(inv.date)}</span></div>
             <table className="w-full text-left">
               <thead><tr className="border-b text-xs text-muted-foreground"><th className="py-1">{tr("Bidhaa")}</th><th className="py-1 text-right">{tr("Idadi")}</th><th className="py-1 text-right">{tr("Bei")}</th><th className="py-1 text-right">{tr("Jumla")}</th></tr></thead>
               <tbody>
@@ -117,3 +143,5 @@ export default function BillSheet({ invoiceIds, printToken, paper, whatsappEnabl
     </div>
   );
 }
+
+
