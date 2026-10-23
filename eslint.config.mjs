@@ -1,4 +1,3 @@
-
 import convexPlugin from "@convex-dev/eslint-plugin";
 import js from "@eslint/js";
 import reactHooks from "eslint-plugin-react-hooks";
@@ -9,7 +8,16 @@ import tseslint from "typescript-eslint";
 import { defineConfig } from "eslint/config";
 
 export default defineConfig([
-  globalIgnores(["dist", "**/_generated/*", "fix-backup/**", ".vercel/**"]),
+  globalIgnores([
+    "dist",
+    "**/_generated/*",
+    "fix-backup/**",
+    "**/backup-*/**",
+    "**/*backup*",
+    "**/*.bak",
+    "**/*.before-*",
+    ".vercel/**",
+  ]),
   {
     files: ["**/*.{ts,tsx}"],
     extends: [
