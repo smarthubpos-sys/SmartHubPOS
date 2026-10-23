@@ -101,13 +101,6 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
             <label htmlFor="enable-waitress" className="cursor-pointer">{tr("Enable Waitress")}</label>
             <Switch id="enable-waitress" checked={waitressEnabled} onCheckedChange={setWaitressEnabled} aria-label={tr("Enable Waitress")} />
           </div>
-          <label className="grid gap-1">
-            {tr("Namna ya waiter orders")}
-            <select value={waiterOrderMode} onChange={(e) => setWaiterOrderMode(e.target.value as "cashier" | "print")} disabled={!waiterEnabled && !waitressEnabled} className="h-10 rounded-md border bg-white px-3 text-slate-900">
-              <option value="cashier">{tr("Tuma kwa cashier")}</option>
-              <option value="print">{tr("Mhudumu achapishe mwenyewe")}</option>
-            </select>
-          </label>
         </div>
         <p className="font-medium">{tr("Huduma (sidebar) alizolipia")}</p>
         <p className="text-xs opacity-80">{tr("Biashara itaona na kutumia huduma zilizotiwa tiki tu. Dashboard na Help ziko kila wakati. Meneja wa biashara anaweza kupunguza zaidi kwa kila mtumiaji.")}</p>

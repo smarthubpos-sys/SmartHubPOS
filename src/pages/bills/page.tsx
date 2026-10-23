@@ -90,9 +90,9 @@ export default function BillsPage() {
           actions={clientId && list.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => { setPicked(allPicked ? new Set() : new Set(list.map((i) => String(i._id)))); setShowBill(false); }}>{allPicked ? tr("Ondoa zote") : tr("Chagua zote")}</Button>
-              <Button size="sm" variant="outline" disabled={chosen.length === 0} onClick={() => setShowBill(true)}>{tr("Tazama bili")}</Button>
+              <Button size="sm" variant="outline" disabled={chosen.length === 0} onClick={() => setShowBill(true)}>{tr("Send")}</Button>
               <label className="flex items-center gap-1 text-xs">{tr("Printer")}<select className="h-8 rounded-md border bg-background px-2" value={paper} onChange={(e) => { const v = e.target.value as "80mm" | "58mm" | "A4"; setPaper(v); localStorage.setItem("smarthub-print-paper", v); }}><option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option></select></label>
-              <Button size="sm" disabled={chosen.length === 0} onClick={() => { setShowBill(true); setPrintToken((n) => n + 1); }}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha bili")}</Button>
+              <Button size="sm" disabled={chosen.length === 0} onClick={() => { setShowBill(true); setPrintToken((n) => n + 1); }}><Printer className="mr-1 h-4 w-4" />{tr("Print")}</Button>
             </div>
           ) : undefined}
         >

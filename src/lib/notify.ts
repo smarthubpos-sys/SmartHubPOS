@@ -15,6 +15,7 @@ export function notificationText(code: string, p: P): { title: string; body: str
     case "payroll_draft": return { title: tr("Mishahara inasubiri idhini: {0}", [p.name]), body: tr("Idhinisha ili iingie kwenye hesabu.") };
     case "ticket_open": return { title: tr("Ombi la msaada: {0}", [p.subject]), body: tr("Kutoka kwa {0}.", [p.name]) };
     case "ticket_replied": return { title: tr("Jibu la msaada: {0}", [p.subject]), body: tr("Timu ya msaada imejibu ombi lako.") };
+    case "waiter_order_received": return { title: tr("Oda imepokelewa: {0}", [p.customer]), body: tr("Cashier amepokea oda yako (meza {0}).", [p.table]) };
     case "announcement": return { title: String(p.title), body: String(p.body) };
     case "demo_expiring": return { title: Number(p.days) === 0 ? tr("Demo inaisha leo") : tr("Demo inaisha baada ya siku {0}", [Number(p.days)]), body: tr("Mwisho wa matumizi ni {0}. Wasiliana na SmartHub ulipie ili uendelee.", [d(p.date)]) };
     case "sub_expiring": return { title: Number(p.days) === 0 ? tr("Usajili unaisha leo") : tr("Usajili unaisha baada ya siku {0}", [Number(p.days)]), body: tr("Mwisho wa matumizi ni {0}. Lipia mapema ili mfumo usikatike.", [d(p.date)]) };

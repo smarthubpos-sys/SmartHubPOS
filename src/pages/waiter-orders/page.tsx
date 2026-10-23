@@ -1,13 +1,16 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { tr, errorText } from "@/lib/i18n.ts";
 
-const waiterApi = (api as any).waiterOrders;
+const waiterApi = api.waiterOrders;
 
+type Order = Doc<"waiterOrders">;
+type PrintableOrder = Pick<Order, "customerName" | "waiterName" | "total"> & { tableNumber?: string; notes?: string; lines: Array<{ productName: string; qty: number; lineTotal: number }> };
 type Line = { productId: string; qty: string };
 
 export default function WaiterOrdersPage() {
@@ -15,8 +18,10 @@ export default function WaiterOrdersPage() {
   const business = useQuery(api.tenants.current);
   const products = useQuery(api.products.listActive);
   const orders = useQuery(waiterApi.list);
-  const sendOrder = useMutation(waiterApi.send);
+  const placeOrder = useMutation(waiterApi.place);
   const markHandled = useMutation(waiterApi.markHandled);
+  const sendToCashier = useMutation(waiterApi.sendToCashier);
+  const markPrinted = useMutation(waiterApi.markPrinted);
 
   const [customer, setCustomer] = useState("");
   const [table, setTable] = useState("");
@@ -35,7 +40,7 @@ export default function WaiterOrdersPage() {
   // Waiter and Waitress each follow their own switch (Super Admin > Edit Business); other roles need at least one on.
   const roleEnabled = role === "waitress" ? business?.waitressEnabled === true : role === "waiter" ? business?.waiterEnabled === true : business?.waiterOrdersEnabled === true;
 
-  async function send() {
+  async function place() {
     if (!customer.trim()) {
       toast.error(tr("Weka jina la mteja."));
       return;
@@ -46,44 +51,60 @@ export default function WaiterOrdersPage() {
     }
     setBusy(true);
     try {
-      await sendOrder({
+      await placeOrder({
         customerName: customer.trim(),
         tableNumber: table.trim() || undefined,
         notes: notes.trim() || undefined,
         lines: lines.map(line => ({
-          productId: line.productId as any,
+          productId: line.productId as Id<"products">,
           qty: Number(line.qty),
         })),
       });
-      toast.success(tr("Oda imetumwa kwa cashier."));
+      toast.success(tr("Oda imewekwa. Stock imepungua. Sasa chagua Send au Print."));
       setCustomer("");
       setTable("");
       setNotes("");
       setLines([{ productId: "", qty: "1" }]);
     } catch (error) {
-      toast.error(errorText(error, tr("Imeshindikana kutuma oda.")));
+      toast.error(errorText(error, tr("Imeshindikana kuweka oda.")));
     } finally {
       setBusy(false);
     }
   }
 
-  async function accept(orderId: string) {
+  async function send(orderId: string) {
     try {
-      await markHandled({ orderId: orderId as any });
-      toast.success(tr("Oda imepokelewa."));
+      await sendToCashier({ orderId: orderId as Id<"waiterOrders"> });
+      toast.success(tr("Oda imetumwa kwa cashier."));
     } catch (error) {
-      toast.error(errorText(error, tr("Imeshindikana kupokea oda.")));
+      toast.error(errorText(error, tr("Imeshindikana kutuma oda.")));
     }
   }
 
-  function printOrder(order: any) {
+  async function printPlaced(order: Order) {
+    printOrder(order);
+    try { await markPrinted({ orderId: order._id }); } catch { /* printing already happened; the record is only informational */ }
+  }
+
+  async function receiveAndPrint(order: Order) {
+    try {
+      await markHandled({ orderId: order._id });
+    } catch (error) {
+      toast.error(errorText(error, tr("Imeshindikana kupokea oda.")));
+      return;
+    }
+    toast.success(tr("Oda imepokelewa. Mhudumu amearifiwa."));
+    printOrder(order);
+  }
+
+  function printOrder(order: PrintableOrder) {
     const content = [
       "SMARTHUB POS - ODA",
       `Mteja: ${order.customerName}`,
       `Meza: ${order.tableNumber || "-"}`,
       `Waiter: ${order.waiterName}`,
       "------------------------------",
-      ...order.lines.map((line: any) =>
+      ...order.lines.map((line) =>
         `${line.productName} x ${line.qty} = ${Number(line.lineTotal).toLocaleString()}`
       ),
       "------------------------------",
@@ -109,7 +130,7 @@ export default function WaiterOrdersPage() {
       <header>
         <h1 className="text-2xl font-bold">{tr("Waiter Orders")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {tr("Tuma oda kwa cashier bila kutengeneza invoice au kupunguza stock.")}
+          {tr("Weka oda (stock inapungua hapa tu), kisha Send kwa cashier au Print. Send na Print havipunguzi stock.")}
         </p>
       </header>
 
@@ -147,45 +168,33 @@ export default function WaiterOrdersPage() {
         </label>
         <p className="text-lg font-bold">{tr("Jumla")}: {total.toLocaleString()}</p>
         <div className="flex flex-wrap gap-2">
-          {business?.waiterOrderMode === "print" && <Button disabled={busy} onClick={() => {
-            const fakeOrder = {
-              customerName: customer || "-",
-              tableNumber: table,
-              waiterName: user?.name || user?.username || "Waiter",
-              lines: lines.map(line => {
-                const product = (products ?? []).find(p => p._id === line.productId);
-                const qty = Number(line.qty) || 0;
-                return { productName: product?.name || "-", qty, lineTotal: qty * (product?.sellingPrice ?? 0) };
-              }),
-              total,
-              notes,
-            };
-            printOrder(fakeOrder);
-          }}>{tr("Print")}</Button>}
-          {business?.waiterOrderMode !== "print" && <Button disabled={busy} onClick={() => void send()}>{busy ? tr("Inatuma...") : tr("Send")}</Button>}
+          <Button disabled={busy} onClick={() => void place()}>{busy ? tr("Inaweka...") : tr("Weka Order")}</Button>
         </div>
       </section>}
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">{cashier ? tr("Foleni ya cashier") : tr("Oda nilizotuma")}</h2>
-        {(orders ?? []).map((order: any) => <article key={order._id} className="space-y-3 rounded-xl border p-4">
+        {(orders ?? []).map((order) => <article key={order._id} className="space-y-3 rounded-xl border p-4">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <h3 className="font-semibold">{order.customerName} {order.tableNumber ? `· ${tr("Meza")} ${order.tableNumber}` : ""}</h3>
               <p className="text-sm text-muted-foreground">{tr("Waiter")}: {order.waiterName} · {new Date(order.createdAt).toLocaleString()}</p>
-              <p className="text-sm">{tr("Hali")}: {order.status === "pending" ? tr("Inasubiri cashier") : tr("Imepokelewa")}</p>
+              <p className="text-sm">{tr("Hali")}: {order.status === "placed" ? tr("Imewekwa (haijatumwa)") : order.status === "pending" ? tr("Inasubiri cashier") : tr("Imepokelewa")}</p>
             </div>
             <strong>{Number(order.total).toLocaleString()}</strong>
           </div>
           <ul className="space-y-1 text-sm">
-            {order.lines.map((line: any, i: number) => <li key={i}>
+            {order.lines.map((line, i) => <li key={i}>
               {line.productName} × {line.qty} — {Number(line.lineTotal).toLocaleString()}
             </li>)}
           </ul>
           {order.notes && <p className="text-sm">{tr("Maelezo")}: {order.notes}</p>}
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => printOrder(order)}>{tr("Print")}</Button>
-            {cashier && order.status === "pending" && <Button onClick={() => void accept(order._id)}>{tr("Pokea oda")}</Button>}
+            {!cashier && order.status === "placed" && <Button onClick={() => void send(order._id)}>{tr("Send")}</Button>}
+            {/* Cashier Print = receive + print: the waiter is notified that the order was received. Waiter Print only prints. */}
+            {cashier
+              ? (order.status === "pending" || order.status === "accepted") && <Button onClick={() => void receiveAndPrint(order)}>{tr("Print")}</Button>
+              : <Button variant="outline" onClick={() => void printPlaced(order)}>{tr("Print")}</Button>}
           </div>
         </article>)}
         {orders && orders.length === 0 && <p className="rounded-xl border p-5 text-sm text-muted-foreground">{tr("Hakuna oda bado.")}</p>}

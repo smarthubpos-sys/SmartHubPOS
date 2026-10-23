@@ -86,6 +86,8 @@ export function trMessage(message: string): string {
 
 /** Convex wraps server errors ("[CONVEX M(x)] ... Uncaught Error: <message>\n at handler..."): extract the message. */
 export function errorText(e: unknown, fallback?: string): string {
+  const payload = (e as { data?: unknown } | null)?.data; // ConvexError carries its text in `data` (plain Error text is hidden in production)
+  if (typeof payload === "string" && payload.trim()) return trMessage(payload.trim());
   if (!(e instanceof Error) || !e.message) return fallback ? tr(fallback) : "";
   let msg = e.message;
   const uncaught = msg.indexOf("Uncaught Error:");

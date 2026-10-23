@@ -42,6 +42,15 @@ export const feed = query({
       for (const t of (await scopedRows(ctx, user, "supportTickets")).filter((t) => t.status === "open"))
         items.push({ key: `ticket:${t._id}`, code: "ticket_open", level: "info", params: { subject: t.subject, name: t.createdByName }, link: "/help", at: t.createdAt.slice(0, 10) });
     }
+    // A waiter / waitress is told when the cashier has received (printed) one of his orders.
+    const roleName = String(user.role ?? "").toLowerCase();
+    if (roleName === "waiter" || roleName === "waitress") {
+      const since = new Date(Date.now() - 3 * 86400000).toISOString();
+      for (const o of await ctx.db.query("waiterOrders").withIndex("by_waiter", (q) => q.eq("waiterId", user._id)).order("desc").take(50)) {
+        if (o.status !== "accepted" || !o.handledAt || o.handledAt < since) continue;
+        items.push({ key: `wo:${o._id}`, code: "waiter_order_received", level: "info", params: { customer: o.customerName, table: o.tableNumber ?? "-" }, link: "/waiter-orders", at: o.handledAt.slice(0, 10) });
+      }
+    }
     for (const t of await ctx.db.query("supportTickets").withIndex("by_user", (q) => q.eq("createdBy", user._id)).collect())
       if (t.reply) items.push({ key: `reply:${t._id}:${t.repliedAt}`, code: "ticket_replied", level: "info", params: { subject: t.subject }, link: "/help", at: (t.repliedAt ?? t.createdAt).slice(0, 10) });
 

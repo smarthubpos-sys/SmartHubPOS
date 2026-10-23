@@ -855,7 +855,10 @@ export default defineSchema({
     tableNumber: v.optional(v.string()),
     waiterId: v.id("users"),
     waiterName: v.string(),
-    status: v.string(),
+    status: v.string(), // placed (stock reduced, not sent) | pending (sent to cashier) | accepted
+    stockDeducted: v.optional(v.boolean()),
+    sentAt: v.optional(v.string()),
+    printedAt: v.optional(v.string()),
     lines: v.array(v.object({
       productId: v.id("products"),
       productName: v.string(),

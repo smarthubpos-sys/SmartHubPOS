@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { activeDepartments, allowedBranchIds, resolveDepartmentAccess, getCurrentProfile, isManagerRole, roleHasPermission, isOwnDataOnly, isSuperAdmin, logAudit, requireActiveUser, requireManager } from "./access";
 import { ALL_MODULE_KEYS, cleanModules, effectiveModules } from "./permissions";
@@ -36,6 +36,8 @@ for(const u of await ctx.db.query("users").withIndex("by_scope",q=>q.eq("tenantI
 
 /* ───────── Edit a business (Super Admin): name, code, currency and which sidebar modules it has paid for ───────── */
 export const getEditable=query({args:{tenantId:v.id("tenants")},handler:async(ctx,args)=>{await requireSuperAdmin(ctx);const t=await ctx.db.get("tenants", args.tenantId);if(!t)return null;const settings=await ctx.db.query("tenantSettings").withIndex("by_tenant",q=>q.eq("tenantId",args.tenantId)).first();return {name:t.name,code:t.code,currency:settings?.defaultCurrency??"TZS",modules:t.modules??null,allModules:ALL_MODULE_KEYS,...resolveWaiterSettings(settings)};}});
+/** Production hides plain Error text as "Server Error". A ConvexError reaches the screen, so a failing save says WHICH step failed and why. */
+async function step<T>(label:string,fn:()=>Promise<T>):Promise<T>{try{return await fn();}catch(e){const msg=e instanceof Error?e.message.split("\n")[0].slice(0,240):String(e);throw new ConvexError(`Imeshindikana ${label}: ${msg}`);}}
 export const update=mutation({args:{tenantId:v.id("tenants"),name:v.string(),code:v.string(),currency:v.string(),modules:v.optional(v.array(v.string())),allModules:v.optional(v.boolean()),waiterEnabled:v.optional(v.boolean()),waitressEnabled:v.optional(v.boolean()),waiterOrdersEnabled:v.optional(v.boolean()),waiterOrderMode:v.optional(v.union(v.literal("cashier"),v.literal("print")))},handler:async(ctx,args)=>{
 await requireSuperAdmin(ctx);const actor=await getCurrentProfile(ctx);const tenant=await ctx.db.get("tenants", args.tenantId);if(!actor||!tenant)throw new Error("Biashara haipo");
 const name=args.name.trim();const code=args.code.trim().toUpperCase();const currency=args.currency.trim().toUpperCase();
@@ -43,11 +45,11 @@ if(!name||!code)throw new Error("Jina na code vinahitajika");if(!currency)throw 
 const duplicate=await ctx.db.query("tenants").withIndex("by_code",q=>q.eq("code",code)).first();if(duplicate&&duplicate._id!==args.tenantId)throw new Error("Office code tayari ipo");
 const patch:Record<string,unknown>={name,code};
 if(args.allModules)patch.modules=undefined;else if(args.modules)patch.modules=cleanModules(args.modules);
-await ctx.db.patch("tenants", args.tenantId,patch);
+await step("kuhifadhi jina/code/huduma",()=>ctx.db.patch("tenants", args.tenantId,patch));
 const settings=await ctx.db.query("tenantSettings").withIndex("by_tenant",q=>q.eq("tenantId",args.tenantId)).first();
 // Waiter / Waitress switches are independent. A field that is not sent is left exactly as saved, so editing other details never resets them.
 const cur=resolveWaiterSettings(settings);const waiterEnabled=args.waiterEnabled??(args.waiterOrdersEnabled!==undefined?args.waiterOrdersEnabled:cur.waiterEnabled);const waitressEnabled=args.waitressEnabled??(args.waiterOrdersEnabled!==undefined?args.waiterOrdersEnabled:cur.waitressEnabled);
 const waiterPatch={waiterEnabled,waitressEnabled,waiterOrdersEnabled:waiterEnabled||waitressEnabled,waiterOrderMode:(waiterEnabled||waitressEnabled)?(args.waiterOrderMode??cur.waiterOrderMode):cur.waiterOrderMode};
-if(settings)await ctx.db.patch("tenantSettings", settings._id,{defaultCurrency:currency,...waiterPatch});else await ctx.db.insert("tenantSettings",{tenantId:args.tenantId,traIntegrationEnabled:false,stockControlEnabled:true,defaultCurrency:currency,...waiterPatch});
-await logAudit(ctx,actor,{action:"update_business",module:"super-admin",referenceId:String(args.tenantId),details:`${name} (${code}) ${args.allModules?"all modules":args.modules?args.modules.join(","):""}`});
+await step("kuhifadhi sarafu/Waiter settings",async()=>{if(settings)await ctx.db.patch("tenantSettings", settings._id,{defaultCurrency:currency,...waiterPatch});else await ctx.db.insert("tenantSettings",{tenantId:args.tenantId,traIntegrationEnabled:false,stockControlEnabled:true,defaultCurrency:currency,...waiterPatch});});
+await step("kuandika audit log",()=>logAudit(ctx,actor,{action:"update_business",module:"super-admin",referenceId:String(args.tenantId),details:`${name} (${code}) ${args.allModules?"all modules":args.modules?args.modules.join(","):""}`}));
 return args.tenantId;}});
