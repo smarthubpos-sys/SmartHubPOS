@@ -859,7 +859,6 @@ export default defineSchema({
     stockDeducted: v.optional(v.boolean()),
     sentAt: v.optional(v.string()),
     printedAt: v.optional(v.string()),
-    printedAt: v.optional(v.string()),
     cancelledAt: v.optional(v.string()),
     cancelledBy: v.optional(v.id("users")),
     lines: v.array(v.object({
