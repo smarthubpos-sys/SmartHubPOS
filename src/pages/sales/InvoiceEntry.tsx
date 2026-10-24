@@ -35,7 +35,8 @@ export default function InvoiceEntry() {
   // Waiter / waitress (when Waiter Orders is ON for their role): this window does "Weka Order" -> Send / Print instead of saving an invoice.
   const me = useQuery(api.users.getCurrentUser);
   const myRole = String(me?.role ?? "").toLowerCase();
-  const waiterMode = (myRole === "waiter" && business?.waiterEnabled === true) || (myRole === "waitress" && business?.waitressEnabled === true);
+  const waiterMode = business?.waiterOrdersEnabled !== false && ((myRole === "waiter" && business?.waiterEnabled === true) || (myRole === "waitress" && business?.waitressEnabled === true));
+  const waiterOrderMode = business?.waiterOrderMode === "print" ? "print" : "cashier";
   const placeOrder = useMutation(api.waiterOrders.place);
   const sendToCashier = useMutation(api.waiterOrders.sendToCashier);
   const markPrinted = useMutation(api.waiterOrders.markPrinted);
@@ -124,7 +125,7 @@ export default function InvoiceEntry() {
     try {
       const id = await placeOrder({ customerName, tableNumber: tableNo.trim() || undefined, notes: notes.trim() || undefined, lines: lines.map((l) => ({ productId: l.productId as Id<"products">, qty: num(l.qty) })) });
       setPlacedId(id); setLines([emptyLine()]); setNotes(""); setTableNo("");
-      toast.success(tr("Oda imewekwa. Stock imepungua. Sasa chagua Send au Print."));
+      toast.success(tr("Oda imewekwa bila kupunguza stock. Sasa chagua Send au Print."));
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuweka oda.")); }
     finally { setBusy(false); }
   };
@@ -257,11 +258,10 @@ export default function InvoiceEntry() {
       {waiterMode && placedId && <section className="space-y-3 rounded-xl border p-4">
         <h2 className="font-semibold">{tr("Oda imewekwa")}{placedOrder ? ` — ${placedOrder.customerName}` : ""}</h2>
         <p className="text-sm text-muted-foreground">{tr("Send na Print havipunguzi stock.")}</p>
-        <div className="flex flex-wrap gap-2">
-          <Button onClick={() => void sendPlaced()}>{tr("Send")}</Button>
-          <Button variant="outline" disabled={!placedOrder} onClick={() => void printPlaced()}><Printer className="mr-1 h-4 w-4" />{tr("Print")}</Button>
+          {waiterOrderMode === "cashier"
+            ? <Button onClick={() => void sendPlaced()}>{tr("Send")}</Button>
+            : <Button variant="outline" disabled={!placedOrder} onClick={() => void printPlaced()}><Printer className="mr-1 h-4 w-4" />{tr("Print")}</Button>}
           <Button variant="ghost" onClick={() => setPlacedId(null)}>{tr("Funga")}</Button>
-        </div>
       </section>}
 
       {justSaved && <section className="space-y-2 rounded-xl border p-4">

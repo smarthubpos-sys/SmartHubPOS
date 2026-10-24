@@ -29,7 +29,7 @@ export const list = query({
 });
 
 /**
- * STEP 1 - "Weka Order". The ONLY step that reduces stock.
+ * STEP 1 - "Weka Order". Creating an order does not reduce stock.
  * Send and Print (below) never touch stock.
  */
 export const place = mutation({
@@ -103,32 +103,13 @@ export const place = mutation({
       waiterId: user._id,
       waiterName: user.name || user.username || "Waiter",
       status: "placed",
-      stockDeducted: true,
+      stockDeducted: false,
       lines,
       total: lines.reduce((sum, line) => sum + line.lineTotal, 0),
       notes: args.notes?.trim() || undefined,
       createdAt: now,
       updatedAt: now,
     });
-    for (const line of lines) {
-      const product = await ctx.db.get("products", line.productId);
-      if (!product) throw new Error("Bidhaa haipatikani.");
-      const balance = product.currentQty - line.qty;
-      await ctx.db.patch("products", line.productId, { currentQty: balance });
-      await ctx.db.insert("stockMovements", {
-        ...scope,
-        movementDate: now.slice(0, 10),
-        productId: line.productId,
-        movementType: "waiter_order",
-        referenceId: String(orderId),
-        referenceType: "waiterOrder",
-        qtyIn: 0,
-        qtyOut: line.qty,
-        runningBalance: balance,
-        unitCost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0,
-        createdBy: user._id,
-      });
-    }
     return orderId;
     } catch (e) { throw surfaceError(e); }
   },

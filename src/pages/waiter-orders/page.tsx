@@ -173,12 +173,12 @@ export default function WaiterOrdersPage() {
           </ul>
           {order.notes && <p className="text-sm">{tr("Maelezo")}: {order.notes}</p>}
           <div className="flex flex-wrap gap-2">
-            {!cashier && order.status === "placed" && <Button onClick={() => void send(order._id)}>{tr("Send")}</Button>}
+            {!cashier && business?.waiterOrderMode !== "print" && order.status === "placed" && <Button onClick={() => void send(order._id)}>{tr("Send")}</Button>}
             {business?.canVoidInvoice && order.status !== "cancelled" && <Button variant="outline" onClick={() => void remove(order)}>{tr("Futa oda")}</Button>}
             {/* Cashier Print = receive + print: the waiter is notified that the order was received. Waiter Print only prints. */}
             {order.status === "cancelled" ? null : cashier
               ? (order.status === "pending" || order.status === "accepted") && <Button onClick={() => void receiveAndPrint(order)}>{tr("Print")}</Button>
-              : <Button variant="outline" onClick={() => void printPlaced(order)}>{tr("Print")}</Button>}
+              : business?.waiterOrderMode === "print" ? <Button variant="outline" onClick={() => void printPlaced(order)}>{tr("Print")}</Button> : null}
           </div>
         </article>)}
         {orders && orders.length === 0 && <p className="rounded-xl border p-5 text-sm text-muted-foreground">{tr("Hakuna oda bado.")}</p>}
