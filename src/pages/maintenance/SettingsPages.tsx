@@ -255,9 +255,7 @@ function HardwareForm({ s }: { s: Settings }) {
     setWorking(true); setStatus("");
     try {
       const r = await testPrinter(f);
-      setStatus(r.via === "browser"
-        ? tr("Dirisha la kuchapa la browser limefunguliwa (si moja kwa moja kwenye printer). Kuchapa moja kwa moja kunahitaji QZ Tray au printer ya moja kwa moja.") + (r.note ? ` ${r.note}` : "")
-        : tr("Jaribio la kuchapa limetumwa."));
+      setStatus(r.via === "qz" ? tr("Jaribio la kuchapa limetumwa kupitia QZ Tray.") : tr("Jaribio la kuchapa limetumwa kwa printer ya moja kwa moja."));
     }
     catch (e) { setStatus(errorText(e, "Imeshindikana kuchapa.")); }
     finally { setWorking(false); }

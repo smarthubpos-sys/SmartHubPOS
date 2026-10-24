@@ -56,8 +56,9 @@ type BluetoothApi = {
 type DeviceNavigator = Navigator & { usb?: UsbApi; serial?: SerialApi; bluetooth?: BluetoothApi };
 type QzTrayApi = {
   security: {
-    setCertificatePromise(callback: (resolve: (certificate?: string) => void) => void): void;
-    setSignaturePromise(callback: () => (resolve: (signature?: string) => void) => void): void;
+    setCertificatePromise(callback: (resolve: (certificate: string) => void, reject: (reason?: unknown) => void) => void | Promise<void>, options?: { rejectOnFailure?: boolean }): void;
+    setSignatureAlgorithm(algorithm: string): void;
+    setSignaturePromise(callback: (toSign: string) => (resolve: (signature: string) => void, reject: (reason?: unknown) => void) => void | Promise<void>): void;
   };
   websocket: { isActive(): boolean; connect(options: { retries: number; delay: number }): Promise<void> };
   printers: { find(): Promise<string | string[]>; getDefault?(): Promise<string> };
@@ -73,7 +74,7 @@ export const deviceSupport = {
 };
 
 /* ───────── Installed printers (QZ Tray) ───────── */
-const QZ_CDN = "https://cdn.jsdelivr.net/npm/qz-tray@2.2.4/qz-tray.js";
+const QZ_CDN = "https://cdn.jsdelivr.net/npm/qz-tray@2.3.0/qz-tray.js";
 let qzApi: QzTrayApi | null = null;
 
 /** Loads the QZ client library: from the bundled npm package, or (if the package is missing) from the CDN. */
@@ -102,9 +103,46 @@ async function loadQz(): Promise<QzTrayApi> {
 let qzConnecting: Promise<QzTrayApi> | null = null;
 async function qzConnect(): Promise<QzTrayApi> {
   const qz = await loadQz();
-  // Unsigned mode: QZ Tray shows an "Allow" prompt once; tick "Remember this decision" so it never asks again.
-  qz.security.setCertificatePromise((resolve) => resolve());
-  qz.security.setSignaturePromise(() => (resolve) => resolve());
+  // QZ privileged actions must be signed. The public certificate may be served publicly;
+  // the private key must remain on a trusted server-side signing endpoint.
+  const certificateUrl = import.meta.env.VITE_QZ_CERTIFICATE_URL?.trim();
+  const signatureUrl = import.meta.env.VITE_QZ_SIGNATURE_URL?.trim();
+  qz.security.setCertificatePromise(async (resolve, reject) => {
+    if (!certificateUrl) {
+      reject(new Error(tr("QZ Tray haijasanidiwa: weka VITE_QZ_CERTIFICATE_URL.")));
+      return;
+    }
+    try {
+      const response = await fetch(certificateUrl, { cache: "no-store", headers: { Accept: "text/plain" } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const certificate = (await response.text()).trim();
+      if (!certificate.includes("BEGIN CERTIFICATE")) throw new Error("Certificate format is invalid.");
+      resolve(certificate);
+    } catch (error) {
+      reject(new Error(`${tr("Imeshindikana kupakia cheti cha QZ Tray.")} ${error instanceof Error ? error.message : String(error)}`));
+    }
+  }, { rejectOnFailure: true });
+  qz.security.setSignatureAlgorithm("SHA512");
+  qz.security.setSignaturePromise((toSign) => async (resolve, reject) => {
+    if (!signatureUrl) {
+      reject(new Error(tr("QZ Tray haijasanidiwa: weka VITE_QZ_SIGNATURE_URL ya server-side signing.")));
+      return;
+    }
+    try {
+      const response = await fetch(signatureUrl, {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "text/plain" },
+        body: new URLSearchParams({ request: toSign }).toString(),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const signature = (await response.text()).trim();
+      if (!signature || !/^[A-Za-z0-9+/]+={0,2}$/.test(signature)) throw new Error("Signature response is invalid.");
+      resolve(signature);
+    } catch (error) {
+      reject(new Error(`${tr("Imeshindikana kusaini ombi la QZ Tray.")} ${error instanceof Error ? error.message : String(error)}`));
+    }
+  });
   if (qz.websocket.isActive()) return qz;
   if (!qzConnecting) {
     qzConnecting = qz.websocket.connect({ retries: 5, delay: 1 })
@@ -265,19 +303,10 @@ function escposTest(printerName: string, width: string) {
   return new Uint8Array([0x1b, 0x40, ...enc.encode(text), 0x1d, 0x56, 0x42, 0x00]);
 }
 
-function browserTestPrint(width: string, name: string) {
-  const w = window.open("", "_blank", "width=420,height=600");
-  if (!w) throw new Error(tr("Kivinjari kimezuia dirisha la kuchapa. Ruhusu pop-ups."));
-  const px = width === "58mm" ? "58mm" : "80mm";
-  const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string);
-  w.document.write(`<html><head><title>${esc(tr("JARIBIO LA KUCHAPA"))}</title><style>@page{margin:0}body{font-family:monospace;width:${px};margin:0;padding:4mm;font-size:12px}</style></head><body><center><b>SMARTHUB POS</b><br/>${esc(tr("JARIBIO LA KUCHAPA"))}</center><hr/>${esc(tr("Printer"))}: ${esc(name || tr("(chaguo-msingi ya mfumo)"))}<br/>${esc(tr("Upana wa karatasi"))}: ${esc(width)}<br/>${new Date().toLocaleString()}<hr/>1234567890 ABCDEFGHIJ<br/>${esc(tr("Ukisoma hii, kuchapa kunafanya kazi."))}<br/><br/></body></html>`);
-  w.document.close(); w.focus(); w.print();
-}
-
 export type PrinterSettings = { printerSource: string; receiptPrinter: string; receiptDevice?: DeviceInfo | null; paperWidth: string };
 
 /** Where the test page went, so the screen can tell the person the truth instead of always saying "sent". */
-export type TestPrintResult = { via: "direct" | "qz" | "browser"; note?: string };
+export type TestPrintResult = { via: "direct" | "qz" };
 
 export async function testPrinter(s: PrinterSettings): Promise<TestPrintResult> {
   if (s.printerSource === "direct") {
@@ -289,16 +318,7 @@ export async function testPrinter(s: PrinterSettings): Promise<TestPrintResult> 
     else await sendBluetooth(d, bytes);
     return { via: "direct" };
   }
-  let qzProblem = "";
-  if (s.receiptPrinter) {
-    try {
-      await printRawViaQz(s.receiptPrinter, escposTest(s.receiptPrinter, s.paperWidth));
-      return { via: "qz" };
-    } catch (error) {
-      // QZ Tray not running / printer name wrong / access denied: keep the reason and fall back to the browser print dialog.
-      qzProblem = error instanceof Error ? error.message : String(error ?? "");
-    }
-  }
-  browserTestPrint(s.paperWidth, s.receiptPrinter);
-  return { via: "browser", note: qzProblem || undefined };
+  if (!s.receiptPrinter) throw new Error(tr("Chagua printer ya QZ Tray kwenye mipangilio kwanza."));
+  await printRawViaQz(s.receiptPrinter, escposTest(s.receiptPrinter, s.paperWidth));
+  return { via: "qz" };
 }

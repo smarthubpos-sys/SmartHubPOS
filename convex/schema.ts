@@ -397,6 +397,7 @@ export default defineSchema({
     createdBy: v.id("users"),
     postedAt: v.optional(v.string()),
     requestKey: v.optional(v.string()), // idempotency key: one client submit = one invoice
+    customerBillId: v.optional(v.id("customerBills")), // persistent invoice-to-customer-bill assignment
   }) .index("by_tenant_date", ["tenantId", "invoiceDate"]) .index("by_tenant_request_key", ["tenantId", "requestKey"]) .index("by_tenant_status", ["tenantId", "status"]) .index("by_tenant_no", ["tenantId", "invoiceNo"]) .index("by_scope", ["tenantId", "branchId"])
     .index("by_tenant_user_date", ["tenantId", "createdBy", "invoiceDate"])
     .index("by_scope_date", ["tenantId", "branchId", "invoiceDate"])
@@ -406,6 +407,19 @@ export default defineSchema({
     .index("by_invoiceNo", ["invoiceNo"])
     .index("by_status", ["status"])
     .index("by_tenant_outstanding", ["tenantId", "outstanding"]),
+
+  customerBills: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    branchId: v.optional(v.id("branches")),
+    clientId: v.id("clients"),
+    invoiceIds: v.array(v.id("invoices")),
+    status: v.string(), // issued | cancelled; does not imply invoice payment
+    createdBy: v.id("users"),
+    createdAt: v.string(),
+  }).index("by_scope", ["tenantId", "branchId"])
+    .index("by_client", ["clientId"])
+    .index("by_creator", ["createdBy"])
+    .index("by_created", ["createdAt"]),
 
   invoiceLines: defineTable({
     invoiceId: v.id("invoices"),
@@ -855,7 +869,7 @@ export default defineSchema({
     tableNumber: v.optional(v.string()),
     waiterId: v.id("users"),
     waiterName: v.string(),
-    status: v.string(), // placed (stock reduced, not sent) | pending (sent to cashier) | accepted
+    status: v.string(), // placed | pending (sent to cashier) | accepted (cashier printed/handled) | printed (waiter printed)
     stockDeducted: v.optional(v.boolean()),
     sentAt: v.optional(v.string()),
     printedAt: v.optional(v.string()),

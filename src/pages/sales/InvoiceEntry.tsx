@@ -51,7 +51,7 @@ export default function InvoiceEntry() {
   const [source, setSource] = useState("Counter");
   const [taxRate, setTaxRate] = useState("0");
   const [invoiceDiscount, setInvoiceDiscount] = useState("0");
-  const hardware = (settings?.app?.hardware ?? {}) as { paperWidth?: string; autoPrintReceipt?: boolean };
+  const hardware = (settings?.app?.hardware ?? {}) as { paperWidth?: string; autoPrintReceipt?: boolean; printerSource?: string; receiptPrinter?: string };
   const paper: Paper = hardware.paperWidth === "a4" ? "A4" : hardware.paperWidth === "58mm" ? "58mm" : "80mm";
   const [whatsappEnabled, setWhatsappEnabled] = useState(() => { try { return localStorage.getItem("smarthub-bill-whatsapp-enabled") !== "false"; } catch { return true; } });
   const changeWhatsapp = (value: boolean) => { setWhatsappEnabled(value); try { localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); } catch { /* storage unavailable */ } };
@@ -136,8 +136,14 @@ export default function InvoiceEntry() {
   };
   const printPlaced = async () => {
     if (!placedId || !placedOrder) return;
-    printWaiterOrder(placedOrder);
-    try { await markPrinted({ orderId: placedId }); } catch { /* printing already happened; the record is only informational */ }
+    const printed = await printWaiterOrder(placedOrder, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
+    if (!printed) return;
+    try {
+      await markPrinted({ orderId: placedId });
+      toast.success(tr("Oda imechapishwa kupitia QZ Tray."));
+    } catch (error) {
+      toast.error(errorText(error, tr("Oda imechapishwa, lakini hali yake haikuhifadhiwa.")));
+    }
   };
 
   const submit = async () => {

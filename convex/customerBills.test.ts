@@ -44,6 +44,30 @@ describe("customer bills built from sales invoices", () => {
     expect(bill.invoices[0].lines[0].name).toBe("Bia");
   });
 
+  it("persists invoice-to-bill assignment, hides used invoices, and makes repeated create idempotent", async () => {
+    const { t, as, client, i1, i2 } = await setup();
+    const billId = await as.mutation(api.customerBills.create, { invoiceIds: [i1, i2] });
+    expect(await as.mutation(api.customerBills.create, { invoiceIds: [i1, i2] })).toBe(billId);
+    const records = await t.run(async (ctx) => ({
+      bill: await ctx.db.get("customerBills", billId),
+      first: await ctx.db.get("invoices", i1),
+      second: await ctx.db.get("invoices", i2),
+    }));
+    expect(records.bill).toMatchObject({ status: "issued", clientId: client, invoiceIds: [i1, i2] });
+    expect(records.first?.customerBillId).toBe(billId);
+    expect(records.second?.customerBillId).toBe(billId);
+    const eligible = await as.query(api.customerBills.invoicesForClient, { clientId: client });
+    expect(eligible.find((i) => i._id === i1)).toMatchObject({ alreadyBilled: true, eligible: false });
+    expect(eligible.find((i) => i._id === i2)).toMatchObject({ alreadyBilled: true, eligible: false });
+    const history = await as.query(api.customerBills.historyForClient, { clientId: client });
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ _id: billId, invoiceNos: ["INV-1", "INV-2"], printable: true });
+    await expect(as.mutation(api.customerBills.create, { invoiceIds: [i1] })).rejects.toThrow(/tayari zipo kwenye bili nyingine/);
+    await t.run(async (ctx) => { await ctx.db.patch("invoices", i2, { status: "cancelled" }); });
+    expect((await as.query(api.customerBills.historyForClient, { clientId: client }))[0].printable).toBe(false);
+    expect((await as.query(api.customerBills.invoicesForClient, { clientId: client })).find((i) => i._id === i2)).toMatchObject({ status: "cancelled", eligible: false });
+  });
+
   it("refuses a bill that mixes customers or has nothing selected", async () => {
     const { as, i1, x1 } = await setup();
     await expect(as.query(api.customerBills.billData, { invoiceIds: [i1, x1] })).rejects.toThrow(/mteja mmoja/);

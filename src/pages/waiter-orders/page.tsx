@@ -23,6 +23,8 @@ export default function WaiterOrdersPage() {
   const sendToCashier = useMutation(waiterApi.sendToCashier);
   const markPrinted = useMutation(waiterApi.markPrinted);
   const cancelOrder = useMutation(waiterApi.cancel);
+  const settings = useQuery(api.maintenance.getSettings, {});
+  const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
 
   const [customer, setCustomer] = useState("");
   const [table, setTable] = useState("");
@@ -61,7 +63,7 @@ export default function WaiterOrdersPage() {
           qty: Number(line.qty),
         })),
       });
-      toast.success(tr("Oda imewekwa. Stock imepungua. Sasa chagua Send au Print."));
+      toast.success(tr("Oda imewekwa bila kupunguza stock. Sasa chagua Send au Print."));
       setCustomer("");
       setTable("");
       setNotes("");
@@ -83,29 +85,35 @@ export default function WaiterOrdersPage() {
   }
 
   async function printPlaced(order: Order) {
-    printWaiterOrder(order);
-    try { await markPrinted({ orderId: order._id }); } catch { /* printing already happened; record is informational */ }
+    const printed = await printWaiterOrder(order, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
+    if (!printed) return;
+    try {
+      await markPrinted({ orderId: order._id });
+      toast.success(tr("Oda imechapishwa kupitia QZ Tray."));
+    } catch (error) {
+      toast.error(errorText(error, tr("Oda imechapishwa, lakini hali yake haikuhifadhiwa. Jaribu kusasisha ukurasa.")));
+    }
   }
 
   async function remove(order: Order) {
-    if (!window.confirm(tr("Futa oda hii? Stock itarudishwa."))) return;
+    if (!window.confirm(tr("Futa oda hii? Stock ya mauzo haijapunguzwa na oda hii."))) return;
     try {
       await cancelOrder({ orderId: order._id });
-      toast.success(tr("Oda imefutwa. Stock imerudishwa."));
+      toast.success(tr("Oda imefutwa."));
     } catch (error) {
       toast.error(errorText(error, tr("Imeshindikana kufuta oda.")));
     }
   }
 
   async function receiveAndPrint(order: Order) {
+    const printed = await printWaiterOrder(order, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
+    if (!printed) return;
     try {
       await markHandled({ orderId: order._id });
+      toast.success(tr("Oda imechapishwa na kupokelewa. Mhudumu amearifiwa."));
     } catch (error) {
-      toast.error(errorText(error, tr("Imeshindikana kupokea oda.")));
-      return;
+      toast.error(errorText(error, tr("Oda imechapishwa, lakini hali yake haikuhifadhiwa. Jaribu tena.")));
     }
-    toast.success(tr("Oda imepokelewa. Mhudumu amearifiwa."));
-    printWaiterOrder(order);
   }
 
   return (
@@ -113,7 +121,7 @@ export default function WaiterOrdersPage() {
       <header>
         <h1 className="text-2xl font-bold">{tr("Waiter Orders")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {tr("Weka oda (stock inapungua hapa tu), kisha Send kwa cashier au Print. Send na Print havipunguzi stock.")}
+          {tr("Weka oda bila kupunguza stock, kisha Send kwa cashier au Print kupitia QZ Tray. Send na Print havipunguzi stock.")}
         </p>
       </header>
 
@@ -162,7 +170,7 @@ export default function WaiterOrdersPage() {
             <div>
               <h3 className="font-semibold">{order.customerName} {order.tableNumber ? `· ${tr("Meza")} ${order.tableNumber}` : ""}</h3>
               <p className="text-sm text-muted-foreground">{tr("Waiter")}: {order.waiterName} · {new Date(order.createdAt).toLocaleString()}</p>
-              <p className="text-sm">{tr("Hali")}: {order.status === "cancelled" ? tr("Imefutwa") : order.status === "placed" ? tr("Imewekwa (haijatumwa)") : order.status === "pending" ? tr("Inasubiri cashier") : tr("Imepokelewa")}</p>
+              <p className="text-sm">{tr("Hali")}: {order.status === "cancelled" ? tr("Imefutwa") : order.status === "placed" ? tr("Imewekwa (haijatumwa)") : order.status === "printed" ? tr("Imechapishwa na waiter") : order.status === "pending" ? tr("Inasubiri cashier") : tr("Imepokelewa")}</p>
             </div>
             <strong>{Number(order.total).toLocaleString()}</strong>
           </div>
@@ -178,7 +186,7 @@ export default function WaiterOrdersPage() {
             {/* Cashier Print = receive + print: the waiter is notified that the order was received. Waiter Print only prints. */}
             {order.status === "cancelled" ? null : cashier
               ? (order.status === "pending" || order.status === "accepted") && <Button onClick={() => void receiveAndPrint(order)}>{tr("Print")}</Button>
-              : business?.waiterOrderMode === "print" ? <Button variant="outline" onClick={() => void printPlaced(order)}>{tr("Print")}</Button> : null}
+              : business?.waiterOrderMode === "print" && (order.status === "placed" || order.status === "printed") ? <Button variant="outline" onClick={() => void printPlaced(order)}>{tr("Print")}</Button> : null}
           </div>
         </article>)}
         {orders && orders.length === 0 && <p className="rounded-xl border p-5 text-sm text-muted-foreground">{tr("Hakuna oda bado.")}</p>}

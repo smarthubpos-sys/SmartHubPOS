@@ -23,7 +23,8 @@ export const list = query({
     const role = String(user.role ?? "").toLowerCase();
     const isWaiterRole = role === "waiter" || role === "waitress";
     // A waiter sees only his own orders (placed, sent or received). Everyone else (cashier / manager) sees only orders that were SENT.
-    const visible = rows.filter(r => isWaiterRole ? r.waiterId === user._id : r.status !== "placed" && r.status !== "cancelled");
+    // Cashier queue is strictly pending work. Accepted/printed orders remain in the database for history.
+    const visible = rows.filter(r => isWaiterRole ? r.waiterId === user._id : r.status === "pending");
     return visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200);
   },
 });
@@ -151,8 +152,13 @@ export const markPrinted = mutation({
   args: { orderId: v.id("waiterOrders") },
   handler: async (ctx, args) => {
     try {
-    const { order } = await ownOrder(ctx, args.orderId);
-    await ctx.db.patch("waiterOrders", order._id, { printedAt: new Date().toISOString() });
+    const { user, order } = await ownOrder(ctx, args.orderId);
+    const role = String(user.role ?? "").toLowerCase();
+    if (role !== "waiter" && role !== "waitress") throw new Error("Chapisha oda kutoka kwenye foleni ya cashier.");
+    if (order.status === "printed") return order._id;
+    if (order.status !== "placed") throw new Error("Oda hii tayari imetumwa au haiwezi kuchapishwa hapa.");
+    const now = new Date().toISOString();
+    await ctx.db.patch("waiterOrders", order._id, { status: "printed", printedAt: now, updatedAt: now });
     return order._id;
     } catch (e) { throw surfaceError(e); }
   },
@@ -163,6 +169,8 @@ export const markHandled = mutation({
   handler: async (ctx, args) => {
     try {
     const user = await requirePermission(ctx, "sales.manage", "sales");
+    const role = String(user.role ?? "").toLowerCase();
+    if (role === "waiter" || role === "waitress") throw new Error("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
     const scope = await resolveWriteScope(ctx, user);
     const order = await ctx.db.get("waiterOrders", args.orderId);
     if (!order || order.tenantId !== scope.tenantId ||
@@ -173,11 +181,13 @@ export const markHandled = mutation({
     if (order.status !== "pending") {
       throw new Error("Oda hii bado haijatumwa na mhudumu.");
     }
+    const now = new Date().toISOString();
     await ctx.db.patch("waiterOrders", order._id, {
       status: "accepted",
+      printedAt: now,
       handledBy: user._id,
-      handledAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      handledAt: now,
+      updatedAt: now,
     });
     return order._id;
     } catch (e) { throw surfaceError(e); }
@@ -185,8 +195,9 @@ export const markHandled = mutation({
 });
 
 /**
- * "Futa oda": only users / roles given the "sales.void" permission (Role Management). Stock reduced by "Weka Order" goes back,
- * once. The order is kept with status "cancelled" (never deleted) and leaves the cashier queue.
+ * "Futa oda": only users / roles given the "sales.void" permission (Role Management).
+ * New waiter orders never deduct stock; the guarded stock reversal is retained only for legacy records explicitly marked stockDeducted.
+ * The order is kept with status "cancelled" (never deleted) and leaves the cashier queue.
  */
 export const cancel = mutation({
   args: { orderId: v.id("waiterOrders") },

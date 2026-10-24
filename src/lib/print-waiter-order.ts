@@ -1,5 +1,6 @@
 import { toast } from "sonner";
 import { tr } from "./i18n.ts";
+import { printHtmlViaQz } from "./printers.ts";
 
 export type PrintableOrder = {
   customerName: string;
@@ -10,31 +11,49 @@ export type PrintableOrder = {
   lines: Array<{ productName: string; qty: number; lineTotal: number }>;
 };
 
-/** Prints a waiter order slip (browser print dialog). Never changes stock. */
-export function printWaiterOrder(order: PrintableOrder) {
-  const content = [
-    "SMARTHUB POS - ODA",
-    `Mteja: ${order.customerName}`,
-    `Meza: ${order.tableNumber || "-"}`,
-    `Waiter: ${order.waiterName}`,
-    "------------------------------",
-    ...order.lines.map((line) =>
-      `${line.productName} x ${line.qty} = ${Number(line.lineTotal).toLocaleString()}`
-    ),
-    "------------------------------",
-    `JUMLA: ${Number(order.total).toLocaleString()}`,
-    order.notes ? `Maelezo: ${order.notes}` : "",
-  ].filter(Boolean).join("\n");
+const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+})[c] as string);
 
-  const win = window.open("", "_blank", "width=420,height=650");
-  if (!win) {
-    toast.error(tr("Ruhusu popup ili kuchapisha oda."));
-    return;
+/**
+ * Print waiter order slips through the configured QZ Tray printer only.
+ * Resolving true means QZ Tray accepted the job; it cannot prove paper physically emerged.
+ */
+export async function printWaiterOrder(order: PrintableOrder, printerName?: string, paperWidth = "80mm"): Promise<boolean> {
+  if (!printerName?.trim()) {
+    toast.error(tr("Chagua printer ya QZ Tray kwenye mipangilio ya vifaa kabla ya kuchapa."));
+    return false;
   }
-  win.document.write(`<html><head><title>Oda</title><style>body{font:14px monospace;padding:20px;white-space:pre-wrap}</style></head><body></body></html>`);
-  win.document.body.textContent = content;
-  win.document.close();
-  win.focus();
-  win.print();
-  win.close();
+  const rows = order.lines.map((line) => `<tr>
+    <td class="name">${escapeHtml(line.productName)}</td>
+    <td class="qty">${escapeHtml(Number(line.qty).toLocaleString())}</td>
+    <td class="amount">${escapeHtml(Number(line.lineTotal).toLocaleString())}</td>
+  </tr>`).join("");
+  const width = paperWidth === "58mm" ? "58mm" : paperWidth === "A4" ? "190mm" : "80mm";
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+    @page{size:${width} auto;margin:3mm}*{box-sizing:border-box}
+    body{font:12px/1.35 monospace;margin:0;width:100%;overflow-wrap:anywhere}
+    h2,p{margin:0 0 5px}h2{text-align:center;font-size:14px}
+    table{width:100%;border-collapse:collapse;table-layout:fixed}
+    th,td{padding:3px 1px;border-bottom:1px dashed #999;vertical-align:top}
+    th{text-align:left} .name{width:52%;overflow-wrap:anywhere;word-break:normal}
+    .qty{width:14%;text-align:right;white-space:normal}
+    .amount{width:34%;text-align:right;overflow-wrap:anywhere}
+    .total{font-weight:bold;text-align:right;margin-top:8px}
+  </style></head><body>
+    <h2>SMARTHUB POS - ODA</h2>
+    <p>${escapeHtml(tr("Mteja"))}: ${escapeHtml(order.customerName)}</p>
+    <p>${escapeHtml(tr("Meza"))}: ${escapeHtml(order.tableNumber || "-")}</p>
+    <p>${escapeHtml(tr("Waiter"))}: ${escapeHtml(order.waiterName)}</p>
+    <table><thead><tr><th class="name">${escapeHtml(tr("Bidhaa"))}</th><th class="qty">${escapeHtml(tr("Idadi"))}</th><th class="amount">${escapeHtml(tr("Jumla"))}</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="total">${escapeHtml(tr("JUMLA"))}: ${escapeHtml(Number(order.total).toLocaleString())}</p>
+    ${order.notes ? `<p>${escapeHtml(tr("Maelezo"))}: ${escapeHtml(order.notes)}</p>` : ""}
+  </body></html>`;
+  try {
+    await printHtmlViaQz(printerName.trim(), html);
+    return true;
+  } catch (error) {
+    toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha QZ Tray imewashwa, printer imechaguliwa, na mipangilio ya cheti/signature imekamilika.")} ${error instanceof Error ? error.message : String(error ?? "")}`);
+    return false;
+  }
 }

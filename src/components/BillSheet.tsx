@@ -1,6 +1,7 @@
-﻿import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useQuery } from "convex/react";
 import { MessageCircle, Printer } from "lucide-react";
+import { toast } from "sonner";
 import { api } from "@/convex/_generated/api.js";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Button } from "@/components/ui/button.tsx";
@@ -8,7 +9,6 @@ import { Empty } from "@/components/page-kit.tsx";
 import { formatDate, formatNumber } from "@/lib/format.ts";
 import {
   buildReceiptHtml,
-  printElement,
   type Paper,
 } from "@/lib/print-area.ts";
 import { printHtmlViaQz } from "@/lib/printers.ts";
@@ -16,7 +16,7 @@ import { shouldSchedulePrint } from "@/lib/print-policy.ts";
 import { tr } from "@/lib/i18n.ts";
 
 /**
- * The bill itself. `printToken` > 0 opens the browser print dialog once the data is ready.
+ * The bill itself. `printToken` > 0 sends the receipt to the configured QZ Tray printer once data is ready.
  * `kind="invoice"` (used by Sales) uses the department name as the heading instead of "BILI"; with no department it says "Sales".
  */
 export default function BillSheet({
@@ -50,22 +50,18 @@ export default function BillSheet({
     const el = articleRef.current;
     if (!el) return;
 
-    if (
-      hardware.printerSource === "installed" &&
-      hardware.receiptPrinter?.trim()
-    ) {
-      try {
-        await printHtmlViaQz(
-          hardware.receiptPrinter,
-          buildReceiptHtml(el, paper),
-        );
-        return;
-      } catch (error) {
-        console.error("QZ Tray printing failed; using browser print.", error);
-      }
+    if (hardware.printerSource !== "installed" || !hardware.receiptPrinter?.trim()) {
+      toast.error(tr("QZ Tray direct printing haijasanidiwa. Chagua printer ya QZ Tray kwenye mipangilio ya vifaa."));
+      return false;
     }
-
-    printElement(el, paper);
+    try {
+      await printHtmlViaQz(hardware.receiptPrinter, buildReceiptHtml(el, paper));
+      toast.success(tr("Ombi la kuchapa limetumwa kwa QZ Tray."));
+      return true;
+    } catch (error) {
+      toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha programu imewashwa na printer iko tayari.")} ${error instanceof Error ? error.message : String(error ?? "")}`);
+      return false;
+    }
   }, [hardware.printerSource, hardware.receiptPrinter, paper]);
 
   useEffect(() => {
@@ -82,8 +78,7 @@ export default function BillSheet({
 
     const t = window.setTimeout(() => {
       if (printed.current === printToken) return;
-      printed.current = printToken;
-      void printReceipt();
+      void printReceipt().then((ok) => { if (ok) printed.current = printToken; });
     }, 150);
 
     return () => window.clearTimeout(t);
@@ -248,22 +243,28 @@ export default function BillSheet({
               </span>
               <span>{formatDate(inv.date)}</span>
             </div>
-            <table className="w-full text-left">
+            <table className="w-full table-fixed border-collapse text-left tabular-nums">
+              <colgroup>
+                <col style={{ width: paper === "58mm" ? "38%" : paper === "80mm" ? "44%" : "48%" }} />
+                <col style={{ width: paper === "58mm" ? "12%" : "12%" }} />
+                <col style={{ width: paper === "58mm" ? "23%" : "22%" }} />
+                <col style={{ width: paper === "58mm" ? "27%" : paper === "80mm" ? "22%" : "18%" }} />
+              </colgroup>
               <thead>
                 <tr className="border-b text-xs text-muted-foreground">
-                  <th className="py-1">{tr("Bidhaa")}</th>
-                  <th className="py-1 text-right">{tr("Idadi")}</th>
-                  <th className="py-1 text-right">{tr("Bei")}</th>
-                  <th className="py-1 text-right">{tr("Jumla")}</th>
+                  <th className="py-1 pr-1 align-bottom break-words">{tr("Bidhaa")}</th>
+                  <th className="py-1 px-0.5 text-right align-bottom break-words">{tr("Idadi")}</th>
+                  <th className="py-1 pl-0.5 text-right align-bottom break-words">{tr("Bei")}</th>
+                  <th className="py-1 pl-0.5 text-right align-bottom break-words">{tr("Jumla")}</th>
                 </tr>
               </thead>
               <tbody>
                 {inv.lines.map((l, idx) => (
                   <tr key={idx} className="border-b border-dashed">
-                    <td className="py-1">{l.name}</td>
-                    <td className="py-1 text-right">{number(l.qty)}</td>
-                    <td className="py-1 text-right">{m(l.unitPrice)}</td>
-                    <td className="py-1 text-right">{m(l.lineTotal)}</td>
+                    <td className="py-1 pr-1 align-top break-words [overflow-wrap:anywhere]">{l.name}</td>
+                    <td className="py-1 px-0.5 text-right align-top [overflow-wrap:anywhere]">{number(l.qty)}</td>
+                    <td className="py-1 pl-0.5 text-right align-top [overflow-wrap:anywhere]">{m(l.unitPrice)}</td>
+                    <td className="py-1 pl-0.5 text-right align-top [overflow-wrap:anywhere]">{m(l.lineTotal)}</td>
                   </tr>
                 ))}
               </tbody>

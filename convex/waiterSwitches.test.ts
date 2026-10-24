@@ -63,20 +63,17 @@ describe("Waiter / Waitress switches (Edit Business)", () => {
     expect(await asBoss.query(api.tenants.getEditable, { tenantId: otherTenant })).toMatchObject({ name: "Other 2", currency: "USD", modules: null });
   });
 
-  it("Weka Order reduces stock once; Send and Print never change it", async () => {
+  it("Weka Order, Send and Print never deduct stock", async () => {
     const { t, asBoss, asWaiter, tenantId, productId } = await setup();
-    await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterEnabled: true, waitressEnabled: true });
+    await asBoss.mutation(api.tenants.update, { tenantId, ...base, waiterEnabled: true, waitressEnabled: true, waiterOrderMode: "print" });
     const qty = async () => (await t.run(async (ctx) => ctx.db.get("products", productId)))?.currentQty;
     const id = await asWaiter.mutation(api.waiterOrders.place, { customerName: "Mteja", lines: [{ productId, qty: 3 }] });
-    expect(await qty()).toBe(7);
+    expect(await qty()).toBe(10);
     await asWaiter.mutation(api.waiterOrders.markPrinted, { orderId: id });
-    expect(await qty()).toBe(7);
-    await asWaiter.mutation(api.waiterOrders.sendToCashier, { orderId: id });
-    await asWaiter.mutation(api.waiterOrders.sendToCashier, { orderId: id }); // double click is harmless
-    expect(await qty()).toBe(7);
-    const moves = await t.run(async (ctx) => ctx.db.query("stockMovements").collect());
-    expect(moves).toHaveLength(1);
-    expect(moves[0]).toMatchObject({ movementType: "waiter_order", qtyOut: 3, runningBalance: 7 });
+    await asWaiter.mutation(api.waiterOrders.markPrinted, { orderId: id }); // repeat is idempotent
+    expect((await asWaiter.query(api.waiterOrders.list, {}))[0].status).toBe("printed");
+    expect(await qty()).toBe(10);
+    expect(await t.run(async (ctx) => ctx.db.query("stockMovements").collect())).toHaveLength(0);
   });
 
   it("a placed order is not in the cashier queue until it is sent; then cashier receives it, stock unchanged", async () => {
@@ -88,11 +85,14 @@ describe("Waiter / Waitress switches (Edit Business)", () => {
     expect(await asCashier.query(api.waiterOrders.list, {})).toEqual([]);
     expect((await asWaiter.query(api.waiterOrders.list, {})).map((o) => o.status)).toEqual(["placed"]);
     await asWaiter.mutation(api.waiterOrders.sendToCashier, { orderId: id });
+    expect(await t.run(async (ctx) => ctx.db.get("products", productId))).toMatchObject({ currentQty: 10 });
     expect((await asCashier.query(api.waiterOrders.list, {})).map((o) => o.status)).toEqual(["pending"]);
     await asCashier.mutation(api.waiterOrders.markHandled, { orderId: id });
-    expect((await asCashier.query(api.waiterOrders.list, {}))[0].status).toBe("accepted");
-    expect((await t.run(async (ctx) => ctx.db.get("products", productId)))?.currentQty).toBe(9);
-    await asCashier.mutation(api.waiterOrders.markHandled, { orderId: id }); // second print is harmless
+    expect(await t.run(async (ctx) => ctx.db.get("products", productId))).toMatchObject({ currentQty: 10 });
+    expect(await asCashier.query(api.waiterOrders.list, {})).toEqual([]); // handled order leaves pending queue
+    expect((await t.run(async (ctx) => ctx.db.get("waiterOrders", id)))?.status).toBe("accepted");
+    expect((await t.run(async (ctx) => ctx.db.get("products", productId)))?.currentQty).toBe(10);
+    await asCashier.mutation(api.waiterOrders.markHandled, { orderId: id }); // repeat is idempotent
   });
 
   it("when the cashier receives (prints) an order the waiter gets a notification; nobody else does", async () => {
@@ -105,11 +105,12 @@ describe("Waiter / Waitress switches (Edit Business)", () => {
     const today = new Date().toISOString().slice(0, 10);
     expect((await asWaiter.query(api.notifications.feed, { today })).items.filter((i) => i.code === "waiter_order_received")).toHaveLength(0);
     await asCashier.mutation(api.waiterOrders.markHandled, { orderId: id });
+    await asCashier.mutation(api.waiterOrders.markHandled, { orderId: id }); // retry must not create a second notification
     expect((await asWaiter.query(api.notifications.feed, { today })).items.filter((i) => i.code === "waiter_order_received")).toHaveLength(1);
     expect((await asWaitress.query(api.notifications.feed, { today })).items.filter((i) => i.code === "waiter_order_received")).toHaveLength(0);
   });
 
-  it("Futa oda needs the sales.void permission, returns the stock once and hides the order from the cashier", async () => {
+  it("Futa oda needs sales.void, does not restore stock that was never deducted, and hides the order", async () => {
     const { t, asBoss, asWaiter, tenantId, productId } = await setup();
     const cashierId = await t.run(async (ctx) => ctx.db.insert("users", { name: "Cash", username: "cash", role: "cashier", tenantId, isActive: true }));
     const asCashier = t.withIdentity({ subject: cashierId, tokenIdentifier: "x|9" });
@@ -117,10 +118,10 @@ describe("Waiter / Waitress switches (Edit Business)", () => {
     const qty = async () => (await t.run(async (ctx) => ctx.db.get("products", productId)))?.currentQty;
     const id = await asWaiter.mutation(api.waiterOrders.place, { customerName: "M", lines: [{ productId, qty: 4 }] });
     await asWaiter.mutation(api.waiterOrders.sendToCashier, { orderId: id });
-    expect(await qty()).toBe(6);
+    expect(await qty()).toBe(10);
     await expect(asCashier.mutation(api.waiterOrders.cancel, { orderId: id })).rejects.toThrow();
     await expect(asWaiter.mutation(api.waiterOrders.cancel, { orderId: id })).rejects.toThrow();
-    expect(await qty()).toBe(6);
+    expect(await qty()).toBe(10);
     await t.run(async (ctx) => ctx.db.patch("users", cashierId, { role: "manager" }));
     await asCashier.mutation(api.waiterOrders.cancel, { orderId: id });
     await asCashier.mutation(api.waiterOrders.cancel, { orderId: id }); // second time changes nothing
