@@ -56,9 +56,9 @@ type BluetoothApi = {
 type DeviceNavigator = Navigator & { usb?: UsbApi; serial?: SerialApi; bluetooth?: BluetoothApi };
 type QzTrayApi = {
   security: {
-    setCertificatePromise(callback: (resolve: (certificate: string) => void, reject: (reason?: unknown) => void) => void | Promise<void>, options?: { rejectOnFailure?: boolean }): void;
+    setCertificatePromise(callback: (resolve: (certificate?: string) => void) => void): void;
     setSignatureAlgorithm(algorithm: string): void;
-    setSignaturePromise(callback: (toSign: string) => (resolve: (signature: string) => void, reject: (reason?: unknown) => void) => void | Promise<void>): void;
+    setSignaturePromise(callback: () => (resolve: (signature?: string) => void) => void): void;
   };
   websocket: { isActive(): boolean; connect(options: { retries: number; delay: number }): Promise<void> };
   printers: { find(): Promise<string | string[]>; getDefault?(): Promise<string> };
@@ -73,7 +73,7 @@ export const deviceSupport = {
   bluetooth: () => typeof navigator !== "undefined" && !!nav().bluetooth,
 };
 
-/* ───────── Installed printers (QZ Tray) ───────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€ Installed printers (QZ Tray) â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 const QZ_CDN = "https://cdn.jsdelivr.net/npm/qz-tray@2.3.0/qz-tray.js";
 let qzApi: QzTrayApi | null = null;
 
@@ -103,46 +103,9 @@ async function loadQz(): Promise<QzTrayApi> {
 let qzConnecting: Promise<QzTrayApi> | null = null;
 async function qzConnect(): Promise<QzTrayApi> {
   const qz = await loadQz();
-  // QZ privileged actions must be signed. The public certificate may be served publicly;
-  // the private key must remain on a trusted server-side signing endpoint.
-  const certificateUrl = import.meta.env.VITE_QZ_CERTIFICATE_URL?.trim();
-  const signatureUrl = import.meta.env.VITE_QZ_SIGNATURE_URL?.trim();
-  qz.security.setCertificatePromise(async (resolve, reject) => {
-    if (!certificateUrl) {
-      reject(new Error(tr("QZ Tray haijasanidiwa: weka VITE_QZ_CERTIFICATE_URL.")));
-      return;
-    }
-    try {
-      const response = await fetch(certificateUrl, { cache: "no-store", headers: { Accept: "text/plain" } });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const certificate = (await response.text()).trim();
-      if (!certificate.includes("BEGIN CERTIFICATE")) throw new Error("Certificate format is invalid.");
-      resolve(certificate);
-    } catch (error) {
-      reject(new Error(`${tr("Imeshindikana kupakia cheti cha QZ Tray.")} ${error instanceof Error ? error.message : String(error)}`));
-    }
-  }, { rejectOnFailure: true });
-  qz.security.setSignatureAlgorithm("SHA512");
-  qz.security.setSignaturePromise((toSign) => async (resolve, reject) => {
-    if (!signatureUrl) {
-      reject(new Error(tr("QZ Tray haijasanidiwa: weka VITE_QZ_SIGNATURE_URL ya server-side signing.")));
-      return;
-    }
-    try {
-      const response = await fetch(signatureUrl, {
-        method: "POST",
-        cache: "no-store",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "text/plain" },
-        body: new URLSearchParams({ request: toSign }).toString(),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const signature = (await response.text()).trim();
-      if (!signature || !/^[A-Za-z0-9+/]+={0,2}$/.test(signature)) throw new Error("Signature response is invalid.");
-      resolve(signature);
-    } catch (error) {
-      reject(new Error(`${tr("Imeshindikana kusaini ombi la QZ Tray.")} ${error instanceof Error ? error.message : String(error)}`));
-    }
-  });
+  // Free unsigned mode: QZ Tray may ask the user to approve access.
+  qz.security.setCertificatePromise((resolve) => resolve());
+  qz.security.setSignaturePromise(() => (resolve) => resolve());
   if (qz.websocket.isActive()) return qz;
   if (!qzConnecting) {
     qzConnecting = qz.websocket.connect({ retries: 5, delay: 1 })
@@ -155,7 +118,6 @@ async function qzConnect(): Promise<QzTrayApi> {
   }
   return qzConnecting;
 }
-
 export async function listInstalledPrinters(): Promise<string[]> {
   const qz = await qzConnect();
   const found = await qz.printers.find();
@@ -187,7 +149,7 @@ export async function printHtmlViaQz(printerName: string, html: string) {
     },
   ]);
 }
-/* ───────── Direct devices ───────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€ Direct devices â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 const BLE_SERVICES = [
   "000018f0-0000-1000-8000-00805f9b34fb",
   "0000ff00-0000-1000-8000-00805f9b34fb",
@@ -296,7 +258,7 @@ async function sendBluetooth(info: DeviceInfo, bytes: Uint8Array) {
   } finally { gatt.disconnect(); }
 }
 
-/* ───────── Test print ───────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€ Test print â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 function escposTest(printerName: string, width: string) {
   const enc = new TextEncoder();
   const text = `SMARTHUB POS\n${tr("JARIBIO LA KUCHAPA")}\n--------------------------------\n${tr("Printer")}: ${printerName || "-"}\n${tr("Upana wa karatasi")}: ${width}\n${new Date().toLocaleString()}\n--------------------------------\n1234567890 ABCDEFGHIJ\n${tr("Ukisoma hii, kuchapa kunafanya kazi.")}\n\n\n`;
