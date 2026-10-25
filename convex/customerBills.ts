@@ -183,9 +183,22 @@ export const billData = query({
       .withIndex("by_scope", (q) => q.eq("tenantId", user.tenantId).eq("branchId", undefined))
       .collect();
     let receiptFooter = "Asante kwa kununua!";
+    let paymentInfo: string[] = [];
     const systemSetting = settingRows.find((row) => row.key === "system");
     if (systemSetting) {
-      try { receiptFooter = String(JSON.parse(systemSetting.value)?.receiptFooter ?? receiptFooter); } catch { /* use safe default */ }
+      try {
+        const sys = JSON.parse(systemSetting.value) ?? {};
+        receiptFooter = String(sys.receiptFooter ?? receiptFooter);
+        const t = (x: unknown) => (typeof x === "string" ? x.trim() : "");
+        // Only what the business configured is printed; empty fields never appear.
+        paymentInfo = [
+          [t(sys.mobileMoneyProvider), t(sys.mobileMoneyNumber)].filter(Boolean).join(": "),
+          t(sys.bankName) ? `Benki: ${t(sys.bankName)}` : "",
+          t(sys.bankAccountName) ? `Jina la akaunti: ${t(sys.bankAccountName)}` : "",
+          t(sys.bankAccountNumber) ? `Akaunti: ${t(sys.bankAccountNumber)}` : "",
+          t(sys.paymentInstructions),
+        ].filter(Boolean);
+      } catch { /* use safe default */ }
     }
     const deptName = new Map<string, string>();
     for (const inv of invoices) if (inv.branchId && !deptName.has(String(inv.branchId))) deptName.set(String(inv.branchId), (await ctx.db.get("branches", inv.branchId))?.name ?? "");
@@ -212,6 +225,7 @@ export const billData = query({
     return {
       company: { name: company?.companyName ?? "", address: company?.address ?? "", phone: company?.phone ?? "", email: company?.email ?? "", taxId: company?.taxId ?? "", currencySymbol: company?.currencySymbol ?? "TSh", decimalPlaces: company?.decimalPlaces ?? 0 },
       receiptFooter,
+      paymentInfo,
       department,
       cashier: [...cashierNames].filter(Boolean).join(", "),
       paymentMethods: [...methods].filter(Boolean),

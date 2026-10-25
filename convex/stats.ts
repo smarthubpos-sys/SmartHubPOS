@@ -181,10 +181,23 @@ export const rebuild = internalMutation({
         if (i.invoiceDate >= windowStart) {
           const k = `${bk}|${i.invoiceDate}`;
           const d = (acc.daily[k] ??= { bk, date: i.invoiceDate, sales: 0, purchases: 0, collected: 0, invoices: 0 });
-          d.sales = round2(d.sales + i.total); d.collected = round2(d.collected + i.amountPaid); d.invoices += 1;
+          d.sales = round2(d.sales + i.total); d.invoices += 1;
         }
       }
-      return await (page.isDone ? go("purchases", null) : go("invoices", page.continueCursor));
+      return await (page.isDone ? go("payments", null) : go("invoices", page.continueCursor));
+    }
+
+    // Cash collected = real customer payment rows, counted on the day each payment was made (refunds are negative rows; voided rows are excluded).
+    if (a.phase === "payments") {
+      const page = await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("paymentDate", windowStart)).paginate({ numItems: PAGE, cursor: a.cursor });
+      for (const p of page.page) {
+        if (p.voided) continue;
+        const bk = bkey(p.branchId);
+        const k = `${bk}|${p.paymentDate}`;
+        const d = (acc.daily[k] ??= { bk, date: p.paymentDate, sales: 0, purchases: 0, collected: 0, invoices: 0 });
+        d.collected = round2(d.collected + p.amount);
+      }
+      return await (page.isDone ? go("purchases", null) : go("payments", page.continueCursor));
     }
 
     if (a.phase === "purchases") {

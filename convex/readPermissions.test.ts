@@ -47,6 +47,6 @@ describe("backend permission checks on reads", () => {
     const { asCashier, asMgr, warehouseId, productId, invoiceId } = await setup();
     await expect(asCashier.mutation(api.warehouses.adjustUp, { warehouseId, productId, quantity: 1, reason: "r" })).rejects.toThrow();
     await expect(asMgr.mutation(api.warehouses.adjustDown, { warehouseId, productId, quantity: 1, reason: "r" })).rejects.toThrow(/stock.adjust/);
-    await expect(asCashier.mutation(api.sales.voidInvoice, { invoiceId })).rejects.toThrow(/huna ruhusa/);
+    await expect(asCashier.mutation(api.sales.voidInvoice, { invoiceId, reason: "Kosa la kuingiza invoice" })).rejects.toThrow(/huna ruhusa/);
   });
 });

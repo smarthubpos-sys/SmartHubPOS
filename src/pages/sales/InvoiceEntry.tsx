@@ -64,11 +64,14 @@ export default function InvoiceEntry() {
   const [lines, setLines] = useState<Line[]>([emptyLine()]);
   const [busy, setBusy] = useState(false);
   const [returning, setReturning] = useState(false); // partial return screen for the picked invoice
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelReasonDetails, setCancelReasonDetails] = useState("");
 
   const unitName = useMemo(() => new Map((units ?? []).map((u) => [String(u._id), u.name])), [units]);
   const productById = useMemo(() => new Map((products ?? []).map((p) => [String(p._id), p])), [products]);
 
-  if (!clients || !products) return <div className="p-6 text-sm text-muted-foreground">{tr("Inapakia…")}</div>;
+  if (!clients || !products) return <div className="p-6 text-sm text-muted-foreground">{tr("Inapakiaâ€¦")}</div>;
 
   const update = (i: number, patch: Partial<Line>) => setLines((old) => old.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
   const choose = (i: number, productId: string) => update(i, { productId, price: String(productById.get(productId)?.sellingPrice ?? 0) });
@@ -89,7 +92,7 @@ export default function InvoiceEntry() {
     const code = scan.trim().toLowerCase();
     if (!code) return;
     const p = products.find((x) => (x.barcode ?? "").toLowerCase() === code || x.itemCode.toLowerCase() === code);
-    if (!p) { toast.error(tr("Bidhaa yenye barcode/code “{0}” haijapatikana.", [scan])); return; }
+    if (!p) { toast.error(tr("Bidhaa yenye barcode/code â€œ{0}â€ haijapatikana.", [scan])); return; }
     setLines((old) => {
       const idx = old.findIndex((l) => l.productId === p._id);
       if (idx >= 0) return old.map((l, i) => (i === idx ? { ...l, qty: String(num(l.qty) + 1) } : l));
@@ -101,17 +104,43 @@ export default function InvoiceEntry() {
   };
 
   const cancelSelected = async () => {
-    if (!selected) return;
+    if (!selected || !cancelReason) {
+      toast.error(tr("Chagua sababu ya kubatilisha invoice."));
+      return;
+    }
+
+    const reasonDetails = cancelReasonDetails.trim();
+    if (cancelReason === "Sababu nyingine" && !reasonDetails) {
+      toast.error(tr("Eleza sababu nyingine kabla ya kuendelea."));
+      return;
+    }
+
     const inv = recent?.invoices.find((x) => String(x._id) === selected);
-    const reason = window.prompt(tr("Batilisha invoice {0}? Stoo itarudi na malipo yaliyopokelewa yatarudishwa. Andika sababu (hiari) kisha bonyeza OK.", [inv?.invoiceNo ?? ""]));
-    if (reason === null) return;
+    const confirmed = window.confirm(
+      tr("Una uhakika unataka kubatilisha invoice {0}? Stoo itarudi na malipo yaliyopokelewa yatarudishwa.", [inv?.invoiceNo ?? ""])
+    );
+    if (!confirmed) return;
+
     setBusy(true);
     try {
-      const r = await voidInvoice({ invoiceId: selected as Id<"invoices">, reason: reason.trim() || undefined });
+      const r = await voidInvoice({
+        invoiceId: selected as Id<"invoices">,
+        reason: cancelReason,
+        ...(cancelReason === "Sababu nyingine" ? { reasonDetails } : {}),
+      });
       toast.success(tr("Invoice {0} imebatilishwa. Yaliyorudishwa: {1}.", [r.invoiceNo, fmt(r.refunded)]));
-      setSelected(null); setReturning(false); setJustSaved(null); setPrintToken(0);
-    } catch (e) { toast.error(errorText(e, "Imeshindikana kubatilisha invoice.")); }
-    finally { setBusy(false); }
+      setSelected(null);
+      setReturning(false);
+      setJustSaved(null);
+      setPrintToken(0);
+      setCancelDialogOpen(false);
+      setCancelReason("");
+      setCancelReasonDetails("");
+    } catch (e) {
+      toast.error(errorText(e, "Imeshindikana kubatilisha invoice."));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const placedOrder = placedId ? (myOrders ?? []).find((o) => o._id === placedId) : undefined;
@@ -172,7 +201,7 @@ export default function InvoiceEntry() {
       // Printing is configured centrally under Maintenance > Hardware Setup.
       // BillSheet prints only after its saved invoice data is loaded; it never creates another invoice.
       setPrintToken((n) => tokenAfterSave(n, !!hardware.autoPrintReceipt));
-      toast.success(tr("Invoice {0} imehifadhiwa — jumla {1}, deni {2}.", [r.invoiceNo, fmt(r.total), fmt(r.outstanding)]));
+      toast.success(tr("Invoice {0} imehifadhiwa â€” jumla {1}, deni {2}.", [r.invoiceNo, fmt(r.total), fmt(r.outstanding)]));
       if (r.creditWarning) toast.warning(tr("Onyo: mteja huyu amevuka kikomo chake cha mkopo."));
       setLines([emptyLine()]); setInvoiceDiscount("0"); setNotes("");
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuhifadhi invoice.")); }
@@ -181,14 +210,14 @@ export default function InvoiceEntry() {
 
   return (
     <main className="mx-auto max-w-7xl space-y-5 p-5">
-      <Button variant="outline" onClick={() => navigate("/sales")}>{tr("← Sales")}</Button>
+      <Button variant="outline" onClick={() => navigate("/sales")}>{tr("â† Sales")}</Button>
       <section className="rounded-xl border p-5">
-        <h1 className="mb-1 text-2xl font-bold">{tr("Invoicing — uza bidhaa")}</h1>
+        <h1 className="mb-1 text-2xl font-bold">{tr("Invoicing â€” uza bidhaa")}</h1>
         <p className="mb-4 text-sm text-muted-foreground">{tr("Ongeza bidhaa nyingi kwenye invoice moja. Stock itapungua mara moja baada ya kuhifadhi.")}</p>
         {!clients.length && (
           <div className="mb-4 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
             
-            {tr("Hakuna mteja bado. Tengeneza mteja (mfano “Cash Customer”) kwanza.")} <Button size="sm" className="ml-2" onClick={() => navigate("/sales/clients")}>{tr("Add Client")}</Button>
+            {tr("Hakuna mteja bado. Tengeneza mteja (mfano â€œCash Customerâ€) kwanza.")} <Button size="sm" className="ml-2" onClick={() => navigate("/sales/clients")}>{tr("Add Client")}</Button>
           </div>
         )}
         <div className="grid gap-4 md:grid-cols-3">
@@ -226,7 +255,7 @@ export default function InvoiceEntry() {
                       </select>
                     </td>
                     <td className="p-2">{p?.unitId ? unitName.get(String(p.unitId)) ?? tr("Unit") : tr("Unit")}</td>
-                    <td className={`p-2 tabular-nums ${over ? "font-semibold text-destructive" : ""}`}>{p ? fmt(p.currentQty, 4) : "—"}</td>
+                    <td className={`p-2 tabular-nums ${over ? "font-semibold text-destructive" : ""}`}>{p ? fmt(p.currentQty, 4) : "â€”"}</td>
                     <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.qty} onChange={(e) => update(i, { qty: e.target.value })} /></td>
                     <td className="p-2"><Input className="w-28" type="number" step="any" min="0" value={l.price} onChange={(e) => update(i, { price: e.target.value })} /></td>
                     <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.discount} onChange={(e) => update(i, { discount: e.target.value })} /></td>
@@ -240,7 +269,7 @@ export default function InvoiceEntry() {
         </div>
 
         <div className="mt-4 flex flex-wrap items-start justify-between gap-6">
-          <Button variant="outline" onClick={() => setLines((old) => [...old, emptyLine()])}>{tr("＋ Add Line")}</Button>
+          <Button variant="outline" onClick={() => setLines((old) => [...old, emptyLine()])}>{tr("ï¼‹ Add Line")}</Button>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="grid gap-1 text-sm">{tr("Discount ya invoice")}<Input type="number" step="any" min="0" value={invoiceDiscount} onChange={(e) => setInvoiceDiscount(e.target.value)} /></label>
             <label className="grid gap-1 text-sm">{tr("Tax (%)")}<Input type="number" step="any" min="0" max="100" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></label>
@@ -258,11 +287,11 @@ export default function InvoiceEntry() {
               <label className="grid gap-1 text-sm">{tr("Namba ya meza (hiari)")}<Input value={tableNo} onChange={(e) => setTableNo(e.target.value)} /></label>
               <Button disabled={busy} onClick={() => void weka()}>{busy ? tr("Inaweka...") : tr("Weka Order")}</Button>
             </div>
-          : <div className="mt-4"><Button disabled={busy} onClick={() => void submit()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi Invoice")}</Button></div>}
+          : <div className="mt-4"><Button disabled={busy} onClick={() => void submit()}>{busy ? tr("Inahifadhiâ€¦") : tr("Hifadhi Invoice")}</Button></div>}
       </section>
 
       {waiterMode && placedId && <section className="space-y-3 rounded-xl border p-4">
-        <h2 className="font-semibold">{tr("Oda imewekwa")}{placedOrder ? ` — ${placedOrder.customerName}` : ""}</h2>
+        <h2 className="font-semibold">{tr("Oda imewekwa")}{placedOrder ? ` â€” ${placedOrder.customerName}` : ""}</h2>
         <p className="text-sm text-muted-foreground">{tr("Send na Print havipunguzi stock.")}</p>
           {waiterOrderMode === "cashier"
             ? <Button onClick={() => void sendPlaced()}>{tr("Send")}</Button>
@@ -283,7 +312,7 @@ export default function InvoiceEntry() {
               <div className="flex flex-wrap items-center gap-2">
                 <Button disabled={!selected} onClick={() => { setJustSaved(null); setPrintToken((n) => n + 1); }}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha invoice iliyochaguliwa")}</Button>
                 {business?.isManager && <Button variant="outline" disabled={!selected || busy} onClick={() => { setJustSaved(null); setReturning(true); }}>{tr("Rejesha bidhaa (sehemu)")}</Button>}
-                {business?.canVoidInvoice && <Button variant="destructive" disabled={!selected || busy} onClick={() => void cancelSelected()}>{tr("Batilisha invoice iliyochaguliwa")}</Button>}
+                {business?.canVoidInvoice && <Button variant="destructive" disabled={!selected || busy} onClick={() => { setCancelReason(""); setCancelReasonDetails(""); setCancelDialogOpen(true); }}>{tr("Batilisha invoice iliyochaguliwa")}</Button>}
               </div>
             </div>
             {!recent.invoices.length && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice bado.")}</p>}
@@ -304,6 +333,36 @@ export default function InvoiceEntry() {
             <BillSheet kind="invoice" key={selected} invoiceIds={[selected as Id<"invoices">]} printToken={printToken} paper={paper} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={changeWhatsapp} />
           </section>}
         </>
+      )}
+          {cancelDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="cancel-invoice-title">
+          <section className="w-full max-w-lg space-y-4 rounded-xl border bg-background p-5 shadow-xl">
+            <h2 id="cancel-invoice-title" className="text-lg font-semibold">{tr("Batilisha invoice")}</h2>
+            <p className="text-sm text-muted-foreground">{tr("Chagua sababu ya kubatilisha invoice. Stoo itarudi na malipo yaliyopokelewa yatarudishwa.")}</p>
+            <label className="grid gap-1 text-sm">
+              {tr("Sababu ya kubatilisha")}
+              <select className={selectClass + " w-full"} value={cancelReason} onChange={(e) => { setCancelReason(e.target.value); setCancelReasonDetails(""); }}>
+                <option value="">{tr("Chagua sababu...")}</option>
+                <option value="Kosa la kuingiza invoice">{tr("Kosa la kuingiza invoice")}</option>
+                <option value="Mteja amebadilisha mawazo">{tr("Mteja amebadilisha mawazo")}</option>
+                <option value="Bidhaa ime-expire">{tr("Bidhaa ime-expire")}</option>
+                <option value="Kosa la bei au kiasi">{tr("Kosa la bei au kiasi")}</option>
+                <option value="Mteja amebadilisha oda">{tr("Mteja amebadilisha oda")}</option>
+                <option value="Sababu nyingine">{tr("Sababu nyingine")}</option>
+              </select>
+            </label>
+            {cancelReason === "Sababu nyingine" && (
+              <label className="grid gap-1 text-sm">
+                {tr("Eleza sababu nyingine (lazima)")}
+                <textarea className="min-h-24 w-full rounded-md border bg-background p-3" value={cancelReasonDetails} onChange={(e) => setCancelReasonDetails(e.target.value)} maxLength={500} required placeholder={tr("Andika maelezo ya sababu...")} />
+              </label>
+            )}
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button variant="outline" disabled={busy} onClick={() => setCancelDialogOpen(false)}>{tr("Ghairi")}</Button>
+              <Button variant="destructive" disabled={busy || !cancelReason || (cancelReason === "Sababu nyingine" && !cancelReasonDetails.trim())} onClick={() => void cancelSelected()}>{busy ? tr("Inabatilisha...") : tr("Thibitisha kubatilisha")}</Button>
+            </div>
+          </section>
+        </div>
       )}
     </main>
   );

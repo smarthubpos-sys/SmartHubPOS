@@ -11,8 +11,8 @@ import { ALL_MODULE_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, USER_GRANTABLE_PERMISSIO
 import { useStockRights } from "@/hooks/use-stock-rights.ts";
 import { tr } from "@/lib/i18n.ts";
 
-type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; extra: string[]; pin: string; pinLoginEnabled: boolean; hasPin: boolean };
-const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, extra: [], pin: "", pinLoginEnabled: false, hasPin: false };
+type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; extra: string[]; pin: string; pinLoginEnabled: boolean; hasPin: boolean; staffCode: string };
+const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, extra: [], pin: "", pinLoginEnabled: false, hasPin: false, staffCode: "" };
 
 export default function UsersPage() {
   const { user: me } = useAuth();
@@ -24,6 +24,7 @@ export default function UsersPage() {
   const reset = useAction(api.maintenance.resetUserPassword);
   const setStaffPin = useAction(api.maintenance.setStaffPin);
   const update = useMutation(api.maintenance.updateUser);
+  const setStaffCode = useMutation(api.maintenance.setStaffCode);
   const rename = useMutation(api.maintenance.renameUsername);
   const { busy, run } = useRun();
   const [f, setF] = useState<Form | null>(null);
@@ -53,6 +54,7 @@ export default function UsersPage() {
             <TextField label={tr("Username")} value={f.username} onChange={(v) => set("username", v.toLowerCase())} disabled={editing && editingSelf} hint={tr("Herufi ndogo/namba, 3–32, bila nafasi. Jina ni la kipekee kwa biashara zote (mfano asha.duka1). Biashara moja inaweza kuwa na admin na watumiaji wengi wa role moja, kila mmoja akiwa na username yake.")} />
             {!editing && <TextField label={tr("Password ya kuanzia")} type="password" value={f.password} onChange={(v) => set("password", v)} />}
             <SelectField label={tr("Role")} value={f.role} onChange={(v) => set("role", v)} options={roleOptions} />
+            <TextField label={tr("Staff code (kwa cashier kutafuta mauzo)")} value={f.staffCode} onChange={(v) => set("staffCode", v.toUpperCase())} hint={tr("Herufi/namba 2-20, ya kipekee kwa biashara. Cashier huiandika kuona mauzo na kupokea malipo ya mhudumu huyu.")} />
             <div className="space-y-2 rounded-xl border p-3 md:col-span-2">
                 <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
                   <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.pinLoginEnabled} onChange={(e) => setF((p) => (p ? { ...p, pinLoginEnabled: e.target.checked } : p))} />
@@ -140,6 +142,10 @@ export default function UsersPage() {
                 try { await setStaffPin({ userId: savedUserId, ...(f.pin ? { pin: f.pin } : {}), enabled: f.pinLoginEnabled }); }
                 catch (e) { throw new Error(`${editing ? "" : tr("Mtumiaji ameundwa, lakini PIN haikuhifadhiwa. Fungua Modify kuweka PIN tena. ")}${e instanceof Error ? e.message : ""}`.trim(), { cause: e }); }
               }
+              if (f.staffCode.trim() || editing) {
+                try { await setStaffCode({ userId: savedUserId, staffCode: f.staffCode }); }
+                catch (e) { throw new Error(`${tr("Staff code haikuhifadhiwa: ")}${e instanceof Error ? e.message : ""}`.trim(), { cause: e }); }
+              }
               setF(null);
             }, editing ? tr("Mtumiaji amesasishwa.") : tr("Mtumiaji ameundwa."))}>{tr("Hifadhi")}</Button>
             <Button variant="outline" onClick={() => setF(null)}>{tr("Ghairi")}</Button>
@@ -170,7 +176,7 @@ export default function UsersPage() {
                   <td className="p-3">{u.isActive ? tr("Active") : tr("Disabled")}</td>
                   <td className="p-3">
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, extra: u.extraPermissions, pin: "", pinLoginEnabled: u.pinLoginEnabled, hasPin: u.hasPin })}>{tr("Modify")}</Button>
+                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, extra: u.extraPermissions, pin: "", pinLoginEnabled: u.pinLoginEnabled, hasPin: u.hasPin, staffCode: u.staffCode ?? "" })}>{tr("Modify")}</Button>
                       <Button size="sm" variant="outline" onClick={() => { const p = prompt(tr("Password mpya ya {0}:", [u.username])); if (p) void run(() => reset({ userId: u._id, newPassword: p }), tr("Password imebadilishwa; ataingia upya.")); }}>{tr("Reset password")}</Button>
                       {String(me?._id) !== String(u._id) && (
                         <Button size="sm" variant="outline" onClick={() => void run(() => update({ userId: u._id, isActive: !u.isActive }), u.isActive ? tr("Amezimwa.") : tr("Amewashwa."))}>{u.isActive ? tr("Disable") : tr("Enable")}</Button>

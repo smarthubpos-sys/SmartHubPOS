@@ -308,6 +308,11 @@ export default function BillSheet({
             <span>{m(bill.totals.outstanding)}</span>
           </div>
         </footer>
+        {bill.paymentInfo && bill.paymentInfo.length > 0 && (
+          <div className="pt-2 text-center text-xs font-semibold whitespace-pre-wrap break-words">
+            {bill.paymentInfo.map((line: string) => <div key={line}>{line}</div>)}
+          </div>
+        )}
         {bill.receiptFooter?.trim() && (
           <p className="pt-2 text-center text-xs text-muted-foreground whitespace-pre-wrap break-words">
             {bill.receiptFooter}

@@ -165,6 +165,7 @@ function SystemForm({ s }: { s: Settings }) {
     inventoryCostingMethod: str(c.inventoryCostingMethod, "weighted_average"),
     dateFormat: str(a.dateFormat, "dd/MM/yyyy"), receiptFooter: str(a.receiptFooter, tr("Asante kwa kununua!")), defaultPaymentMethod: str(a.defaultPaymentMethod, "cash"),
     reportEmailRecipients: str(a.reportEmailRecipients, ""),
+    mobileMoneyProvider: str(a.mobileMoneyProvider, ""), mobileMoneyNumber: str(a.mobileMoneyNumber, ""), bankName: str(a.bankName, ""), bankAccountName: str(a.bankAccountName, ""), bankAccountNumber: str(a.bankAccountNumber, ""), paymentInstructions: str(a.paymentInstructions, ""),
   });
   const ok = s.canEdit["maintenance.system"];
   return (
@@ -183,10 +184,18 @@ function SystemForm({ s }: { s: Settings }) {
           <SelectField label={tr("Njia ya malipo ya kawaida")} value={f.defaultPaymentMethod} onChange={(v) => set("defaultPaymentMethod", v)} disabled={!ok} options={[["cash", tr("Cash")], ["bank", tr("Bank")], ["mobile", tr("Mobile Money")]]} />
         </div>
         <TextField label={tr("Maandishi ya chini ya risiti")} value={f.receiptFooter} onChange={(v) => set("receiptFooter", v)} disabled={!ok} />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <TextField label="Mtoa huduma wa pesa za simu (mf. M-Pesa)" value={f.mobileMoneyProvider} onChange={(v) => set("mobileMoneyProvider", v)} disabled={!ok} />
+          <TextField label="Namba ya malipo ya simu" value={f.mobileMoneyNumber} onChange={(v) => set("mobileMoneyNumber", v)} disabled={!ok} />
+          <TextField label="Jina la benki" value={f.bankName} onChange={(v) => set("bankName", v)} disabled={!ok} />
+          <TextField label="Jina la akaunti ya benki" value={f.bankAccountName} onChange={(v) => set("bankAccountName", v)} disabled={!ok} />
+          <TextField label="Namba ya akaunti ya benki" value={f.bankAccountNumber} onChange={(v) => set("bankAccountNumber", v)} disabled={!ok} />
+          <TextField label="Maelekezo ya malipo (hiari)" value={f.paymentInstructions} onChange={(v) => set("paymentInstructions", v)} disabled={!ok} />
+        </div>
       </Card>
       <Button disabled={busy || !ok} onClick={() => void run(async () => {
         await saveCompany({ stockControlEnabled: f.stockControlEnabled, allowNegativeStock: f.allowNegativeStock, inventoryCostingMethod: f.inventoryCostingMethod });
-        await saveSetting({ key: "system", value: { dateFormat: f.dateFormat, receiptFooter: f.receiptFooter, defaultPaymentMethod: f.defaultPaymentMethod, reportEmailRecipients: f.reportEmailRecipients } });
+        await saveSetting({ key: "system", value: { dateFormat: f.dateFormat, receiptFooter: f.receiptFooter, defaultPaymentMethod: f.defaultPaymentMethod, reportEmailRecipients: f.reportEmailRecipients, mobileMoneyProvider: f.mobileMoneyProvider, mobileMoneyNumber: f.mobileMoneyNumber, bankName: f.bankName, bankAccountName: f.bankAccountName, bankAccountNumber: f.bankAccountNumber, paymentInstructions: f.paymentInstructions } });
       })}>{tr("Hifadhi")}</Button>
     </>
   );

@@ -1,9 +1,66 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { surfaceError } from "./surfaceError";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { getCompanySettings, logAudit, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
 import { waiterOrdersAllowedFor } from "./waiterSettings";
+
+
+const isWaiter = (role?: string) => ["waiter", "waitress"].includes(String(role ?? "").toLowerCase());
+
+/**
+ * Deducts the stock of an order EXACTLY ONCE. The guard is the order's own `stockDeducted` flag, read and written inside the same
+ * mutation (Convex mutations are serialised per document), so a double tap, a retry or two devices can never deduct twice.
+ * Send and Print both come through here; the cashier's receive/print (markHandled) never does.
+ */
+async function deductStockOnce(
+  ctx: MutationCtx,
+  order: Doc<"waiterOrders">,
+  user: Doc<"users">,
+  scope: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> },
+): Promise<boolean> {
+  const fresh = await ctx.db.get("waiterOrders", order._id);
+  if (!fresh || fresh.stockDeducted === true) return false; // already deducted: nothing to do
+  const company = await getCompanySettings(ctx, user);
+  const allowNegativeStock = !!company?.allowNegativeStock;
+  const need = new Map<string, number>();
+  for (const line of fresh.lines) need.set(String(line.productId), (need.get(String(line.productId)) ?? 0) + line.qty);
+  // 1) check everything first, so a shortage on the last line leaves the earlier lines untouched
+  for (const [pid, qty] of need) {
+    const product = await ctx.db.get("products", pid as Id<"products">);
+    if (
+  !product ||
+  product.tenantId !== scope.tenantId ||
+  (scope.branchId &&
+    product.branchId &&
+    product.branchId !== scope.branchId)
+) {
+  throw new Error("Bidhaa haipo kwenye biashara au tawi hili.");
+}
+    if (!allowNegativeStock && product.currentQty + 1e-8 < qty) throw new Error(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, inayohitajika: ${qty}`);
+  }
+  const now = new Date().toISOString();
+  for (const [pid, qty] of need) {
+    const product = (await ctx.db.get("products", pid as Id<"products">))!;
+    const balance = product.currentQty - qty;
+    await ctx.db.patch("products", product._id, { currentQty: balance });
+    await ctx.db.insert("stockMovements", {
+      ...scope,
+      movementDate: now.slice(0, 10),
+      productId: product._id,
+      movementType: "waiter_order",
+      referenceId: String(fresh._id),
+      referenceType: "waiterOrder",
+      qtyIn: 0,
+      qtyOut: qty,
+      runningBalance: balance,
+      unitCost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0,
+      createdBy: user._id,
+    });
+  }
+  await ctx.db.patch("waiterOrders", fresh._id, { stockDeducted: true, stockDeductedAt: now, updatedAt: now });
+  return true;
+}
 
 export const list = query({
   args: {},
@@ -135,9 +192,10 @@ export const sendToCashier = mutation({
   args: { orderId: v.id("waiterOrders") },
   handler: async (ctx, args) => {
     try {
-    const { order } = await ownOrder(ctx, args.orderId);
+    const { user, order } = await ownOrder(ctx, args.orderId);
     if (order.status === "placed") {
       const now = new Date().toISOString();
+      await deductStockOnce(ctx, order, user, { tenantId: order.tenantId, branchId: order.branchId });
       await ctx.db.patch("waiterOrders", order._id, { status: "pending", sentAt: now, updatedAt: now });
     } else if (order.status !== "pending" && order.status !== "accepted") {
       throw new Error("Oda hii haiwezi kutumwa.");
@@ -158,6 +216,7 @@ export const markPrinted = mutation({
     if (order.status === "printed") return order._id;
     if (order.status !== "placed") throw new Error("Oda hii tayari imetumwa au haiwezi kuchapishwa hapa.");
     const now = new Date().toISOString();
+    await deductStockOnce(ctx, order, user, { tenantId: order.tenantId, branchId: order.branchId });
     await ctx.db.patch("waiterOrders", order._id, { status: "printed", printedAt: now, updatedAt: now });
     return order._id;
     } catch (e) { throw surfaceError(e); }
@@ -189,6 +248,7 @@ export const markHandled = mutation({
       handledAt: now,
       updatedAt: now,
     });
+    await logAudit(ctx, user, { action: "accept_waiter_order", module: "sales", referenceId: String(order._id), referenceType: "waiterOrder", details: `${order.customerName}; mhudumu ${order.waiterName}; total ${order.total}` });
     return order._id;
     } catch (e) { throw surfaceError(e); }
   },
@@ -237,5 +297,106 @@ export const cancel = mutation({
     await logAudit(ctx, user, { action: "cancel_waiter_order", module: "sales", referenceId: String(order._id), referenceType: "waiterOrder", details: `${order.customerName}; total ${order.total}` });
     return order._id;
     } catch (e) { throw surfaceError(e); }
+  },
+});
+
+/**
+ * Selling Point: ONE safe step that creates the order, deducts stock once and marks it Sent (-> cashier queue) or Printed.
+ * `clientKey` is generated once per cart on the screen. If the same key arrives again (double tap, retry, two tabs) the existing
+ * order is returned and nothing is created or deducted a second time. Customer name and table number are optional.
+ */
+export const submit = mutation({
+  args: {
+    clientKey: v.string(),
+    mode: v.union(v.literal("send"), v.literal("print")),
+    customerName: v.optional(v.string()),
+    tableNumber: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    lines: v.array(v.object({ productId: v.id("products"), qty: v.number() })),
+  },
+  handler: async (ctx, args) => {
+    try {
+    const user = await requirePermission(ctx, "sales.manage", "sales");
+    const scope = await resolveWriteScope(ctx, user);
+    if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
+    const tenantId = scope.tenantId;
+    const key = args.clientKey.trim();
+    if (key.length < 8 || key.length > 80) throw new Error("Ombi si sahihi. Fungua ukurasa upya.");
+    const existing = await ctx.db.query("waiterOrders").withIndex("by_client_key", q => q.eq("waiterId", user._id).eq("clientKey", key)).first();
+    if (existing) return { orderId: existing._id, status: existing.status, duplicate: true };
+    const settings = await ctx.db.query("tenantSettings").withIndex("by_tenant", q => q.eq("tenantId", tenantId)).first();
+    if (!waiterOrdersAllowedFor(user.role, settings)) throw new Error("Selling Point imezimwa kwa biashara hii.");
+    if (args.lines.length === 0) throw new Error("Ongeza angalau bidhaa moja.");
+
+    const merged = new Map<string, number>(); // the same product tapped many times = one line
+    for (const l of args.lines) {
+      if (!Number.isFinite(l.qty) || l.qty <= 0) throw new Error("Kiasi cha bidhaa lazima kiwe zaidi ya sifuri.");
+      merged.set(String(l.productId), (merged.get(String(l.productId)) ?? 0) + l.qty);
+    }
+    const lines = [];
+    for (const [pid, qty] of merged) {
+      const product = await ctx.db.get("products", pid as Id<"products">);
+      if (!product || product.isActive === false) throw new Error("Bidhaa haipo au haifanyi kazi.");
+      if (product.tenantId !== scope.tenantId || (scope.branchId && product.branchId && product.branchId !== scope.branchId)) throw new Error("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
+      if (!Number.isFinite(product.sellingPrice) || product.sellingPrice < 0) throw new Error("Bei ya bidhaa si sahihi.");
+      lines.push({ productId: product._id, productName: product.name, qty, unitPrice: product.sellingPrice, lineTotal: qty * product.sellingPrice });
+    }
+    const now = new Date().toISOString();
+    const orderId = await ctx.db.insert("waiterOrders", {
+      tenantId: scope.tenantId, branchId: scope.branchId,
+      customerName: args.customerName?.trim() || "Mteja",
+      tableNumber: args.tableNumber?.trim() || undefined,
+      waiterId: user._id, waiterName: user.name || user.username || "Waiter",
+      status: "placed", stockDeducted: false, clientKey: key, lines,
+      total: lines.reduce((s, l) => s + l.lineTotal, 0),
+      notes: args.notes?.trim() || undefined, createdAt: now, updatedAt: now,
+    });
+    const order = (await ctx.db.get("waiterOrders", orderId))!;
+    await deductStockOnce(ctx, order, user, { tenantId: scope.tenantId, branchId: scope.branchId }); // throws -> whole mutation rolls back, no order, no stock change
+    const status = args.mode === "send" ? "pending" : "printed";
+    await ctx.db.patch("waiterOrders", orderId, args.mode === "send" ? { status, sentAt: now, updatedAt: now } : { status, printedAt: now, updatedAt: now });
+    await logAudit(ctx, user, { action: args.mode === "send" ? "send_selling_point_order" : "print_selling_point_order", module: "sales", referenceId: String(orderId), referenceType: "waiterOrder", details: `meza ${order.tableNumber ?? "-"}; total ${order.total}; stock imepunguzwa mara moja` });
+    return { orderId, status, duplicate: false };
+    } catch (e) { throw surfaceError(e); }
+  },
+});
+
+/** Orders for the Bills screen: a waiter sees his own, cashier/manager see the whole department. Optional table filter. Read-only. */
+export const listForBills = query({
+  args: { table: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const user = await requirePermission(ctx, "sales.view", "sales");
+    const scope = await resolveWriteScope(ctx, user);
+    if (!scope.tenantId) return [];
+    const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)).collect();
+    const needle = (args.table ?? "").trim().toLowerCase();
+    return rows
+      .filter(r => r.status !== "cancelled" && r.status !== "placed" && (!isWaiter(user.role) || r.waiterId === user._id))
+      .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
+  },
+});
+
+/** Combined bill of several orders, recomputed on the server from the stored lines (never from numbers sent by the screen). Read-only. */
+export const billSummary = query({
+  args: { orderIds: v.array(v.id("waiterOrders")) },
+  handler: async (ctx, args) => {
+    const user = await requirePermission(ctx, "sales.view", "sales");
+    const scope = await resolveWriteScope(ctx, user);
+    const merged = new Map<string, { productName: string; unitPrice: number; qty: number; lineTotal: number }>();
+    const tables = new Set<string>();
+    let total = 0;
+    for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
+      const o = await ctx.db.get("waiterOrders", id);
+      if (!o || o.tenantId !== scope.tenantId || o.branchId !== scope.branchId || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
+      if (isWaiter(user.role) && o.waiterId !== user._id) throw new Error("Hii si oda yako.");
+      if (o.tableNumber) tables.add(o.tableNumber);
+      for (const l of o.lines) {
+        const k = `${l.productId}|${l.unitPrice}`;
+        const cur = merged.get(k) ?? { productName: l.productName, unitPrice: l.unitPrice, qty: 0, lineTotal: 0 };
+        cur.qty += l.qty; cur.lineTotal += l.lineTotal; merged.set(k, cur); total += l.lineTotal;
+      }
+    }
+    return { total: Math.round(total * 100) / 100, tables: [...tables], lines: [...merged.values()] };
   },
 });

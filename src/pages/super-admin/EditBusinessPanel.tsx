@@ -92,7 +92,7 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
 
       <div className="space-y-2">
         <div className="space-y-3 rounded-lg border border-white/20 p-3">
-          <p className="font-medium">{tr("Waiter Orders settings")}</p>
+          <p className="font-medium">{tr("Selling Point settings")}</p>
           <div className="flex items-center justify-between gap-3">
             <label htmlFor="enable-waiter" className="cursor-pointer">{tr("Enable Waiter")}</label>
             <Switch id="enable-waiter" checked={waiterEnabled} onCheckedChange={setWaiterEnabled} aria-label={tr("Enable Waiter")} />

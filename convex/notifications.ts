@@ -48,7 +48,7 @@ export const feed = query({
       const since = new Date(Date.now() - 3 * 86400000).toISOString();
       for (const o of await ctx.db.query("waiterOrders").withIndex("by_waiter", (q) => q.eq("waiterId", user._id)).order("desc").take(50)) {
         if (o.tenantId !== user.tenantId || o.status !== "accepted" || !o.handledAt || o.handledAt < since) continue;
-        items.push({ key: `wo:${o._id}`, code: "waiter_order_received", level: "info", params: { customer: o.customerName, table: o.tableNumber ?? "-", orderId: String(o._id) }, link: "/waiter-orders", at: o.handledAt.slice(0, 10) });
+        items.push({ key: `wo:${o._id}`, code: "waiter_order_received", level: "info", params: { customer: o.customerName, table: o.tableNumber ?? "-", orderId: String(o._id) }, link: "/selling-point", at: o.handledAt.slice(0, 10) });
       }
     }
     for (const t of await ctx.db.query("supportTickets").withIndex("by_user", (q) => q.eq("createdBy", user._id)).collect())

@@ -89,6 +89,9 @@ export default function AppLayout() {
   if (business?.needsPicker) return <BusinessPicker />;
 
   // A screen whose module is not available to this business/user is never shown, even when its address is typed in by hand.
+  // Selling Point staff (waiter / waitress) never open the Dashboard: they start at, and are sent back to, Selling Point.
+  const sellingStaff = ["waiter", "waitress"].includes(String(user?.role ?? "").toLowerCase());
+  if (sellingStaff && (location.pathname === "/dashboard" || location.pathname.startsWith("/dashboard/"))) return <Navigate to="/selling-point" replace />;
   const moduleOfRoute = MODULES.find((m) => m.path === "/" + (location.pathname.split("/")[1] ?? ""));
   const blocked = !!moduleOfRoute && !!business?.modules && !business.modules.includes(moduleOfRoute.key);
 
@@ -98,7 +101,7 @@ export default function AppLayout() {
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <TopBar onMenuToggle={() => setSidebarOpen((o) => !o)} />
       <SubscriptionBanner />
-      <main className="flex-1 overflow-auto p-3 sm:p-4 md:p-6">{blocked ? <Navigate to="/dashboard" replace /> : <ErrorBoundary resetKey={location.pathname}><Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center" role="status" aria-live="polite"><div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" /></div>}><Outlet /></Suspense></ErrorBoundary>}</main>
+      <main className="flex-1 overflow-auto p-3 sm:p-4 md:p-6">{blocked ? <Navigate to={sellingStaff ? "/selling-point" : "/dashboard"} replace /> : <ErrorBoundary resetKey={location.pathname}><Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center" role="status" aria-live="polite"><div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" /></div>}><Outlet /></Suspense></ErrorBoundary>}</main>
     </div>
     <AnnouncementPopup />
   </div>;

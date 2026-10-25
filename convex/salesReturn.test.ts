@@ -78,7 +78,7 @@ describe("partial sales return", () => {
     const inv = await asMgr.mutation(api.sales.createInvoice, { clientId, invoiceDate: date, lines: [{ productId, qty: 3, unitPrice: 10000 }], paymentAmount: 30000, paymentMethod: "cash" });
     const lineId = (await asMgr.query(api.sales.returnableLines, { invoiceId: inv.invoiceId }))!.lines[0]._id;
     await asMgr.mutation(api.sales.returnItems, { invoiceId: inv.invoiceId, lines: [{ invoiceLineId: lineId, qty: 1 }], refundMethod: "cash" });
-    const v = await asMgr.mutation(api.sales.voidInvoice, { invoiceId: inv.invoiceId });
+    const v = await asMgr.mutation(api.sales.voidInvoice, { invoiceId: inv.invoiceId, reason: "Kosa la kuingiza invoice" });
     expect(v.refunded).toBe(20000);
     await t.run(async (ctx) => { expect((await ctx.db.get("products", productId))?.currentQty).toBe(100); });
     expect(await cashNet(t)).toBe(0);

@@ -113,3 +113,19 @@ describe("bills across departments", () => {
     await expect(asPlain.query(api.customerBills.billData, { invoiceIds: [d.bar.id, d.jiko.id] })).rejects.toThrow(/haipatikani/);
   });
 });
+
+describe("receipt payment details (configurable by the business)", () => {
+  it("prints only the configured payment lines and rejects over-long text", async () => {
+    const { t, as, i1 } = await setup();
+    const adminId = await t.run(async (ctx) => { const u = (await ctx.db.query("users").collect())[0]; return ctx.db.insert("users", { name: "Boss", username: "boss", role: "admin", tenantId: u.tenantId, isActive: true }); });
+    const asAdmin = t.withIdentity({ subject: adminId, tokenIdentifier: "x|7" });
+    await expect(as.mutation(api.maintenance.saveSetting, { key: "system", value: { receiptFooter: "hack" } })).rejects.toThrow(/Forbidden/);
+    const before = await as.query(api.customerBills.billData, { invoiceIds: [i1] });
+    expect(before.paymentInfo).toEqual([]);
+    await asAdmin.mutation(api.maintenance.saveSetting, { key: "system", value: { receiptFooter: "Karibu tena", mobileMoneyProvider: "M-Pesa", mobileMoneyNumber: "0700000000", bankName: "", bankAccountNumber: "123456", paymentInstructions: "" } });
+    const after = await as.query(api.customerBills.billData, { invoiceIds: [i1] });
+    expect(after.receiptFooter).toBe("Karibu tena");
+    expect(after.paymentInfo).toEqual(["M-Pesa: 0700000000", "Akaunti: 123456"]);
+    await expect(asAdmin.mutation(api.maintenance.saveSetting, { key: "system", value: { receiptFooter: "x".repeat(501) } })).rejects.toThrow();
+  });
+});

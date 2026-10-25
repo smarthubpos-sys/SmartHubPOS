@@ -13,7 +13,7 @@ const groups = [
   { title: tr("Kazi Kuu"), items: [
     { label: tr("Dashboard"), icon: LayoutDashboard, path: "/dashboard", module: "dashboard" },
     { label: tr("Sales"), icon: ShoppingCart, path: "/sales", module: "sales" },
-    { label: tr("Waiter Orders"), icon: Receipt, path: "/waiter-orders", module: "waiterOrders" },
+    { label: tr("Selling Point"), icon: Receipt, path: "/selling-point", module: "waiterOrders" },
     { label: tr("Stock"), icon: Package, path: "/stock", module: "stock" },
     { label: tr("Purchasing"), icon: Truck, path: "/purchasing", module: "purchasing" },
   ] },
@@ -40,8 +40,10 @@ export default function Sidebar({ open: openProp, onToggle, mobile = false, onNa
   const { unread } = useNotifications();
   // Only the modules this business has paid for AND this user was allowed (null = no limit).
   const modules = useQuery(api.tenants.current)?.modules ?? null;
+  const role = String(useQuery(api.users.getCurrentUser)?.role ?? "").toLowerCase();
+  const sellingStaff = role === "waiter" || role === "waitress"; // Selling Point staff have no Dashboard
   const visibleGroups = groups
-    .map((g) => ({ ...g, items: g.items.filter((item) => !modules || modules.includes(item.module)) }))
+    .map((g) => ({ ...g, items: g.items.filter((item) => (!modules || modules.includes(item.module)) && !(sellingStaff && item.module === "dashboard")) }))
     .filter((g) => g.items.length > 0);
   return (
     <aside aria-hidden={mobile && !openProp ? true : undefined} className={cn("sidebar-bg flex flex-shrink-0 flex-col text-sidebar-foreground shadow-2xl", mobile ? cn("fixed inset-y-0 left-0 z-40 w-64 max-w-[85vw] transition-transform duration-300", openProp ? "translate-x-0" : "-translate-x-full") : cn("transition-all duration-300", open ? "w-60" : "w-[72px]"))}>

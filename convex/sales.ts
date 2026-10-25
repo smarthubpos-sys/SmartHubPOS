@@ -1,10 +1,10 @@
 import { surfaceError } from "./surfaceError";
-import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { mutation, query, type MutationCtx } from "./_generated/server";
+import { v, type Infer } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import type { UserLike } from "./access";
-import { canAccessRecord, isSuperAdmin, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope, getCompanySettings } from "./access";
+import { canAccessRecord, isSuperAdmin, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope, getCompanySettings, logAudit } from "./access";
 import { bumpStats } from "./stats";
 import { visibleClients } from "./clients";
 import { assertDate, assertFinite, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
@@ -144,7 +144,7 @@ export const createInvoice = mutation({
     }
     subtotal = money(subtotal); const discount = money(args.discount ?? 0); if (discount < 0 || discount > subtotal) throw new Error("Discount ya invoice si sahihi.");
     const taxable = money(subtotal - discount); const taxRate = args.taxRate ?? 0; if (taxRate < 0 || taxRate > 100) throw new Error("Tax rate lazima iwe kati ya 0 na 100.");
-    const taxAmount = money(taxable * taxRate / 100); const total = money(taxable + taxAmount); const paid = money(args.paymentAmount ?? 0); if (paid !== 0 && normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user))) throw new Error("Malipo ya invoice yafanywe na cashier kupitia Cashier — Pokea Malipo."); if (paid < 0 || paid > total) throw new Error("Kiasi kilicholipwa si sahihi.");
+    const taxAmount = money(taxable * taxRate / 100); const total = money(taxable + taxAmount); const paid = money(args.paymentAmount ?? 0); if (paid !== 0 && normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user))) throw new Error("Malipo ya invoice yafanywe na cashier kupitia Cashier â€” Pokea Malipo."); if (paid < 0 || paid > total) throw new Error("Kiasi kilicholipwa si sahihi.");
     // Credit limit of the customer (Sales > Clients): what he already owes + this invoice's unpaid part must stay inside it.
     const newDebt = money(total - paid);
     let creditWarning = false;
@@ -209,15 +209,66 @@ export const createInvoice = mutation({
  * (never deleted) and drops out of every Sales list, report, balance and total.
  */
 export const voidInvoice = mutation({
-  args: { invoiceId: v.id("invoices"), reason: v.optional(v.string()) },
+  args: {
+    invoiceId: v.id("invoices"),
+    reason: v.string(),
+    reasonDetails: v.optional(v.string()),
+  },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "sales");
-    if (!(await roleHasPermission(ctx, user, "sales.void"))) throw new Error("Forbidden: huna ruhusa ya kufuta / kubatilisha oda. Muombe msimamizi akupe ruhusa (Role Management au User Settings).");
+
+    if (!(await roleHasPermission(ctx, user, "sales.void"))) {
+      throw new Error(
+        "Forbidden: huna ruhusa ya kufuta / kubatilisha oda. Muombe msimamizi akupe ruhusa (Role Management au User Settings).",
+      );
+    }
+
     const invoice = await ctx.db.get("invoices", a.invoiceId);
-    if (!invoice || !canAccessRecord(user, invoice) || (isOwnDataOnly(user) && invoice.createdBy !== user._id)) throw new Error("Invoice haipatikani.");
-    if (invoice.status !== "posted") throw new Error("Invoice hii tayari imebatilishwa.");
-    if (invoice.total <= 0) throw new Error("Invoice hii imerudishwa yote kupitia marejesho; haihitaji kubatilishwa.");
-    const scope = { tenantId: invoice.tenantId, branchId: invoice.branchId };
+
+    if (
+      !invoice ||
+      !canAccessRecord(user, invoice) ||
+      (isOwnDataOnly(user) && invoice.createdBy !== user._id)
+    ) {
+      throw new Error("Invoice haipatikani.");
+    }
+
+    if (invoice.status !== "posted") {
+      throw new Error("Invoice hii tayari imebatilishwa.");
+    }
+
+    if (invoice.total <= 0) {
+      throw new Error(
+        "Invoice hii imerudishwa yote kupitia marejesho; haihitaji kubatilishwa.",
+      );
+    }
+
+    const reason = a.reason.trim();
+
+    const allowedReasons = [
+      "Kosa la kuingiza invoice",
+      "Mteja amebadilisha mawazo",
+      "Bidhaa ime-expire",
+      "Kosa la bei au kiasi",
+      "Mteja amebadilisha oda",
+      "Sababu nyingine",
+    ];
+
+    if (!allowedReasons.includes(reason)) {
+      throw new Error("Chagua sababu halali ya kubatilisha invoice.");
+    }
+
+    const reasonDetails = a.reasonDetails?.trim() ?? "";
+    if (reason === "Sababu nyingine" && !reasonDetails) {
+      throw new Error("Eleza sababu nyingine kabla ya kubatilisha invoice.");
+    }
+    const cancellationReason =
+      reason === "Sababu nyingine" ? `${reason}: ${reasonDetails}` : reason;
+
+    const scope = {
+      tenantId: invoice.tenantId,
+      branchId: invoice.branchId,
+    };
     const lines = await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
     const payments = (await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect()).filter((p) => !p.voided);
     const refunded = money(payments.reduce((n, p) => n + p.amount, 0));
@@ -231,7 +282,7 @@ export const voidInvoice = mutation({
       const product = await ctx.db.get("products", l.productId); if (!product) continue;
       const balance = product.currentQty + qty;
       await ctx.db.patch("products", l.productId, { currentQty: balance });
-      await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId: l.productId, movementType: "sale_return", referenceId: String(a.invoiceId), referenceType: "invoice_void", qtyIn: qty, qtyOut: 0, runningBalance: balance, unitCost: l.costAtSale, clientId: invoice.clientId, notes: a.reason, createdBy: user._id });
+      await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId: l.productId, movementType: "sale_return", referenceId: String(a.invoiceId), referenceType: "invoice_void", qtyIn: qty, qtyOut: 0, runningBalance: balance, unitCost: l.costAtSale, clientId: invoice.clientId, notes: cancellationReason, createdBy: user._id });
     }
 
     // 2. Ledger: reverse revenue, tax and cost of goods; clear what was still owed; refund each payment to its own account.
@@ -251,13 +302,16 @@ export const voidInvoice = mutation({
     ];
     // A payment row can be negative (a refund paid out by a partial return); it is put back on the account it left.
     for (const p of payments) journalLines.push({ accountId: await methodAccount(ctx, scope, { methodId: p.paymentMethodId, method: p.paymentMethod }), debit: p.amount < 0 ? -p.amount : 0, credit: p.amount > 0 ? p.amount : 0, description: `Refund to customer - ${p.paymentMethod}` });
-    await postSystemJournal(ctx, { scope, userId: user._id, date: today, reference: `SALEVOID-${invoice.invoiceNo}`, description: `Cancelled invoice ${invoice.invoiceNo}${a.reason ? ` - ${a.reason}` : ""}`, sourceType: "sale_void", sourceId: String(a.invoiceId), lines: journalLines });
+    await postSystemJournal(ctx, { scope, userId: user._id, date: today, reference: `SALEVOID-${invoice.invoiceNo}`, description: `Cancelled invoice ${invoice.invoiceNo}${cancellationReason ? ` - ${cancellationReason}` : ""}`, sourceType: "sale_void", sourceId: String(a.invoiceId), lines: journalLines });
 
     // 3. Mark everything cancelled and keep the dashboard totals in step.
     for (const p of payments) await ctx.db.patch("customerPayments", p._id, { voided: true });
-    await ctx.db.patch("invoices", a.invoiceId, { status: "cancelled", amountPaid: 0, outstanding: 0, paymentStatus: "cancelled", notes: [invoice.notes, `Imebatilishwa ${today}${a.reason ? `: ${a.reason}` : ""}`].filter(Boolean).join(" | ") });
-    await bumpStats(ctx, scope, { receivable: -money(invoice.outstanding), date: invoice.invoiceDate, sales: -invoice.total, collected: -refunded, invoices: -1 });
-    await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "void_invoice", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `Invoice ${invoice.invoiceNo} cancelled; total ${invoice.total}; refunded ${refunded}${a.reason ? `; ${a.reason}` : ""}`, timestamp: new Date().toISOString(), result: "success" });
+    await ctx.db.patch("invoices", a.invoiceId, { status: "cancelled", amountPaid: 0, outstanding: 0, paymentStatus: "cancelled", notes: [invoice.notes, `Imebatilishwa ${today}${cancellationReason ? `: ${cancellationReason}` : ""}`].filter(Boolean).join(" | ") });
+    await bumpStats(ctx, scope, { receivable: -money(invoice.outstanding), date: invoice.invoiceDate, sales: -invoice.total, invoices: -1 });
+    // Cash collected is reported on the day each payment was made, so it is taken back on those same days.
+    const paidByDay = new Map<string, number>(); for (const p of payments) paidByDay.set(p.paymentDate, money((paidByDay.get(p.paymentDate) ?? 0) + p.amount));
+    for (const [day, amt] of paidByDay) if (amt) await bumpStats(ctx, scope, { date: day, collected: -amt });
+    await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "void_invoice", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `Invoice ${invoice.invoiceNo} cancelled; total ${invoice.total}; refunded ${refunded}${cancellationReason ? `; ${cancellationReason}` : ""}`, timestamp: new Date().toISOString(), result: "success" });
     return { invoiceNo: invoice.invoiceNo, refunded };
   },
 });
@@ -387,7 +441,8 @@ export const returnItems = mutation({
     const subtotal = money(invoice.subtotal - grossReturned), discount = money(invoice.discount - discountReturned), taxAmount = money(invoice.taxAmount - taxReturned);
     const newTotal = money(subtotal - discount + taxAmount), amountPaid = money(invoice.amountPaid - refund), outstanding = money(invoice.outstanding - credit);
     await ctx.db.patch("invoices", a.invoiceId, { subtotal, discount, taxAmount, total: newTotal, amountPaid, outstanding, paymentStatus: newTotal <= 0 ? "returned" : outstanding <= 0 ? "paid" : amountPaid > 0 ? "partial" : "unpaid", notes: [invoice.notes, `Marejesho ${returnRef} ${returnDate}${a.reason ? `: ${a.reason}` : ""}`].filter(Boolean).join(" | ") });
-    await bumpStats(ctx, scope, { receivable: -credit, date: invoice.invoiceDate, sales: -total, collected: -refund });
+    await bumpStats(ctx, scope, { receivable: -credit, date: invoice.invoiceDate, sales: -total });
+    if (refund) await bumpStats(ctx, scope, { date: returnDate, collected: -refund }); // refund leaves the till on the return day
     await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "sales_return", module: "sales", referenceId: String(returnId), referenceType: "salesReturn", details: `${returnRef} on ${invoice.invoiceNo}; value ${total}; debt reduced ${credit}; refunded ${refund}`, timestamp: new Date().toISOString(), result: "success" });
     return { returnRef, total, creditedToDebt: credit, refunded: refund, invoiceTotal: newTotal, fullyReturned: newTotal <= 0 };
   },
@@ -397,7 +452,9 @@ export const returnItems = mutation({
  * Receive a customer payment on one invoice. One receipt may be split over several methods, e.g. a customer who owes
  * 30,000 pays 10,000 by phone + 10,000 by bank + 10,000 cash: pass `splits`. (`amount` + `paymentMethod` still work for a single method.)
  */
-export const recordPayment = mutation({ args: { invoiceId: v.id("invoices"), amount: v.optional(v.number()), paymentMethod: v.optional(v.string()), splits: v.optional(v.array(splitValidator)), paymentDate: v.string(), reference: v.optional(v.string()), notes: v.optional(v.string()) }, handler: async (ctx, args) => {
+type PaymentArgs = { invoiceId: Id<"invoices">; amount?: number; paymentMethod?: string; splits?: Infer<typeof splitValidator>[]; paymentDate: string; reference?: string; notes?: string };
+/** The ONE place a customer payment is validated and recorded (payments, journal, invoice balance, stats). Used by recordPayment and settleInvoices. */
+export async function applyCustomerPayment(ctx: MutationCtx, args: PaymentArgs) {
   const user = await requireActiveUser(ctx, "sales");
   assertDate(args.paymentDate, "Tarehe ya malipo");
   const role = normalizeRole(user.role);
@@ -420,9 +477,44 @@ export const recordPayment = mutation({ args: { invoiceId: v.id("invoices"), amo
   }
   const paid = money(invoice.amountPaid + amount), outstanding = money(invoice.total - paid);
   await ctx.db.patch("invoices", args.invoiceId, { amountPaid: paid, outstanding, paymentStatus: outstanding === 0 ? "paid" : "partial" });
-  await bumpStats(ctx, { tenantId: invoice.tenantId, branchId: invoice.branchId }, { receivable: -amount, date: invoice.invoiceDate, collected: amount });
+  await bumpStats(ctx, { tenantId: invoice.tenantId, branchId: invoice.branchId }, { receivable: -amount, date: args.paymentDate, collected: amount }); // collected counts on the payment day, not the invoice day
   return { amountPaid: paid, outstanding, receiptNo, amount, splits: splits.map((s) => ({ method: s.method, amount: s.amount })) };
-} });
+}
+export const recordPayment = mutation({ args: { invoiceId: v.id("invoices"), amount: v.optional(v.number()), paymentMethod: v.optional(v.string()), splits: v.optional(v.array(splitValidator)), paymentDate: v.string(), reference: v.optional(v.string()), notes: v.optional(v.string()) }, handler: async (ctx, args) => applyCustomerPayment(ctx, args) });
+
+/**
+ * Staff settlement over SEVERAL invoices in ONE transaction: either every invoice receives its payment, or (if any one is refused:
+ * overpayment, cancelled invoice, other staff's invoice, bad split ...) nothing at all is recorded. Each invoice goes through the same
+ * applyCustomerPayment as a normal payment, so split payments, journals, balances and stats stay identical. Cashier / manager only.
+ */
+export const settleInvoices = mutation({
+  args: {
+    staffId: v.id("users"),
+    paymentDate: v.string(),
+    notes: v.optional(v.string()),
+    allocations: v.array(v.object({ invoiceId: v.id("invoices"), splits: v.array(splitValidator) })),
+  },
+  handler: async (ctx, args) => {
+    try {
+      const user = await requireActiveUser(ctx, "sales");
+      if (normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user))) throw new Error("Forbidden: cashier permission required to receive customer payments");
+      if (args.allocations.length === 0) throw new Error("Chagua angalau invoice moja.");
+      if (args.allocations.length > 50) throw new Error("Invoice nyingi mno kwa mara moja (kikomo 50).");
+      if (new Set(args.allocations.map((a) => String(a.invoiceId))).size !== args.allocations.length) throw new Error("Invoice moja imechaguliwa mara mbili.");
+      const results = [];
+      let total = 0;
+      for (const a of args.allocations) {
+        const inv = await ctx.db.get("invoices", a.invoiceId);
+        if (!inv || inv.createdBy !== args.staffId) throw new Error("Invoice hii si ya mhudumu aliyechaguliwa.");
+        const r = await applyCustomerPayment(ctx, { invoiceId: a.invoiceId, splits: a.splits, paymentDate: args.paymentDate, notes: args.notes }); // throws -> everything rolls back
+        total = roundMoney(total + r.amount);
+        results.push({ invoiceId: a.invoiceId, invoiceNo: inv.invoiceNo, amount: r.amount, outstanding: r.outstanding, receiptNo: r.receiptNo });
+      }
+      await logAudit(ctx, user, { action: "staff_settlement", module: "sales", referenceId: String(args.staffId), referenceType: "user", details: `invoice ${results.length}; jumla ${total}; ${results.map((r) => `${r.invoiceNo}:${r.amount}`).join(", ")}` });
+      return { total, results };
+    } catch (e) { throw surfaceError(e); }
+  },
+});
 
 
 /**
@@ -492,7 +584,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
     const getInvoice = async (id: Id<"invoices"> | null | undefined) => (id ? memo(`invoices:${id}`, () => ctx.db.get("invoices", id)) : null);
     const staffCache = new Map<string, string>();
     const staffOf = async (id: Id<"users"> | null | undefined) => {
-      if (!id) return "—"; const key = String(id); if (staffCache.has(key)) return staffCache.get(key)!;
+      if (!id) return "â€”"; const key = String(id); if (staffCache.has(key)) return staffCache.get(key)!;
       const u = await getUser(id); const name = u?.name ?? u?.username ?? u?.email ?? "Mtumiaji"; staffCache.set(key, name); return name;
     };
 
@@ -501,7 +593,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
     for (const inv of invoices) {
       if (basic) continue; // everyday screens get headline totals only, never per-invoice staff / line data
       const staff = await staffOf(inv.salespersonId ?? inv.createdBy);
-      invoiceRows.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, paymentStatus: inv.paymentStatus, staff, source: inv.salesSource ?? "—", notes: inv.notes ?? "" });
+      invoiceRows.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, paymentStatus: inv.paymentStatus, staff, source: inv.salesSource ?? "â€”", notes: inv.notes ?? "" });
       if (!wantLines) continue;
       const factor = inv.subtotal > 0 ? (inv.subtotal - inv.discount) / inv.subtotal : 1;
       for (const l of await ctx.db.query("invoiceLines").withIndex("by_invoice", q => q.eq("invoiceId", inv._id)).collect()) {
@@ -510,7 +602,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
         const keep = l.qty > 0 ? keptQty / l.qty : 1;
         const p = await getProduct(l.productId); const net = money(l.lineTotal * keep * factor); const cost = money(keptQty * l.costAtSale);
         const group = await getGroup(p?.groupId); const unit = await getUnit(p?.unitId); const supplier = await getSupplier(p?.lastSupplierId);
-        lines.push({ invoiceId: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", staff, source: inv.salesSource ?? "—", productId: l.productId, itemCode: p?.itemCode ?? "—", productName: p?.name ?? "Bidhaa", groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: keptQty, unitPrice: l.unitPrice, discount: money(l.discount * keep), net, cost, profit: money(net - cost) });
+        lines.push({ invoiceId: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", staff, source: inv.salesSource ?? "â€”", productId: l.productId, itemCode: p?.itemCode ?? "â€”", productName: p?.name ?? "Bidhaa", groupName: p?.groupId ? group?.name ?? "â€”" : "â€”", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "â€”" : "â€”", qty: keptQty, unitPrice: l.unitPrice, discount: money(l.discount * keep), net, cost, profit: money(net - cost) });
       }
     }
 
@@ -518,8 +610,8 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
     for (const i of [...invoices, ...openInvoicesRaw]) invNoCache.set(String(i._id), i.invoiceNo);
     const payments = [] as Array<{ _id: Id<"customerPayments">; date: string; clientId: Id<"clients">; clientName: string; invoiceNo: string; amount: number; method: string; reference: string; notes: string }>;
     for (const p of periodPayments.filter((x) => inRange(x.paymentDate)).sort((x, y) => y.paymentDate.localeCompare(x.paymentDate) || y._creationTime - x._creationTime)) {
-      let invoiceNo = "—";
-      if (p.invoiceId) { const k = String(p.invoiceId); if (!invNoCache.has(k)) invNoCache.set(k, (await getInvoice(p.invoiceId))?.invoiceNo ?? "—"); invoiceNo = invNoCache.get(k)!; }
+      let invoiceNo = "â€”";
+      if (p.invoiceId) { const k = String(p.invoiceId); if (!invNoCache.has(k)) invNoCache.set(k, (await getInvoice(p.invoiceId))?.invoiceNo ?? "â€”"); invoiceNo = invNoCache.get(k)!; }
       payments.push({ _id: p._id, date: p.paymentDate, clientId: p.clientId, clientName: clientName.get(String(p.clientId)) ?? "Mteja", invoiceNo, amount: p.amount, method: p.paymentMethod, reference: p.reference ?? "", notes: p.notes ?? "" });
     }
 

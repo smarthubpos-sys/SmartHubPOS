@@ -1,5 +1,5 @@
 import { lazy } from "react";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import ErrorBoundary from "./components/error-boundary.tsx";
 import { DefaultProviders } from "./components/providers/default.tsx";
 import AuthCallback from "./pages/auth/callback.tsx";
@@ -32,7 +32,8 @@ export default function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/super-admin" element={<SuperAdminPage />} />
             <Route path="/sales/*" element={<SalesPage />} />
-            <Route path="/waiter-orders" element={<WaiterOrdersPage />} />
+            <Route path="/selling-point" element={<WaiterOrdersPage />} />
+            <Route path="/waiter-orders" element={<Navigate to="/selling-point" replace />} />
             <Route path="/stock/*" element={<StockPage />} />
             <Route path="/purchasing/*" element={<PurchasingPage />} />
             <Route path="/payroll/*" element={<PayrollPage />} />

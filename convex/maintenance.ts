@@ -53,7 +53,7 @@ async function securityPolicy(ctx: QueryCtx, user: UserLike) {
   return { ...DEFAULT_SECURITY, ...(map.security ?? {}) };
 }
 
-/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Settings (company, system, hardware, tax, numbering, language, security) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* ───────────────────────── Settings (company, system, hardware, tax, numbering, language, security) ───────────────────────── */
 
 export const getSettings = query({
   args: {},
@@ -81,8 +81,8 @@ export const saveCompany = mutation({
   handler: async (ctx, args) => {
     const user = await requirePermission(ctx, "maintenance.company");
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
-    if (args.decimalPlaces !== undefined && (args.decimalPlaces < 0 || args.decimalPlaces > 6)) throw new Error("Decimal places lazima iwe 0Ã¢â‚¬â€œ6.");
-    if (args.taxRate !== undefined && (args.taxRate < 0 || args.taxRate > 100)) throw new Error("Tax rate lazima iwe 0Ã¢â‚¬â€œ100.");
+    if (args.decimalPlaces !== undefined && (args.decimalPlaces < 0 || args.decimalPlaces > 6)) throw new Error("Decimal places lazima iwe 0–6.");
+    if (args.taxRate !== undefined && (args.taxRate < 0 || args.taxRate > 100)) throw new Error("Tax rate lazima iwe 0–100.");
     const patch = Object.fromEntries(Object.entries(args).filter(([, val]) => val !== undefined));
     const existing = (await scopedRows(ctx, user, "companySettings")).find((r) => r.branchId === scope.branchId); // the row of THIS scope (business-wide, or the chosen department), never another department's
     let id;
@@ -109,8 +109,16 @@ export const saveSetting = mutation({
     const value = args.value ?? {};
     if (args.key === "security") {
       const s: { minPasswordLength?: unknown; sessionTimeoutMinutes?: unknown } = typeof value === "object" && value !== null ? value : {};
-      if (!(typeof s.minPasswordLength === "number" && s.minPasswordLength >= 8 && s.minPasswordLength <= 64)) throw new Error("Urefu wa password uwe 8Ã¢â‚¬â€œ64.");
-      if (!(typeof s.sessionTimeoutMinutes === "number" && s.sessionTimeoutMinutes >= 0 && s.sessionTimeoutMinutes <= 1440)) throw new Error("Session timeout iwe 0Ã¢â‚¬â€œ1440 dakika (0 = imezimwa).");
+      if (!(typeof s.minPasswordLength === "number" && s.minPasswordLength >= 8 && s.minPasswordLength <= 64)) throw new Error("Urefu wa password uwe 8–64.");
+      if (!(typeof s.sessionTimeoutMinutes === "number" && s.sessionTimeoutMinutes >= 0 && s.sessionTimeoutMinutes <= 1440)) throw new Error("Session timeout iwe 0–1440 dakika (0 = imezimwa).");
+    }
+    if (args.key === "system" && typeof value === "object" && value !== null) { // receipt footer and payment details: plain text, bounded length
+      const limits: Record<string, number> = { receiptFooter: 500, mobileMoneyProvider: 40, mobileMoneyNumber: 30, bankName: 60, bankAccountName: 80, bankAccountNumber: 40, paymentInstructions: 300 };
+      for (const [field, max] of Object.entries(limits)) {
+        const x = (value as Record<string, unknown>)[field];
+        if (x === undefined) continue;
+        if (typeof x !== "string" || x.length > max) throw new Error(`Maandishi ya "${field}" si sahihi au ni marefu kuliko herufi ${max}.`);
+      }
     }
     if (args.key === "language" && !["sw", "en"].includes(String((typeof value === "object" && value !== null ? (value as { language?: unknown }).language : undefined)))) throw new Error("Lugha lazima iwe sw au en.");
     const rows = (await ctx.db.query("appSettings").withIndex("by_key", (q) => q.eq("key", args.key)).collect())
@@ -123,7 +131,7 @@ export const saveSetting = mutation({
   },
 });
 
-/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Financial periods Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* ───────────────────────── Financial periods ───────────────────────── */
 
 export const listPeriods = query({
   args: {},
@@ -204,7 +212,7 @@ export const deletePeriod = mutation({
   },
 });
 
-/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Roles Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* ───────────────────────── Roles ───────────────────────── */
 
 export const listRoles = query({
   args: {},
@@ -241,7 +249,7 @@ export const saveRole = mutation({
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.roles");
     const name = normalizeRole(a.name);
-    if (!/^[a-z][a-z0-9_]{1,30}$/.test(name)) throw new Error("Jina la role: herufi ndogo/namba/underscore (2Ã¢â‚¬â€œ31), likianza na herufi.");
+    if (!/^[a-z][a-z0-9_]{1,30}$/.test(name)) throw new Error("Jina la role: herufi ndogo/namba/underscore (2–31), likianza na herufi.");
     if (["super_admin", "superadmin"].includes(name)) throw new Error("Role ya Super Admin imehifadhiwa na haiwezi kubadilishwa.");
     if (!a.displayName.trim()) throw new Error("Display name inahitajika.");
     const bad = a.permissions.filter((p) => !ALL_PERMISSION_KEYS.includes(p));
@@ -272,7 +280,7 @@ export const deleteRole = mutation({
   },
 });
 
-/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Users Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* ───────────────────────── Users ───────────────────────── */
 
 /** Keeps only modules the business actually has (the Super Admin decides that per business). */
 /** Permissions such as stock.adjust can be given or taken away by a Super Admin only (role or single user). */
@@ -305,7 +313,7 @@ export const listUsers = query({
     // A user tied to one department only manages (and sees) the users of that department.
     const limit = departmentLimit(user);
     const visible = limit ? tenantRows.filter((r) => insideLimit(departmentScope(r), limit)) : tenantRows;
-    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], ownDataOnly: r.ownDataOnly === true, pinLoginEnabled: r.pinLoginEnabled === true, hasPin: !!r.pinHash }));
+    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], ownDataOnly: r.ownDataOnly === true, pinLoginEnabled: r.pinLoginEnabled === true, hasPin: !!r.pinHash, staffCode: r.staffCode ?? "" }));
   },
 });
 
@@ -419,7 +427,7 @@ export const renameUsername = mutation({
   args: { userId: v.id("users"), newUsername: v.string() },
   handler: async (ctx, a): Promise<{ username: string }> => {
     const username = a.newUsername.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3Ã¢â‚¬â€œ32, bila nafasi.");
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3–32, bila nafasi.");
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { targetUserId: a.userId }); // active actor + maintenance.users + same business/department rules
     const target = await ctx.db.get("users", a.userId);
     if (!target) throw new Error("Mtumiaji hapatikani.");
@@ -498,6 +506,29 @@ export const updateUser = mutation({
     if (a.extraPermissions !== undefined) { assertSuperAdminKeysUnchanged(actor, target.extraPermissions, a.extraPermissions); patch.extraPermissions = cleanExtraPermissions(a.extraPermissions); }
     await ctx.db.patch("users", a.userId, patch);
     await logAudit(ctx, actor, { action: "update_user", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${target.username ?? target.name}: ${Object.keys(patch).join(", ")}` });
+    return true;
+  },
+});
+
+
+/** User Settings: the unique staff code the cashier types to find this person's sales. Unique inside one business (case-insensitive). */
+export const setStaffCode = mutation({
+  args: { userId: v.id("users"), staffCode: v.string() },
+  handler: async (ctx, a) => {
+    const actor = await requirePermission(ctx, "maintenance.users");
+    const target = await ctx.db.get("users", a.userId);
+    if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
+    if (!isSuperAdmin(actor) && (!actor.tenantId || target.tenantId !== actor.tenantId)) throw new Error("Mtumiaji hapatikani.");
+    const code = a.staffCode.trim().toUpperCase();
+    if (code && !/^[A-Z0-9_-]{2,20}$/.test(code)) throw new Error("Staff code: herufi/namba 2-20 (bila nafasi).");
+    if (code && target.tenantId) {
+      const tenantId = target.tenantId;
+      // by_scope is (tenantId, branchId): a prefix query on tenantId alone returns EVERY department of the business, so the code is unique business-wide
+      const sameTenant = await ctx.db.query("users").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect();
+      if (sameTenant.some((u) => u._id !== target._id && (u.staffCode ?? "").toUpperCase() === code)) throw new Error("Staff code hii inatumika na mtu mwingine.");
+    }
+    await ctx.db.patch("users", a.userId, { staffCode: code || undefined });
+    await logAudit(ctx, actor, { action: "set_staff_code", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${target.username ?? target.name}: ${code ? "staff code imewekwa" : "staff code imeondolewa"}` });
     return true;
   },
 });
@@ -602,7 +633,7 @@ export const createUser = action({
   },
   handler: async (ctx, a): Promise<string> => {
     const username = a.username.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3Ã¢â‚¬â€œ32, bila nafasi.");
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3–32, bila nafasi.");
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { role: a.role, tenantId: a.tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, extraPermissions: a.extraPermissions });
     if (a.password.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
     const tenantId = a.tenantId ?? auth.actorTenantId;
@@ -694,7 +725,7 @@ export const markPasswordChanged = internalMutation({
   },
 });
 
-/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Audit trail Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* ───────────────────────── Audit trail ───────────────────────── */
 
 export const listAudit = query({
   args: { module: v.optional(v.string()), limit: v.optional(v.number()) },
@@ -715,7 +746,7 @@ export const listAudit = query({
   },
 });
 
-/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Backup (export) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* ───────────────────────── Backup (export) ───────────────────────── */
 
 export const BACKUP_TABLES = [
   "tenants", "branches", "tenantSettings", "users", "roles", "companySettings", "financialPeriods", "appSettings", "paymentMethods",
@@ -750,7 +781,7 @@ export const recordBackup = mutation({
   },
 });
 
-/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Database maintenance Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* ───────────────────────── Database maintenance ───────────────────────── */
 
 const SCOPED_TABLES = [
   "suppliers", "products", "clients", "productGroups", "unitsOfMeasure", "purchases", "purchaseOrders", "goodsReceivedNotes",
@@ -824,7 +855,7 @@ export const purgeAuditLogs = mutation({
   },
 });
 
-/* Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Clear Data File (Super Admin + Super Admin password) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* ───────────────────────── Clear Data File (Super Admin + Super Admin password) ───────────────────────── */
 
 type ClearStep = { table: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean };
 type ClearCategory = { label: string; description: string; steps: ClearStep[]; resetSequences?: ("salesSequences" | "purchaseSequences")[]; rebuildStats?: boolean };
@@ -951,7 +982,7 @@ export const finishClear = internalMutation({
     if (a.categories.some((k) => CLEAR_CATEGORIES[k]?.rebuildStats)) {
       await ctx.scheduler.runAfter(0, internal.stats.requestRebuild, { tenantId: a.tenantId });
     }
-    await logAudit(ctx, actor, { action: "clear_data_file", module: "maintenance", details: `${a.categories.join(", ")} Ã¢â‚¬â€ ${a.counts}` });
+    await logAudit(ctx, actor, { action: "clear_data_file", module: "maintenance", details: `${a.categories.join(", ")} — ${a.counts}` });
   },
 });
 

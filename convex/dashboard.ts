@@ -134,6 +134,7 @@ export const getMyDashboard = query({
   args: { from: v.string(), today: v.string() },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "dashboard");
+    if (["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) throw new Error("Forbidden: Selling Point staff have no Dashboard access");
     const tenantId = user.tenantId;
     const empty = { today: { sales: 0, collected: 0, outstanding: 0, invoices: 0 }, range: { sales: 0, collected: 0, outstanding: 0, invoices: 0 }, openBills: 0, daily: [] as Array<{ date: string; sales: number; collected: number }>, recent: [] as Array<{ _id: Id<"invoices">; invoiceNo: string; invoiceDate: string; total: number; outstanding: number; paymentStatus: Doc<"invoices">["paymentStatus"]; clientName: string }> };
     if (!tenantId) return empty;

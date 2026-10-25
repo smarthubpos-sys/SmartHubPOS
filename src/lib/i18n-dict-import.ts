@@ -15,7 +15,7 @@ export const IMPORT_DICT: Record<string, { sw: string; en: string }> = {
   "Safu {0}: {1} — {2}": { sw: "Safu {0}: {1} — {2}", en: "Row {0}: {1} — {2}" },
   "…na nyingine {0}.": { sw: "…na nyingine {0}.", en: "…and {0} more." },
   "Seva haikurudisha jibu kwa safu hii.": { sw: "Seva haikurudisha jibu kwa safu hii.", en: "The server returned no result for this row." },
-  "Waiter Orders settings": { sw: "Mipangilio ya Waiter Orders", en: "Waiter Orders settings" },
+  "Selling Point settings": { sw: "Mipangilio ya Selling Point", en: "Selling Point settings" },
   "Enable Waiter": { sw: "Washa Waiter", en: "Enable Waiter" },
   "Enable Waitress": { sw: "Washa Waitress", en: "Enable Waitress" },
 };

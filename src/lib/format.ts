@@ -1,9 +1,10 @@
 import { getLocale } from "./i18n.ts";
 
 /** Local calendar date (YYYY-MM-DD) in the user's timezone, not UTC. */
-export function localDate(offsetDays = 0) {
-  const d = new Date(Date.now() - new Date().getTimezoneOffset() * 60000 + offsetDays * 86400000);
-  return d.toISOString().slice(0, 10);
+/** Business date in East Africa Time (Africa/Dar_es_Salaam, UTC+3, no DST) — same rule as the server's `tzToday()`, whatever the device's own timezone is. */
+export const EAT_OFFSET_MS = 3 * 3600000;
+export function localDate(offsetDays = 0, now = Date.now()) {
+  return new Date(now + EAT_OFFSET_MS + offsetDays * 86400000).toISOString().slice(0, 10);
 }
 export const tzOffset = () => new Date().getTimezoneOffset();
 

@@ -56,6 +56,7 @@ export default defineSchema({
     pinHash: v.optional(v.string()),
     pinFailedAttempts: v.optional(v.number()),
     pinLockedUntil: v.optional(v.number()),
+    staffCode: v.optional(v.string()), // unique (per business) code the cashier types to find this staff member's sales
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("email", ["email"])
     .index("phone", ["phone"])
@@ -871,6 +872,8 @@ export default defineSchema({
     waiterName: v.string(),
     status: v.string(), // placed | pending (sent to cashier) | accepted (cashier printed/handled) | printed (waiter printed)
     stockDeducted: v.optional(v.boolean()),
+    stockDeductedAt: v.optional(v.string()),
+    clientKey: v.optional(v.string()), // one random key per cart: a repeated tap / retry returns the SAME order instead of a second one
     sentAt: v.optional(v.string()),
     printedAt: v.optional(v.string()),
     cancelledAt: v.optional(v.string()),
@@ -891,6 +894,7 @@ export default defineSchema({
   })
     .index("by_scope_status", ["tenantId", "branchId", "status"])
     .index("by_waiter", ["waiterId"])
+    .index("by_client_key", ["waiterId", "clientKey"])
     .index("by_created", ["createdAt"]),
 
   supportTickets: defineTable({

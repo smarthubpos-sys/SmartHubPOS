@@ -1,24 +1,23 @@
-import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { tr, errorText } from "@/lib/i18n.ts";
+import WaiterDirectory from "./WaiterDirectory.tsx";
+import SellingPoint from "./SellingPoint.tsx";
+import BillsPanel from "./BillsPanel.tsx";
+import StaffSettlement from "./StaffSettlement.tsx";
 import { printWaiterOrder, type PrintableOrder } from "@/lib/print-waiter-order.ts";
 
 const waiterApi = api.waiterOrders;
 
 type Order = Doc<"waiterOrders">;
-type Line = { productId: string; qty: string };
 
 export default function WaiterOrdersPage() {
   const user = useQuery(api.users.getCurrentUser);
   const business = useQuery(api.tenants.current);
-  const products = useQuery(api.products.listActive);
   const orders = useQuery(waiterApi.list);
-  const placeOrder = useMutation(waiterApi.place);
   const markHandled = useMutation(waiterApi.markHandled);
   const sendToCashier = useMutation(waiterApi.sendToCashier);
   const markPrinted = useMutation(waiterApi.markPrinted);
@@ -26,54 +25,11 @@ export default function WaiterOrdersPage() {
   const settings = useQuery(api.maintenance.getSettings, {});
   const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
 
-  const [customer, setCustomer] = useState("");
-  const [table, setTable] = useState("");
-  const [notes, setNotes] = useState("");
-  const [lines, setLines] = useState<Line[]>([{ productId: "", qty: "1" }]);
-  const [busy, setBusy] = useState(false);
-
-  const total = useMemo(() => lines.reduce((sum, line) => {
-    const product = (products ?? []).find(p => p._id === line.productId);
-    return sum + (product?.sellingPrice ?? 0) * Math.max(0, Number(line.qty) || 0);
-  }, 0), [lines, products]);
-
   const role = String(user?.role ?? "").toLowerCase();
   const cashier = ["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role);
 
   // Waiter and Waitress each follow their own switch (Super Admin > Edit Business); other roles need at least one on.
   const roleEnabled = role === "waitress" ? business?.waitressEnabled === true : role === "waiter" ? business?.waiterEnabled === true : business?.waiterOrdersEnabled === true;
-
-  async function place() {
-    if (!customer.trim()) {
-      toast.error(tr("Weka jina la mteja."));
-      return;
-    }
-    if (lines.some(line => !line.productId || !(Number(line.qty) > 0))) {
-      toast.error(tr("Chagua bidhaa na kiasi sahihi kwa kila mstari."));
-      return;
-    }
-    setBusy(true);
-    try {
-      await placeOrder({
-        customerName: customer.trim(),
-        tableNumber: table.trim() || undefined,
-        notes: notes.trim() || undefined,
-        lines: lines.map(line => ({
-          productId: line.productId as Id<"products">,
-          qty: Number(line.qty),
-        })),
-      });
-      toast.success(tr("Oda imewekwa bila kupunguza stock. Sasa chagua Send au Print."));
-      setCustomer("");
-      setTable("");
-      setNotes("");
-      setLines([{ productId: "", qty: "1" }]);
-    } catch (error) {
-      toast.error(errorText(error, tr("Imeshindikana kuweka oda.")));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function send(orderId: string) {
     try {
@@ -119,49 +75,13 @@ export default function WaiterOrdersPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-3 sm:p-6">
       <header>
-        <h1 className="text-2xl font-bold">{tr("Waiter Orders")}</h1>
+        <h1 className="text-2xl font-bold">{tr("Selling Point")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {tr("Weka oda bila kupunguza stock, kisha Send kwa cashier au Print kupitia QZ Tray. Send na Print havipunguzi stock.")}
+          {tr("Chagua kundi, gusa bidhaa, kisha Send au Print. Stock inapunguzwa mara moja tu, Send/Print ikibonyezwa.")}
         </p>
       </header>
 
-      {roleEnabled && !cashier && <section className="space-y-4 rounded-xl border p-4 sm:p-5">
-        <h2 className="font-semibold">{tr("Oda mpya")}</h2>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="grid gap-1 text-sm">{tr("Jina la mteja")}
-            <Input value={customer} onChange={e => setCustomer(e.target.value)} />
-          </label>
-          <label className="grid gap-1 text-sm">{tr("Namba ya meza (hiari)")}
-            <Input value={table} onChange={e => setTable(e.target.value)} />
-          </label>
-        </div>
-        <div className="space-y-3">
-          {lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_110px_auto]">
-            <select className="h-10 min-w-0 rounded-md border bg-background px-3"
-              value={line.productId}
-              onChange={e => setLines(old => old.map((x, i) => i === index ? { ...x, productId: e.target.value } : x))}>
-              <option value="">{tr("-- Chagua bidhaa --")}</option>
-              {(products ?? []).map(product => <option key={product._id} value={product._id}>
-                {product.name} — {Number(product.sellingPrice).toLocaleString()}
-              </option>)}
-            </select>
-            <Input aria-label={tr("Kiasi")} type="number" min="0.001" step="any" value={line.qty}
-              onChange={e => setLines(old => old.map((x, i) => i === index ? { ...x, qty: e.target.value } : x))} />
-            <Button variant="outline" disabled={lines.length === 1}
-              onClick={() => setLines(old => old.filter((_, i) => i !== index))}>{tr("Ondoa")}</Button>
-          </div>)}
-        </div>
-        <Button variant="outline" onClick={() => setLines(old => [...old, { productId: "", qty: "1" }])}>
-          {tr("Ongeza bidhaa")}
-        </Button>
-        <label className="grid gap-1 text-sm">{tr("Maelezo (hiari)")}
-          <Input value={notes} onChange={e => setNotes(e.target.value)} />
-        </label>
-        <p className="text-lg font-bold">{tr("Jumla")}: {total.toLocaleString()}</p>
-        <div className="flex flex-wrap gap-2">
-          <Button disabled={busy} onClick={() => void place()}>{busy ? tr("Inaweka...") : tr("Weka Order")}</Button>
-        </div>
-      </section>}
+      {roleEnabled && !cashier && <SellingPoint />}
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">{cashier ? tr("Foleni ya cashier") : tr("Oda nilizotuma")}</h2>
@@ -191,6 +111,8 @@ export default function WaiterOrdersPage() {
         </article>)}
         {orders && orders.length === 0 && <p className="rounded-xl border p-5 text-sm text-muted-foreground">{tr("Hakuna oda bado.")}</p>}
       </section>
+      <BillsPanel />
+      {cashier && role !== "super_admin" && role !== "superadmin" && <><StaffSettlement /><WaiterDirectory /></>}
     </div>
   );
 }
