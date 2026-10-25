@@ -95,12 +95,53 @@ export default function AppLayout() {
 
   // A screen whose module is not available to this business/user is never shown, even when its address is typed in by hand.
   // Selling Point staff (waiter / waitress) never open the Dashboard: they start at, and are sent back to, Selling Point.
-  const sellingStaff = ["waiter", "waitress"].includes(String(user?.role ?? "").toLowerCase());
-  if (sellingStaff && (location.pathname === "/dashboard" || location.pathname.startsWith("/dashboard/"))) return <Navigate to="/selling-point" replace />;
-  const moduleOfRoute = MODULES.find((m) => m.path === "/" + (location.pathname.split("/")[1] ?? ""));
-  const routePermission = location.pathname.startsWith("/selling-point") ? "waiterOrders.view" : location.pathname.startsWith("/sales") ? "sales.view" : null;
-  const blockedByPermission = !!routePermission && !permissions.includes(routePermission);
-  const blocked = (!!moduleOfRoute && !!business?.modules && !business.modules.includes(moduleOfRoute.key)) || blockedByPermission;
+
+  const normalizedRole = String(user?.role ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+
+  const superAdmin =
+    normalizedRole === "super_admin" ||
+    normalizedRole === "superadmin";
+
+  const sellingStaff = ["waiter", "waitress"].includes(normalizedRole);
+
+  if (
+    sellingStaff &&
+    (location.pathname === "/dashboard" ||
+      location.pathname.startsWith("/dashboard/"))
+  ) {
+    return <Navigate to="/selling-point" replace />;
+  }
+
+  const isSellingPointRoute = location.pathname.startsWith("/selling-point");
+
+  const moduleOfRoute = MODULES.find(
+    (m) => m.path === "/" + (location.pathname.split("/")[1] ?? ""),
+  );
+
+  const routePermission = isSellingPointRoute
+    ? "waiterOrders.view"
+    : location.pathname.startsWith("/sales")
+      ? "sales.view"
+      : null;
+
+  const blockedByPermission =
+    !!routePermission &&
+    !permissions.includes(routePermission);
+
+  const blocked =
+    !(
+      superAdmin &&
+      isSellingPointRoute
+    ) &&
+    (
+      (!!moduleOfRoute &&
+        !!business?.modules &&
+        !business.modules.includes(moduleOfRoute.key)) ||
+      blockedByPermission
+    );
 
   return <div className="app-bg flex h-dvh overflow-hidden">
     {isMobile && sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
