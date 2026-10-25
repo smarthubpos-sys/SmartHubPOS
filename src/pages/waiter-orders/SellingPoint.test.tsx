@@ -21,7 +21,10 @@ vi.mock("convex/react", () => ({
   useMutation: () => submit,
 }));
 vi.mock("sonner", () => ({ toast }));
-vi.mock("@/lib/print-waiter-order.ts", () => ({ printWaiterOrder }));
+vi.mock("@/lib/print-waiter-order.ts", async (importActual) => ({
+  ...(await importActual<typeof import("@/lib/print-waiter-order.ts")>()),
+  printWaiterOrder,
+}));
 
 import SellingPoint from "@/pages/waiter-orders/SellingPoint.tsx";
 
@@ -102,5 +105,16 @@ describe("Selling Point: Send and Print", () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(String(toast.error.mock.calls[0][0])).toContain("waiterOrders:submit");
     expect(cartHasBia()).toBe(true);
+  });
+
+  it("uses the saved printer even when printerSource was never stored (cashier regression)", async () => {
+    settings = { hardware: { receiptPrinter: "XP-80", paperWidth: "80mm" } };
+    submit.mockResolvedValue({ orderId: "o9", status: "printed", duplicate: false });
+    printWaiterOrder.mockResolvedValue(true);
+    render(<SellingPoint />);
+    addBia();
+    fireEvent.click(screen.getByRole("button", { name: /^(Print|Chapisha)$/ }));
+    await waitFor(() => expect(printWaiterOrder).toHaveBeenCalledTimes(1));
+    expect(printWaiterOrder.mock.calls[0][1]).toBe("XP-80");
   });
 });

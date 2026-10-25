@@ -6,10 +6,9 @@ import { toast } from "sonner";
 import { tr, errorText } from "@/lib/i18n.ts";
 import WaiterDirectory from "./WaiterDirectory.tsx";
 import SellingPoint from "./SellingPoint.tsx";
-import BillsPanel from "./BillsPanel.tsx";
 import StaffSettlement from "./StaffSettlement.tsx";
 import ErrorBoundary from "@/components/error-boundary.tsx";
-import { printWaiterOrder, type PrintableOrder } from "@/lib/print-waiter-order.ts";
+import { printWaiterOrder, qzPrinterFrom, type PrintableOrder } from "@/lib/print-waiter-order.ts";
 
 const waiterApi = api.waiterOrders;
 
@@ -27,7 +26,9 @@ export default function WaiterOrdersPage() {
   const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
 
   const role = String(user?.role ?? "").toLowerCase();
-  const cashier = ["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role);
+  // Cashier = any non-waiter role that may manage waiter orders (custom role names such as "Kassa" included), plus the built-in names.
+  const isWaiterRole = role === "waiter" || role === "waitress";
+  const cashier = !isWaiterRole && (["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role) || business?.canManageWaiterOrders === true);
 
   // Waiter and Waitress each follow their own switch (Super Admin > Edit Business); other roles need at least one on.
   const roleEnabled = role === "waitress" ? business?.waitressEnabled === true : role === "waiter" ? business?.waiterEnabled === true : business?.waiterOrdersEnabled === true;
@@ -42,7 +43,8 @@ export default function WaiterOrdersPage() {
   }
 
   async function printPlaced(order: Order) {
-    const printed = await printWaiterOrder(order, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
+    if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
+    const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth);
     if (!printed) return;
     try {
       await markPrinted({ orderId: order._id });
@@ -63,7 +65,8 @@ export default function WaiterOrdersPage() {
   }
 
   async function receiveAndPrint(order: Order) {
-    const printed = await printWaiterOrder(order, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
+    if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
+    const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth);
     if (!printed) return;
     try {
       await markHandled({ orderId: order._id });
@@ -74,7 +77,7 @@ export default function WaiterOrdersPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-3 sm:p-6">
+    <div className="mx-auto max-w-7xl space-y-4 overflow-x-hidden p-2 sm:p-4">
       <header>
         <h1 className="text-2xl font-bold">{tr("Selling Point")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -114,8 +117,8 @@ export default function WaiterOrdersPage() {
       </section>}
       {/* Waiter orders are handed off to the cashier queue; do not duplicate them below the selling screen. */}
       {/* Each optional panel has its own boundary: one panel failing (e.g. a Convex function not deployed yet) must not blank the whole page. */}
-      <ErrorBoundary inline><BillsPanel /></ErrorBoundary>
-      {cashier && role !== "super_admin" && role !== "superadmin" && <>
+      {/* Waiter bills live under the sidebar "Bills" menu (not duplicated here). */}
+      {cashier && business?.canViewSales && role !== "super_admin" && role !== "superadmin" && <>
         <ErrorBoundary inline><StaffSettlement /></ErrorBoundary>
         <ErrorBoundary inline><WaiterDirectory /></ErrorBoundary>
       </>}

@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { tr, errorText } from "@/lib/i18n.ts";
 import ServicePointFields from "@/components/ServicePointFields.tsx";
 import { emptyServicePoint, filterProducts, formatServicePoint, serviceWords, type ServicePoint } from "@/lib/sales-flow.ts";
-import { printWaiterOrder } from "@/lib/print-waiter-order.ts";
+import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 
 const money = (n: number) => Number(n).toLocaleString();
 const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -66,7 +66,7 @@ export default function SellingPoint() {
       setQuery("");
       setClientKey(newKey());
       if (mode === "print" && !res.duplicate) {
-        const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: table.trim() || undefined, total, lines: lines.map((l) => ({ productName: l.p!.name, qty: l.qty, lineTotal: l.qty * l.p!.sellingPrice })) }, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
+        const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: table.trim() || undefined, total, lines: lines.map((l) => ({ productName: l.p!.name, qty: l.qty, lineTotal: l.qty * l.p!.sellingPrice })) }, qzPrinterFrom(hardware), hardware.paperWidth);
         if (!ok) toast.message(tr("Oda imehifadhiwa. Chapisha tena kupitia Bills (haipunguzi stock)."));
       }
     } catch (e) {
@@ -77,8 +77,8 @@ export default function SellingPoint() {
   function reset() { setCart({}); setServicePoint(emptyServicePoint()); setQuery(""); setClientKey(newKey()); setGroupId("all"); }
 
   return (
-    <section className="grid gap-4 lg:grid-cols-[1fr_340px]">
-      <div className="space-y-3">
+    <section className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(280px,340px)]">
+      <div className="min-w-0 space-y-2">
         <Input value={query} disabled={locked} placeholder={tr("Tafuta bidhaa au scan code")} aria-label={tr("Tafuta bidhaa au scan code")}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
@@ -97,16 +97,16 @@ export default function SellingPoint() {
               className={`min-h-9 shrink-0 rounded-lg border px-3 py-1.5 text-sm font-bold transition ${style.tab} ${groupId === id ? "ring-2 ring-offset-1 shadow-sm" : "opacity-80"}`}>{g.name}</button>;
           })}
         </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6">
           {shown.map((p) => {
             const q = cart[String(p._id)] ?? 0;
             const style = groupStyle(groupId, activeGroups);
             return (
               <button key={p._id} type="button" disabled={locked} onClick={() => add(String(p._id), 1)}
-                className={`relative flex min-h-[76px] flex-col justify-between rounded-xl border p-2.5 text-left transition active:scale-[0.98] disabled:opacity-60 ${q ? style.active : style.tile}`}>
-                <span className="line-clamp-2 text-sm font-semibold leading-snug">{p.name}</span>
-                <span className="mt-2 text-xs font-medium text-muted-foreground">{money(p.sellingPrice)}</span>
-                {q > 0 && <span className="absolute right-2 top-2 rounded-full bg-primary px-2 py-0.5 text-xs font-bold text-primary-foreground">{q}</span>}
+                className={`relative flex min-h-[52px] min-w-0 flex-col justify-between rounded-lg border p-1.5 text-left transition active:scale-[0.98] disabled:opacity-60 ${q ? style.active : style.tile}`}>
+                <span className="line-clamp-2 break-words text-xs font-semibold leading-tight">{p.name}</span>
+                <span className="mt-1 text-[11px] font-medium text-muted-foreground">{money(p.sellingPrice)}</span>
+                {q > 0 && <span className="absolute right-1 top-1 rounded-full bg-primary px-1.5 text-[11px] leading-4 font-bold text-primary-foreground">{q}</span>}
               </button>
             );
           })}
@@ -114,9 +114,9 @@ export default function SellingPoint() {
         </div>
       </div>
 
-      <aside className="h-fit space-y-3 rounded-2xl border bg-card p-4 shadow-sm lg:sticky lg:top-3">
+      <aside className="h-fit min-w-0 space-y-2 rounded-2xl border bg-card p-3 shadow-sm md:sticky md:top-2">
         <h2 className="text-lg font-bold">{tr("Oda ya sasa")}</h2>
-        <ul className="space-y-2">
+        <ul className="max-h-[38vh] space-y-2 overflow-y-auto pr-1">
           {lines.map((l) => (
             <li key={l.id} className="flex items-center justify-between gap-2">
               <div className="min-w-0"><div className="truncate text-sm font-medium">{l.p!.name}</div><div className="text-xs text-muted-foreground">{money(l.p!.sellingPrice)} × {l.qty} = {money(l.p!.sellingPrice * l.qty)}</div></div>
@@ -129,7 +129,11 @@ export default function SellingPoint() {
           ))}
           {lines.length === 0 && <li className="text-sm text-muted-foreground">{tr("Gusa bidhaa kuiongeza kwenye oda.")}</li>}
         </ul>
-        <details className="text-sm"><summary className="cursor-pointer select-none py-2">{tr("Eneo la huduma (hiari)")}</summary>
+        <label className="grid gap-1 text-sm">{tr("Namba ya meza (hiari)")}
+          <Input value={servicePoint.name} maxLength={40} disabled={locked} placeholder={tr("Mf. 5 (acha wazi kama haihitajiki)")} aria-label={tr("Namba ya meza (hiari)")}
+            onChange={(e) => setServicePoint({ ...servicePoint, name: e.target.value })} />
+        </label>
+        <details className="text-sm"><summary className="cursor-pointer select-none py-2">{tr("Zaidi: ghorofa / chumba (hiari)")}</summary>
           <ServicePointFields className="grid gap-3" value={servicePoint} disabled={locked} onChange={setServicePoint} />
         </details>
         <p className="text-xl font-bold">{tr("Jumla")}: {money(total)}</p>

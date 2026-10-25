@@ -16,7 +16,7 @@ import BillSheet from "@/components/BillSheet.tsx";
 import ReturnPanel from "@/pages/sales/ReturnPanel.tsx";
 import type { Paper } from "@/lib/print-area.ts";
 import { tokenAfterSave } from "@/lib/print-policy.ts";
-import { printWaiterOrder } from "@/lib/print-waiter-order.ts";
+import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 
 type Line = { productId: string; qty: string; price: string; discount: string };
 const emptyLine = (): Line => ({ productId: "", qty: "1", price: "0", discount: "0" });
@@ -170,7 +170,7 @@ export default function InvoiceEntry() {
   };
   const printPlaced = async () => {
     if (!placedId || !placedOrder) return;
-    const printed = await printWaiterOrder(placedOrder, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
+    const printed = await printWaiterOrder(placedOrder, qzPrinterFrom(hardware), hardware.paperWidth);
     if (!printed) return;
     try {
       await markPrinted({ orderId: placedId });

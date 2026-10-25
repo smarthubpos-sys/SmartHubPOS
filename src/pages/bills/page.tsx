@@ -11,6 +11,8 @@ import { formatDate } from "@/lib/format.ts";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { toast } from "sonner";
 import BillSheet from "@/components/BillSheet.tsx";
+import BillsPanel from "@/pages/waiter-orders/BillsPanel.tsx";
+import ErrorBoundary from "@/components/error-boundary.tsx";
 
 /**
  * Bills = customer bills built from Sales invoices.
@@ -28,6 +30,7 @@ export default function BillsPage() {
   const [billInvoiceIds, setBillInvoiceIds] = useState<Id<"invoices">[]>([]);
   const [creatingBill, setCreatingBill] = useState(false);
   const access = useQuery(api.customerBills.access);
+  const business = useQuery(api.tenants.current);
   const createBill = useMutation(api.customerBills.create);
   const [allDepts, setAllDepts] = useState(true);
   const [deptFilter, setDeptFilter] = useState("");
@@ -78,6 +81,8 @@ export default function BillsPage() {
     <div className="mx-auto max-w-6xl space-y-4">
       <div className="print:hidden space-y-4">
         <PageHeader icon={Receipt} title={tr("Bills")} subtitle={tr("Bili za wateja: chagua mteja, weka alama kwenye invoice unazotaka, kisha chapisha bili.")} />
+
+        {business?.waiterOrdersEnabled !== false && <ErrorBoundary inline><BillsPanel /></ErrorBoundary>}
 
         <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3">
           <Stat label={tr("Invoice zilizochaguliwa")} value={`${chosen.length} / ${eligible.length}`} icon={Receipt} tone="violet" />

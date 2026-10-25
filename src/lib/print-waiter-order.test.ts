@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { printHtmlViaQz } from "./printers.ts";
-import { printWaiterOrder } from "./print-waiter-order.ts";
+import { printWaiterOrder, qzPrinterFrom } from "./print-waiter-order.ts";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 vi.mock("./i18n.ts", () => ({ tr: (value: string) => value }));
@@ -41,3 +41,16 @@ describe("waiter order QZ printing", () => {
     expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("QZ disconnected"));
   });
 });
+
+describe("qzPrinterFrom (cashier and waiter share one printer rule)", () => {
+  it("uses the saved printer for installed or unset source", () => {
+    expect(qzPrinterFrom({ printerSource: "installed", receiptPrinter: " POS-80 " })).toBe("POS-80");
+    expect(qzPrinterFrom({ receiptPrinter: "POS-80" })).toBe("POS-80");
+  });
+  it("returns nothing for direct devices, blank names or missing settings", () => {
+    expect(qzPrinterFrom({ printerSource: "direct", receiptPrinter: "POS-80" })).toBeUndefined();
+    expect(qzPrinterFrom({ printerSource: "installed", receiptPrinter: "  " })).toBeUndefined();
+    expect(qzPrinterFrom(undefined)).toBeUndefined();
+  });
+});
+

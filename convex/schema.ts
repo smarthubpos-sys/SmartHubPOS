@@ -876,6 +876,7 @@ export default defineSchema({
     clientKey: v.optional(v.string()), // one random key per cart: a repeated tap / retry returns the SAME order instead of a second one
     sentAt: v.optional(v.string()),
     printedAt: v.optional(v.string()),
+    billPrintedAt: v.optional(v.string()), // set only after a Bills-screen print succeeded; the order itself is never deleted
     cancelledAt: v.optional(v.string()),
     cancelledBy: v.optional(v.id("users")),
     lines: v.array(v.object({

@@ -49,12 +49,13 @@ export const getMetrics = query({
       .filter((d) => !user.branchId || d.branchId === user.branchId);
 
     const recentInvoices = user.branchId
-      ? await ctx.db.query("invoices").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(5)
-      : await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(5);
+      ? await ctx.db.query("invoices").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(25)
+      : await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(25);
     const recentPurchases = user.branchId
-      ? await ctx.db.query("purchases").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(5)
-      : await ctx.db.query("purchases").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(5);
+      ? await ctx.db.query("purchases").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(25)
+      : await ctx.db.query("purchases").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(25);
 
+    const posted = <T extends { status?: string }>(rows: T[]) => rows.filter((r) => r.status === undefined || r.status === "posted").slice(0, 5);
     return {
       ready: totals.length > 0,
       todaySales: sum(days, "sales"),
@@ -65,8 +66,8 @@ export const getMetrics = query({
       lowStockItems: sum(totals, "lowStock"),
       outOfStockItems: sum(totals, "outOfStock"),
       inventoryValue: sum(totals, "inventoryValue"),
-      recentInvoices,
-      recentPurchases,
+      recentInvoices: posted(recentInvoices),
+      recentPurchases: posted(recentPurchases),
       totalProducts: sum(totals, "productCount"),
     };
   },

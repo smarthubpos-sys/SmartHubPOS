@@ -67,7 +67,8 @@ export const list = query({
   args: {},
   handler: async (ctx) => {
     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
-    const scope = await resolveWriteScope(ctx, user);
+    // No department chosen: say so in plain words (an empty queue would look like 'orders never arrive').
+    const scope = await resolveWriteScope(ctx, user).catch((e) => { throw surfaceError(e); });
     if (!scope.tenantId) return [];
     const tenantId = scope.tenantId;
     const settings = await ctx.db.query("tenantSettings")
@@ -360,15 +361,15 @@ export const submit = mutation({
 
 /** Orders for the Bills screen: a waiter sees his own, cashier/manager see the whole department. Optional table filter. Read-only. */
 export const listForBills = query({
-  args: { table: v.optional(v.string()) },
+  args: { table: v.optional(v.string()), includePrinted: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
-    const scope = await resolveWriteScope(ctx, user);
+    const scope = await resolveWriteScope(ctx, user).catch((e) => { throw surfaceError(e); });
     if (!scope.tenantId) return [];
     const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)).collect();
     const needle = (args.table ?? "").trim().toLowerCase();
     return rows
-      .filter(r => r.status !== "cancelled" && r.status !== "placed" && (!isWaiter(user.role) || r.waiterId === user._id))
+      .filter(r => r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || r.waiterId === user._id))
       .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
   },
@@ -395,5 +396,24 @@ export const billSummary = query({
       }
     }
     return { total: Math.round(total * 100) / 100, tables: [...tables], lines: [...merged.values()] };
+  },
+});
+
+/** Called by the Bills screen ONLY after QZ Tray accepted the print job. Records the print; never changes stock, payments or sales. */
+export const markBillPrinted = mutation({
+  args: { orderIds: v.array(v.id("waiterOrders")) },
+  handler: async (ctx, args) => {
+    try {
+      const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
+      const scope = await resolveWriteScope(ctx, user);
+      const now = new Date().toISOString();
+      for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
+        const o = await ctx.db.get("waiterOrders", id);
+        if (!o || o.tenantId !== scope.tenantId || o.branchId !== scope.branchId || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
+        if (isWaiter(user.role) && o.waiterId !== user._id) throw new Error("Hii si oda yako.");
+        if (!o.billPrintedAt) await ctx.db.patch("waiterOrders", o._id, { billPrintedAt: now, updatedAt: now });
+      }
+      return true;
+    } catch (e) { throw surfaceError(e); }
   },
 });

@@ -63,6 +63,12 @@ export const getSettings = query({
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true }).catch(() => ({} as Awaited<ReturnType<typeof resolveWriteScope>>));
     const company = (await scopedRows(ctx, user, "companySettings"))[0] ?? null;
     const app = await readSettingsMap(ctx, scope);
+    // Printer setup is saved once for the business. A cashier tied to a department/branch must still see it,
+    // otherwise Print asks to "choose a QZ Tray printer" although one is already configured.
+    if (scope.tenantId && scope.branchId && app.hardware === undefined) {
+      const shared = await readSettingsMap(ctx, { tenantId: scope.tenantId });
+      if (shared.hardware !== undefined) app.hardware = shared.hardware;
+    }
     const canEdit: Record<string, boolean> = {};
     for (const key of [...Object.values(SETTING_KEYS), "maintenance.company"]) canEdit[key] = await roleHasPermission(ctx, user, key);
     return { company, app, canEdit, hasOffice: !!scope.tenantId };

@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { tr } from "@/lib/i18n.ts";
-import { printWaiterOrder } from "@/lib/print-waiter-order.ts";
+import { tr, errorText } from "@/lib/i18n.ts";
+import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 
 const money = (n: number) => Number(n).toLocaleString();
 const STATUS: Record<string, string> = { pending: "Inasubiri cashier", accepted: "Imepokelewa", printed: "Imechapishwa" };
@@ -17,6 +17,7 @@ export default function BillsPanel() {
   const [picked, setPicked] = useState<string[]>([]);
   const orders = useQuery(api.waiterOrders.listForBills, { table: search });
   const summary = useQuery(api.waiterOrders.billSummary, picked.length ? { orderIds: picked as Id<"waiterOrders">[] } : "skip");
+  const markBillPrinted = useMutation(api.waiterOrders.markBillPrinted);
   const user = useQuery(api.users.getCurrentUser);
   const settings = useQuery(api.maintenance.getSettings, {});
   const hw = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
@@ -27,8 +28,16 @@ export default function BillsPanel() {
 
   async function printBill() {
     if (!summary) return;
-    const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: summary.tables.join(", ") || undefined, total: summary.total, lines: summary.lines.map((l) => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })) }, hw.printerSource === "installed" ? hw.receiptPrinter : undefined, hw.paperWidth);
-    if (ok) toast.success(tr("Bili imechapishwa. Hakuna mauzo, malipo wala stock vilivyobadilika."));
+    if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
+    const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: summary.tables.join(", ") || undefined, total: summary.total, lines: summary.lines.map((l) => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })) }, qzPrinterFrom(hw), hw.paperWidth);
+    if (!ok) return; // print failed: the bills stay in the list so they can be printed again
+    try {
+      await markBillPrinted({ orderIds: picked as Id<"waiterOrders">[] });
+      setPicked([]);
+      toast.success(tr("Bili imechapishwa. Hakuna mauzo, malipo wala stock vilivyobadilika."));
+    } catch (error) {
+      toast.error(errorText(error, tr("Bili imechapishwa, lakini hali yake haikuhifadhiwa. Jaribu kusasisha ukurasa.")));
+    }
   }
 
   return (

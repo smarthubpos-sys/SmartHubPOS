@@ -11,6 +11,17 @@ export type PrintableOrder = {
   lines: Array<{ productName: string; qty: number; lineTotal: number }>;
 };
 
+type HardwareSettings = { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
+
+/**
+ * The QZ Tray printer saved under Maintenance > Hardware. One rule for waiter, cashier and Bills printing.
+ * "direct" (USB/Bluetooth) printers are not QZ printers; everything else with a saved name is used as-is.
+ */
+export function qzPrinterFrom(hardware?: HardwareSettings | null): string | undefined {
+  if (!hardware || hardware.printerSource === "direct") return undefined;
+  return hardware.receiptPrinter?.trim() || undefined;
+}
+
 const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[c] as string);
