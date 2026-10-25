@@ -1,6 +1,7 @@
 /** Permission catalog shared by backend and Role Management screen (no imports on purpose). */
 export const PERMISSION_GROUPS: { group: string; items: { key: string; label: string }[] }[] = [
   { group: "Sales", items: [{ key: "sales.view", label: "View sales and invoices" }, { key: "sales.manage", label: "Create invoices and receive customer payments" }, { key: "sales.edit", label: "Edit saved sales and invoices" }, { key: "sales.print", label: "Print receipts and invoices" }, { key: "sales.export", label: "Export sales data" }, { key: "sales.reports.view", label: "View sales reports" }, { key: "sales.void", label: "Delete / cancel orders (sales invoices): stock returns and money is refunded" }] },
+  { group: "Selling Point", items: [{ key: "waiterOrders.view", label: "View Selling Point orders and cashier queue" }, { key: "waiterOrders.manage", label: "Create, send, print and receive Selling Point orders" }] },
   { group: "Bills", items: [{ key: "bills.all_departments", label: "Combine customer bills across departments (e.g. Kitchen + Bar + Lounge)" }] },
   {
     group: "Stock",
@@ -77,19 +78,18 @@ export const ALL_PERMISSION_KEYS = PERMISSION_GROUPS.flatMap((g) => g.items.map(
  * sales.view / sales.print are listed because the built-in Cashier used to be just ["sales.manage"]: a Cashier row saved in that era
  * (no knownKeys) would otherwise stay without them and every Sales screen would be refused. Rows saved later keep their own choice.
  */
-export const LATE_PERMISSIONS = ["sales.view", "sales.print", "sales.void", "purchasing.edit", "purchasing.delete", "stock.adjust", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer"];
+export const LATE_PERMISSIONS = ["sales.view", "sales.print", "sales.void", "waiterOrders.view", "waiterOrders.manage", "purchasing.edit", "purchasing.delete", "stock.adjust", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer"];
 
 export const SYSTEM_ROLES: { name: string; displayName: string; permissions: string[] }[] = [
   { name: "admin", displayName: "Administrator", permissions: ALL_PERMISSION_KEYS.filter((k) => k !== "maintenance.roles" && !SUPER_ADMIN_ONLY_PERMISSIONS.includes(k)) },
-  { name: "manager", displayName: "Manager", permissions: ["system.manager", "sales.view", "sales.manage", "sales.edit", "sales.print", "sales.export", "sales.reports.view", "sales.void", "stock.view", "stock.manage", "stock.reports.view", "stock.print", "stock.export", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer", "suppliers.view", "suppliers.manage", "purchasing.view", "purchasing.manage", "purchasing.reports.view", "purchasing.print", "purchasing.export", "purchasing.edit", "purchasing.delete", "payroll.view", "payroll.manage", "payroll.approve", "payroll.reports.view", "payroll.print", "payroll.export", "accounts.view", "accounts.manage", "accounts.approve", "accounts.reports.view", "accounts.print", "accounts.export", "bills.all_departments", "maintenance.company", "maintenance.periods", "maintenance.audit.view"] },
+  { name: "manager", displayName: "Manager", permissions: ["system.manager", "sales.view", "sales.manage", "sales.edit", "sales.print", "sales.export", "sales.reports.view", "sales.void", "stock.view", "stock.manage", "stock.reports.view", "stock.print", "stock.export", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer", "suppliers.view", "suppliers.manage", "purchasing.view", "purchasing.manage", "purchasing.reports.view", "purchasing.print", "purchasing.export", "purchasing.edit", "purchasing.delete", "payroll.view", "payroll.manage", "payroll.approve", "payroll.reports.view", "payroll.print", "payroll.export", "accounts.view", "accounts.manage", "accounts.approve", "accounts.reports.view", "accounts.print", "accounts.export", "bills.all_departments", "waiterOrders.view", "waiterOrders.manage", "maintenance.company", "maintenance.periods", "maintenance.audit.view"] },
   // Accountant: every FINANCIAL view (accounts, profit/loss, sales / purchase / stock reports incl. cost and margins, payroll cost reports).
   // Read, print and export only: no selling, no stock or purchase entry, no void/edit/delete, no user or role management.
   { name: "accountant", displayName: "Accountant", permissions: ["accounts.view", "accounts.reports.view", "accounts.print", "accounts.export", "sales.view", "sales.print", "sales.export", "sales.reports.view", "purchasing.view", "purchasing.print", "purchasing.export", "purchasing.reports.view", "suppliers.view", "stock.view", "stock.print", "stock.export", "stock.reports.view", "payroll.view", "payroll.reports.view", "payroll.print", "payroll.export", "maintenance.periods", "maintenance.audit.view"] },
-  { name: "cashier", displayName: "Cashier", permissions: ["sales.view", "sales.manage", "sales.print"] },
-  // Waiter / Waitress: everyday selling only (take orders and invoices, receive payments, returns, print receipts and bills).
-  // No sales reports, no export, no edit/void, no stock, purchasing, accounts or payroll. Use "own data only" on the user to limit them to their own invoices.
-  { name: "waiter", displayName: "Waiter", permissions: ["sales.view", "sales.manage", "sales.print"] },
-  { name: "waitress", displayName: "Waitress", permissions: ["sales.view", "sales.manage", "sales.print"] },
+  { name: "cashier", displayName: "Cashier", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage"] },
+  // Waiter / Waitress have defaults for both workflows, but the two permission sets remain independently removable/grantable.
+  { name: "waiter", displayName: "Waiter", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage"] },
+  { name: "waitress", displayName: "Waitress", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage"] },
   { name: "viewer", displayName: "Viewer", permissions: [] },
 ];
 
@@ -115,8 +115,8 @@ export function permissionsWithNewDefaults(
     ],
     manager: ["system.manager", "sales.manage", "purchasing.manage"],
     cashier: ["sales.manage"],
-    waiter: [],
-    waitress: [],
+    waiter: ["sales.view", "sales.manage", "sales.print"],
+    waitress: ["sales.view", "sales.manage", "sales.print"],
   };
 
   if (!knownKeys) {
@@ -127,7 +127,13 @@ export function permissionsWithNewDefaults(
       stored.length === previous.length &&
       previous.every((key) => stored.includes(key));
 
-    if (matchesPreviousExactly) return [...system.permissions];
+    const isLegacyEmptyWaiter =
+      (roleName === "waiter" || roleName === "waitress") &&
+      stored.length === 0;
+
+    if (matchesPreviousExactly || isLegacyEmptyWaiter) {
+      return [...system.permissions];
+    }
 
     return stored;
   }

@@ -41,10 +41,11 @@ export default function Sidebar({ open: openProp, onToggle, mobile = false, onNa
   // Only the modules this business has paid for AND this user was allowed (null = no limit).
   const tenant = useQuery(api.tenants.current);
   const modules = tenant?.modules ?? null;
+  const permissions = useQuery(api.maintenance.myPermissions) ?? [];
   const role = String(useQuery(api.users.getCurrentUser)?.role ?? "").toLowerCase();
   const sellingStaff = role === "waiter" || role === "waitress"; // Selling Point staff have no Dashboard. "Sales" is the one main sales entry; "Selling Point" (tablet order taking) shows only for waiter/waitress and for businesses that switched Waiter Orders on.
   const visibleGroups = groups
-    .map((g) => ({ ...g, items: g.items.filter((item) => (!modules || modules.includes(item.module)) && !(sellingStaff && item.module === "dashboard") && !(item.module === "waiterOrders" && !sellingStaff && tenant?.waiterOrdersEnabled !== true)) }))
+    .map((g) => ({ ...g, items: g.items.filter((item) => (!modules || modules.includes(item.module)) && (item.module === "sales" ? permissions.includes("sales.view") : item.module === "waiterOrders" ? permissions.includes("waiterOrders.view") : true) && !(sellingStaff && item.module === "dashboard") && !(item.module === "waiterOrders" && !sellingStaff && tenant?.waiterOrdersEnabled !== true)) }))
     .filter((g) => g.items.length > 0);
   return (
     <aside aria-hidden={mobile && !openProp ? true : undefined} className={cn("sidebar-bg flex flex-shrink-0 flex-col text-sidebar-foreground shadow-2xl", mobile ? cn("fixed inset-y-0 left-0 z-40 w-64 max-w-[85vw] transition-transform duration-300", openProp ? "translate-x-0" : "-translate-x-full") : cn("transition-all duration-300", open ? "w-60" : "w-[72px]"))}>

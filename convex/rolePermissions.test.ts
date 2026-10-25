@@ -107,11 +107,27 @@ describe("a role that was saved before sales.view was a default keeps working", 
   });
 });
 
+describe("Sales and Selling Point permissions are independent", () => {
+  it("sales permissions alone do not grant Selling Point access", async () => {
+    const { as, setRole, cashier } = await setup();
+    const { ALL_PERMISSION_KEYS } = await import("./permissions");
+    await setRole("cashier", ["sales.view", "sales.manage", "sales.print"], ALL_PERMISSION_KEYS);
+    await expect(as(cashier).query(api.waiterOrders.list, {})).rejects.toThrow(/waiterOrders\.view/);
+  });
+
+  it("Selling Point permissions alone do not grant the normal Sales Register", async () => {
+    const { as, setRole, cashier } = await setup();
+    const { ALL_PERMISSION_KEYS } = await import("./permissions");
+    await setRole("cashier", ["waiterOrders.view", "waiterOrders.manage"], ALL_PERMISSION_KEYS);
+    await expect(as(cashier).query(api.sales.salesRegisterBasic, {})).rejects.toThrow(/sales\.view/);
+  });
+});
+
 describe("permission matrix (what each role really gets)", () => {
   it("cashier: sell, view and print only - no reports, stock, accounts, purchasing, payroll, maintenance", async () => {
     const { as, cashier } = await setup();
     const p = await as(cashier).query(api.maintenance.myPermissions, {});
-    expect(p.sort()).toEqual(["sales.manage", "sales.print", "sales.view"]);
+    expect(p.sort()).toEqual(["sales.manage", "sales.print", "sales.view", "waiterOrders.manage", "waiterOrders.view"]);
   });
 
   it("accountant: every financial view (incl. profit/loss, cost, margins) and nothing that changes sales, stock, purchases or users", async () => {
@@ -135,7 +151,7 @@ describe("permission matrix (what each role really gets)", () => {
 
   it("waiter and waitress: everyday sales only (view, sell, print) - same for both, nothing else", async () => {
     const { as, waiter, waitress } = await setup();
-    for (const id of [waiter, waitress]) expect((await as(id).query(api.maintenance.myPermissions, {})).sort()).toEqual(["sales.manage", "sales.print", "sales.view"]);
+    for (const id of [waiter, waitress]) expect((await as(id).query(api.maintenance.myPermissions, {})).sort()).toEqual(["sales.manage", "sales.print", "sales.view", "waiterOrders.manage", "waiterOrders.view"]);
   });
 
   it("waiter works through normal sales screens but every financial report and finance screen is refused", async () => {

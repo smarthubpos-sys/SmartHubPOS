@@ -45,6 +45,7 @@ export default function AppLayout() {
   const location = useLocation();
   const user = useQuery(api.users.getCurrentUser, isAuthenticated ? {} : "skip");
   const business = useQuery(api.tenants.current, isAuthenticated ? {} : "skip");
+  const permissions = useQuery(api.maintenance.myPermissions, isAuthenticated ? {} : "skip") ?? [];
   const exitBusiness = useMutation(api.tenants.exitBusiness);
   // Right after sign-in a Super Admin always starts at the business picker.
   const [resetting, setResetting] = useState(() => { try { return window.sessionStorage.getItem(PICK_BUSINESS_FLAG) === "1"; } catch { return false; } });
@@ -97,7 +98,9 @@ export default function AppLayout() {
   const sellingStaff = ["waiter", "waitress"].includes(String(user?.role ?? "").toLowerCase());
   if (sellingStaff && (location.pathname === "/dashboard" || location.pathname.startsWith("/dashboard/"))) return <Navigate to="/selling-point" replace />;
   const moduleOfRoute = MODULES.find((m) => m.path === "/" + (location.pathname.split("/")[1] ?? ""));
-  const blocked = !!moduleOfRoute && !!business?.modules && !business.modules.includes(moduleOfRoute.key);
+  const routePermission = location.pathname.startsWith("/selling-point") ? "waiterOrders.view" : location.pathname.startsWith("/sales") ? "sales.view" : null;
+  const blockedByPermission = !!routePermission && !permissions.includes(routePermission);
+  const blocked = (!!moduleOfRoute && !!business?.modules && !business.modules.includes(moduleOfRoute.key)) || blockedByPermission;
 
   return <div className="app-bg flex h-dvh overflow-hidden">
     {isMobile && sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}

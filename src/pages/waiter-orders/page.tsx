@@ -84,8 +84,8 @@ export default function WaiterOrdersPage() {
 
       {roleEnabled && !cashier && <SellingPoint />}
 
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">{cashier ? tr("Foleni ya cashier") : tr("Oda nilizotuma")}</h2>
+      {cashier && <section className="space-y-3">
+        <h2 className="text-lg font-semibold">{tr("Foleni ya cashier")}</h2>
         {(orders ?? []).map((order) => <article key={order._id} className="space-y-3 rounded-xl border p-4">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
@@ -111,7 +111,8 @@ export default function WaiterOrdersPage() {
           </div>
         </article>)}
         {orders && orders.length === 0 && <p className="rounded-xl border p-5 text-sm text-muted-foreground">{tr("Hakuna oda bado.")}</p>}
-      </section>
+      </section>}
+      {/* Waiter orders are handed off to the cashier queue; do not duplicate them below the selling screen. */}
       {/* Each optional panel has its own boundary: one panel failing (e.g. a Convex function not deployed yet) must not blank the whole page. */}
       <ErrorBoundary inline><BillsPanel /></ErrorBoundary>
       {cashier && role !== "super_admin" && role !== "superadmin" && <>

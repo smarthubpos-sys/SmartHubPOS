@@ -1,4 +1,4 @@
-# SmartHubPOS — PIN Login + Printer + Product/Customer Visibility Patch
+# SmartHubPOS - PIN Login + Printer + Product/Customer Visibility Patch
 
 Hii ni ZIP ya source files zilizobadilishwa tu. Haina `.env`, private keys, `.git`, `node_modules`, au secrets.
 
@@ -52,3 +52,23 @@ Hii ni ZIP ya source files zilizobadilishwa tu. Haina `.env`, private keys, `.gi
 - Printer detection ikiwa QZ Tray imewashwa na browser print dialog bila QZ Tray.
 
 **Hali ya ukaguzi:** syntax ya TypeScript/TSX imekaguliwa. Full build, Convex codegen, Vitest na ESLint hazijaendeshwa hapa kwa sababu ZIP ya project haikuwa na `node_modules`/runtime dependencies. Hakuna deployment iliyofanyika.
+
+## Marekebisho ya Selling Point permissions — 25 Oktoba 2026
+
+### Kilichorekebishwa
+- Ruhusa mpya za `waiterOrders.view` na `waiterOrders.manage` zimeongezwa kwenye katalogi ya ruhusa.
+- Backend ya `convex/waiterOrders.ts` sasa inatumia ruhusa za Selling Point badala ya kutegemea ruhusa za kawaida za Sales.
+- Default roles za Cashier, Waiter, Waitress na Manager zimejumuisha ruhusa za Selling Point kulingana na mabadiliko yaliyofanywa.
+- Sales Register na Selling Point zina ruhusa zinazojitegemea; vipimo vimeongezwa kuthibitisha utengano huo.
+- Sidebar na ulinzi wa route zimeunganishwa na ruhusa husika.
+
+### Ukaguzi wa project
+- `npm run build` — imepita.
+- `npx vitest run convex/rolePermissions.test.ts convex/readPermissions.test.ts` — vipimo 32/32 vimepita.
+- `git diff --cached --check` — haikuonyesha hitilafu.
+- Ukaguzi huu unathibitisha build na vipimo vilivyoorodheshwa tu; hauchukui nafasi ya majaribio ya manual kwenye biashara inayoendelea.
+
+### Tahadhari kabla ya deployment
+- Kagua ruhusa za watumiaji waliopo, hasa waiter na waitress wenye ruhusa za zamani zilizohifadhiwa.
+- Thibitisha mabadiliko kwenye mazingira ya majaribio kabla ya production.
+- Hakuna GitHub push wala Convex/Vercel deployment iliyofanywa na hatua hizi.

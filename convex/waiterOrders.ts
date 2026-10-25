@@ -65,7 +65,7 @@ async function deductStockOnce(
 export const list = query({
   args: {},
   handler: async (ctx) => {
-    const user = await requirePermission(ctx, "sales.view", "sales");
+    const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
     const scope = await resolveWriteScope(ctx, user);
     if (!scope.tenantId) return [];
     const tenantId = scope.tenantId;
@@ -102,7 +102,7 @@ export const place = mutation({
   },
   handler: async (ctx, args) => {
     try {
-    const user = await requirePermission(ctx, "sales.manage", "sales");
+    const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
     const scope = await resolveWriteScope(ctx, user);
     if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
     const tenantId = scope.tenantId;
@@ -174,7 +174,7 @@ export const place = mutation({
 });
 
 async function ownOrder(ctx: Parameters<typeof resolveWriteScope>[0], orderId: Id<"waiterOrders">) {
-  const user = await requirePermission(ctx, "sales.manage", "sales");
+  const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
   const scope = await resolveWriteScope(ctx, user);
   const order = await ctx.db.get("waiterOrders", orderId);
   if (!order || order.tenantId !== scope.tenantId || order.branchId !== scope.branchId) {
@@ -227,7 +227,7 @@ export const markHandled = mutation({
   args: { orderId: v.id("waiterOrders") },
   handler: async (ctx, args) => {
     try {
-    const user = await requirePermission(ctx, "sales.manage", "sales");
+    const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
     const role = String(user.role ?? "").toLowerCase();
     if (role === "waiter" || role === "waitress") throw new Error("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
     const scope = await resolveWriteScope(ctx, user);
@@ -263,7 +263,7 @@ export const cancel = mutation({
   args: { orderId: v.id("waiterOrders") },
   handler: async (ctx, args) => {
     try {
-    const user = await requirePermission(ctx, "sales.manage", "sales");
+    const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
     if (!(await roleHasPermission(ctx, user, "sales.void"))) throw new Error("Huna ruhusa ya kufuta oda.");
     const scope = await resolveWriteScope(ctx, user);
     const order = await ctx.db.get("waiterOrders", args.orderId);
@@ -316,7 +316,7 @@ export const submit = mutation({
   },
   handler: async (ctx, args) => {
     try {
-    const user = await requirePermission(ctx, "sales.manage", "sales");
+    const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
     const scope = await resolveWriteScope(ctx, user);
     if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
     const tenantId = scope.tenantId;
@@ -365,7 +365,7 @@ export const submit = mutation({
 export const listForBills = query({
   args: { table: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const user = await requirePermission(ctx, "sales.view", "sales");
+    const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
     const scope = await resolveWriteScope(ctx, user);
     if (!scope.tenantId) return [];
     const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)).collect();
@@ -381,7 +381,7 @@ export const listForBills = query({
 export const billSummary = query({
   args: { orderIds: v.array(v.id("waiterOrders")) },
   handler: async (ctx, args) => {
-    const user = await requirePermission(ctx, "sales.view", "sales");
+    const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
     const scope = await resolveWriteScope(ctx, user);
     const merged = new Map<string, { productName: string; unitPrice: number; qty: number; lineTotal: number }>();
     const tables = new Set<string>();
