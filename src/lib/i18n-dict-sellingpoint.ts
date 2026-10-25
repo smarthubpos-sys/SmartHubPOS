@@ -1,5 +1,6 @@
 /* Selling Point, Bills and Cashier staff-settlement texts (Kiswahili is the source text; English alongside). */
 export const SELLING_POINT_DICT: Record<string, { sw: string; en: string }> = {
+  "Seva haijasasishwa: kazi '{0}' haipo kwenye mfumo huu. Wasiliana na msimamizi wa mfumo.": { sw: "Seva haijasasishwa: kazi '{0}' haipo kwenye mfumo huu. Wasiliana na msimamizi wa mfumo.", en: "The server is not up to date: function '{0}' does not exist on this system. Contact your system administrator." },
   "Aina ya eneo": { sw: "Aina ya eneo", en: "Location type" },
   "Meza": { sw: "Meza", en: "Table" },
   "Chumba": { sw: "Chumba", en: "Room" },

@@ -4,6 +4,7 @@ import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { hashStaffPin } from "./pinCrypto";
+import { surfaceError } from "./surfaceError";
 import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
 import {
   activeDepartments, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
@@ -515,6 +516,7 @@ export const updateUser = mutation({
 export const setStaffCode = mutation({
   args: { userId: v.id("users"), staffCode: v.string() },
   handler: async (ctx, a) => {
+    try { // plain Errors are hidden in production ("Server Error"): surfaceError keeps the real reason (e.g. "Staff code hii inatumika...") visible
     const actor = await requirePermission(ctx, "maintenance.users");
     const target = await ctx.db.get("users", a.userId);
     if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
@@ -530,6 +532,7 @@ export const setStaffCode = mutation({
     await ctx.db.patch("users", a.userId, { staffCode: code || undefined });
     await logAudit(ctx, actor, { action: "set_staff_code", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${target.username ?? target.name}: ${code ? "staff code imewekwa" : "staff code imeondolewa"}` });
     return true;
+    } catch (e) { throw surfaceError(e); }
   },
 });
 

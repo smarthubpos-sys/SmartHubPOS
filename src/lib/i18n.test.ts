@@ -48,4 +48,13 @@ describe("single-language dictionary", () => {
     expect(errorText(wrapped, "Hitilafu imetokea.")).toBe("The selling price is not valid.");
     setLang("sw", { reload: false });
   });
+
+  it("tells the person when the server does not have the function the screen calls (stale deployment), instead of a vague fallback", () => {
+    const stale = new Error("[CONVEX Q(waiterOrders:listForBills)] [Request ID: x] Server Error Could not find public function for 'waiterOrders:listForBills'. Did you forget to run `npx convex dev` or `npx convex deploy`?");
+    expect(errorText(stale, "Imeshindikana kuchakata oda.")).toContain("waiterOrders:listForBills");
+    expect(errorText(stale, "Imeshindikana kuchakata oda.")).toMatch(/haijasasishwa/);
+    setLang("en", { reload: false });
+    expect(errorText(stale, "x")).toBe("The server is not up to date: function 'waiterOrders:listForBills' does not exist on this system. Contact your system administrator.");
+    setLang("sw", { reload: false });
+  });
 });

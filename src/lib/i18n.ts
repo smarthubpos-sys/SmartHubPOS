@@ -91,6 +91,9 @@ export function errorText(e: unknown, fallback?: string): string {
   if (typeof payload === "string" && payload.trim()) return trMessage(payload.trim());
   if (!(e instanceof Error) || !e.message) return fallback ? tr(fallback) : "";
   let msg = e.message;
+  // The screen is newer than the server: say so (with the function name) instead of a vague "Server Error".
+  const missing = /Could not find public function for '([^']+)'/.exec(msg);
+  if (missing) return tr("Seva haijasasishwa: kazi '{0}' haipo kwenye mfumo huu. Wasiliana na msimamizi wa mfumo.", [missing[1]]);
   const uncaught = msg.indexOf("Uncaught Error:");
   if (uncaught >= 0) msg = msg.slice(uncaught + "Uncaught Error:".length);
   msg = msg.split("\n")[0].replace(/^\s*(Server Error\s*)?/, "").trim();

@@ -25,10 +25,11 @@ export function resolveWaiterSettings(s: WaiterSettingsDoc) {
   };
 }
 
-/** Is Waiter Orders switched on for this user's role? waiter/waitress follow their own switch; every other role needs at least one on. */
+/** Is Waiter Orders switched on for this user's role? waiter/waitress follow their own switch; every other role needs at least one on; Super Admin always passes. */
 export function waiterOrdersAllowedFor(role: string | undefined, s: WaiterSettingsDoc) {
   const r = resolveWaiterSettings(s);
-  const name = String(role ?? "").toLowerCase();
+  const name = String(role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_"); // "Super Admin", "super-admin", " Waitress " all normalise
+  if (name === "super_admin" || name === "superadmin") return true; // Super Admin is never locked out of Selling Point by a business switch
   if (name === "waiter") return r.waiterEnabled;
   if (name === "waitress") return r.waitressEnabled;
   return r.waiterOrdersEnabled;

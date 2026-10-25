@@ -18,6 +18,7 @@ import {
   LifeBuoy,
 } from "lucide-react";
 import { tr } from "@/lib/i18n.ts";
+import { isSellingStaffRole, isSuperAdminRole, showSellingPointInMenu } from "@/lib/selling-point-access.ts";
 import { useNotifications } from "@/hooks/use-notifications.ts";
 
 const groups = [
@@ -76,34 +77,21 @@ export default function Sidebar({
   const permissions = useQuery(api.maintenance.myPermissions) ?? [];
   const currentUser = useQuery(api.users.getCurrentUser);
 
-  const role = String(currentUser?.role ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\s-]+/g, "_");
-
-  const superAdmin = role === "super_admin" || role === "superadmin";
-  const sellingStaff = role === "waiter" || role === "waitress";
+  const superAdmin = isSuperAdminRole(currentUser?.role);
+  const sellingStaff = isSellingStaffRole(currentUser?.role);
 
   const visibleGroups = groups
     .map((g) => ({
       ...g,
-      items: g.items.filter(
-        (item) =>
-          (superAdmin || !modules || modules.includes(item.module)) &&
-          (superAdmin ||
-            (item.module === "sales"
-              ? permissions.includes("sales.view")
-              : item.module === "waiterOrders"
-                ? permissions.includes("waiterOrders.view")
-                : true)) &&
-          !(sellingStaff && item.module === "dashboard") &&
-          (superAdmin ||
-            !(
-              item.module === "waiterOrders" &&
-              !sellingStaff &&
-              tenant?.waiterOrdersEnabled !== true
-            )),
-      ),
+      items: g.items.filter((item) => {
+        if (item.module === "waiterOrders") {
+          return showSellingPointInMenu({ role: currentUser?.role, permissions, modules, waiterOrdersEnabled: tenant?.waiterOrdersEnabled });
+        }
+        if (sellingStaff && item.module === "dashboard") return false;
+        if (superAdmin) return true;
+        if (modules && !modules.includes(item.module)) return false;
+        return item.module === "sales" ? permissions.includes("sales.view") : true;
+      }),
     }))
     .filter((g) => g.items.length > 0);
 

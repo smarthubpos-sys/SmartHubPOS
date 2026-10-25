@@ -2,11 +2,12 @@ import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { surfaceError } from "./surfaceError";
 import type { Doc, Id } from "./_generated/dataModel";
-import { getCompanySettings, logAudit, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
+import { getCompanySettings, logAudit, normalizeRole, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
 import { waiterOrdersAllowedFor } from "./waiterSettings";
 
 
-const isWaiter = (role?: string) => ["waiter", "waitress"].includes(String(role ?? "").toLowerCase());
+// Normalised like everywhere else (case / spaces / hyphens): a role label such as "Waitress " must still be limited to its OWN orders.
+const isWaiter = (role?: string) => ["waiter", "waitress"].includes(normalizeRole(role));
 
 /**
  * Deducts the stock of an order EXACTLY ONCE. The guard is the order's own `stockDeducted` flag, read and written inside the same
@@ -77,8 +78,7 @@ export const list = query({
       .withIndex("by_scope_status", q =>
         q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)
       ).collect();
-    const role = String(user.role ?? "").toLowerCase();
-    const isWaiterRole = role === "waiter" || role === "waitress";
+    const isWaiterRole = isWaiter(user.role);
     // A waiter sees only his own orders (placed, sent or received). Everyone else (cashier / manager) sees only orders that were SENT.
     // Cashier queue is strictly pending work. Accepted/printed orders remain in the database for history.
     const visible = rows.filter(r => isWaiterRole ? r.waiterId === user._id : r.status === "pending");
@@ -180,8 +180,7 @@ async function ownOrder(ctx: Parameters<typeof resolveWriteScope>[0], orderId: I
   if (!order || order.tenantId !== scope.tenantId || order.branchId !== scope.branchId) {
     throw new Error("Oda haipo kwenye biashara au tawi lako.");
   }
-  const role = String(user.role ?? "").toLowerCase();
-  if ((role === "waiter" || role === "waitress") && order.waiterId !== user._id) {
+  if (isWaiter(user.role) && order.waiterId !== user._id) {
     throw new Error("Hii si oda yako.");
   }
   return { user, order };
@@ -211,8 +210,7 @@ export const markPrinted = mutation({
   handler: async (ctx, args) => {
     try {
     const { user, order } = await ownOrder(ctx, args.orderId);
-    const role = String(user.role ?? "").toLowerCase();
-    if (role !== "waiter" && role !== "waitress") throw new Error("Chapisha oda kutoka kwenye foleni ya cashier.");
+    if (!isWaiter(user.role)) throw new Error("Chapisha oda kutoka kwenye foleni ya cashier.");
     if (order.status === "printed") return order._id;
     if (order.status !== "placed") throw new Error("Oda hii tayari imetumwa au haiwezi kuchapishwa hapa.");
     const now = new Date().toISOString();
@@ -228,8 +226,7 @@ export const markHandled = mutation({
   handler: async (ctx, args) => {
     try {
     const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
-    const role = String(user.role ?? "").toLowerCase();
-    if (role === "waiter" || role === "waitress") throw new Error("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
+    if (isWaiter(user.role)) throw new Error("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
     const scope = await resolveWriteScope(ctx, user);
     const order = await ctx.db.get("waiterOrders", args.orderId);
     if (!order || order.tenantId !== scope.tenantId ||

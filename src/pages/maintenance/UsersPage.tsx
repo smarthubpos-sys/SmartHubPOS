@@ -9,7 +9,7 @@ import { useAuth } from "@/hooks/use-auth";
 import ModulePicker from "@/components/module-picker.tsx";
 import { ALL_MODULE_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, USER_GRANTABLE_PERMISSIONS } from "@/convex/permissions";
 import { useStockRights } from "@/hooks/use-stock-rights.ts";
-import { tr } from "@/lib/i18n.ts";
+import { errorText, tr } from "@/lib/i18n.ts";
 
 type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; extra: string[]; pin: string; pinLoginEnabled: boolean; hasPin: boolean; staffCode: string };
 const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, extra: [], pin: "", pinLoginEnabled: false, hasPin: false, staffCode: "" };
@@ -144,7 +144,7 @@ export default function UsersPage() {
               }
               if (f.staffCode.trim() || editing) {
                 try { await setStaffCode({ userId: savedUserId, staffCode: f.staffCode }); }
-                catch (e) { throw new Error(`${tr("Staff code haikuhifadhiwa: ")}${e instanceof Error ? e.message : ""}`.trim(), { cause: e }); }
+                catch (e) { throw new Error(`${tr("Staff code haikuhifadhiwa: ")}${errorText(e)}`.trim(), { cause: e }); }
               }
               setF(null);
             }, editing ? tr("Mtumiaji amesasishwa.") : tr("Mtumiaji ameundwa."))}>{tr("Hifadhi")}</Button>
