@@ -93,7 +93,7 @@ export default function BillSheet({
     printReceipt,
   ]);
 
-  if (bill === undefined) return <Empty>{tr("Inapakiaâ€¦")}</Empty>;
+  if (bill === undefined) return <Empty>{tr("Inapakia…")}</Empty>;
   const dp = bill.company.decimalPlaces;
   const m = (n: number) =>
     `${bill.company.currencySymbol} ${formatNumber(n, dp)}`;
@@ -101,12 +101,12 @@ export default function BillSheet({
   const isInvoice = kind === "invoice";
   const heading = isInvoice ? bill.department?.trim() || "Sales" : tr("BILI");
   const whatsappText = [
-    `${bill.company.name || "Biashara"} â€” ${heading}`,
+    `${bill.company.name || "Biashara"} — ${heading}`,
     `${tr("Mteja")}: ${bill.client.name}`,
     ...bill.invoices.flatMap((inv) => [
       `${tr("Invoice")} ${inv.invoiceNo} (${formatDate(inv.date)})`,
       ...inv.lines.map(
-        (l) => `${l.name} Ã— ${number(l.qty)} = ${m(l.lineTotal)}`,
+        (l) => `${l.name} × ${number(l.qty)} = ${m(l.lineTotal)}`,
       ),
       `${tr("Jumla ya invoice")}: ${m(inv.total)}`,
     ]),
@@ -198,7 +198,7 @@ export default function BillSheet({
               <p className="text-xs">
                 {[bill.company.phone, bill.company.email]
                   .filter(Boolean)
-                  .join(" Â· ")}
+                  .join(" · ")}
               </p>
             )}
             {bill.company.taxId && (
@@ -238,7 +238,7 @@ export default function BillSheet({
               <span>
                 {tr("Invoice")} {inv.invoiceNo}
                 {inv.department && bill.department?.includes(" + ")
-                  ? ` Â· ${inv.department}`
+                  ? ` · ${inv.department}`
                   : ""}
               </span>
               <span>{formatDate(inv.date)}</span>

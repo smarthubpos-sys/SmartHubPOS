@@ -36,7 +36,7 @@ export default function SalesClients() {
 
   if (mode === "edit") {
     return (
-      <main className="mx-auto max-w-5xl space-y-5 p-5">
+      <div className="mx-auto max-w-5xl space-y-5 p-5">
         <Button variant="outline" onClick={() => setMode("list")}>{tr("← Rudi kwenye wateja")}</Button>
         <h1 className="text-2xl font-bold">{id ? tr("Modify Client") : tr("Add Client")}</h1>
         <section className="grid gap-4 rounded-xl border p-5 md:grid-cols-2">
@@ -54,14 +54,14 @@ export default function SalesClients() {
             if (ok) setMode("list");
           })()}>{tr("Save Changes")}</Button></div>
         </section>
-      </main>
+      </div>
     );
   }
 
   const q = search.trim().toLowerCase();
   const shown = data.clients.filter((c) => !q || [c.name, c.code, c.phone].some((x) => x.toLowerCase().includes(q)));
   return (
-    <main className="mx-auto max-w-6xl space-y-5 p-5">
+    <div className="mx-auto max-w-6xl space-y-5 p-5">
       <Button variant="outline" onClick={() => navigate("/sales")}>{tr("← Sales")}</Button>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">{tr("Add / Modify Client")}</h1>
@@ -80,6 +80,6 @@ export default function SalesClients() {
         </table>
         {!shown.length && <p className="p-5 text-sm text-muted-foreground">{tr("Hakuna mteja bado.")}</p>}
       </div></section>
-    </main>
+    </div>
   );
 }

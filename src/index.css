@@ -182,3 +182,12 @@
   .ad-img-fade { -webkit-mask-image: linear-gradient(to right, transparent 0, #000 42%); mask-image: linear-gradient(to right, transparent 0, #000 42%); }
 }
 @media (prefers-reduced-motion: reduce) { .ad-in { animation: none; } }
+
+/* ── App shell scrolling (pages/layout/Applayout.tsx) ──
+   The shell is exactly one screen tall and <main data-app-scroll> scrolls inside it. */
+/* Browsers without dynamic-viewport units would ignore h-dvh and let the shell grow, so nothing could scroll: fall back to 100vh. */
+@supports not (height: 100dvh) {
+  .h-dvh { height: 100vh; }
+}
+/* viewport-fit=cover lets a page run under the phone's home bar: keep the last buttons of every page clear of it. */
+main[data-app-scroll]::after { content: ""; display: block; height: env(safe-area-inset-bottom, 0px); }

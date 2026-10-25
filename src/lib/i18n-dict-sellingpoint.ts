@@ -1,5 +1,14 @@
 /* Selling Point, Bills and Cashier staff-settlement texts (Kiswahili is the source text; English alongside). */
 export const SELLING_POINT_DICT: Record<string, { sw: string; en: string }> = {
+  "Aina ya eneo": { sw: "Aina ya eneo", en: "Location type" },
+  "Meza": { sw: "Meza", en: "Table" },
+  "Chumba": { sw: "Chumba", en: "Room" },
+  "Ghorofa (hiari)": { sw: "Ghorofa (hiari)", en: "Floor (optional)" },
+  "Namba au jina la chumba": { sw: "Namba au jina la chumba", en: "Room number or name" },
+  "Eneo la huduma (hiari)": { sw: "Eneo la huduma (hiari) — meza, chumba au ghorofa", en: "Service location (optional) — table, room or floor" },
+  "Tafuta bidhaa au scan code": { sw: "Tafuta bidhaa au scan code", en: "Search product or scan code" },
+  "Bidhaa haijapatikana.": { sw: "Bidhaa haijapatikana.", en: "Product not found." },
+  "Send na Print vinapunguza stock mara moja tu.": { sw: "Send na Print vinapunguza stock mara moja tu.", en: "Send and Print deduct stock once only." },
   "Bila meza": { sw: "Bila meza", en: "No table" },
   "Bili imechapishwa. Hakuna mauzo, malipo wala stock vilivyobadilika.": { sw: "Bili imechapishwa. Hakuna mauzo, malipo wala stock vilivyobadilika.", en: "Bill printed. No sale, payment or stock was changed." },
   "Bills": { sw: "Bills", en: "Bills" },

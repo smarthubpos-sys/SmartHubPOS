@@ -10,6 +10,7 @@ import { SignInButton } from "@/components/ui/signin.tsx";
 import Sidebar from "./_components/sidebar.tsx";
 import TopBar from "./_components/TopBar.tsx";
 import { tr, setLang } from "@/lib/i18n.ts";
+import { scrollAppToTop } from "@/lib/app-scroll.ts";
 import BusinessPicker from "@/pages/super-admin/BusinessPicker.tsx";
 import { PICK_BUSINESS_FLAG } from "@/lib/business-session.ts";
 import AnnouncementPopup from "@/components/announcement-popup.tsx";
@@ -78,6 +79,9 @@ export default function AppLayout() {
     if (!isLoading && !isAuthenticated) navigate("/", { replace: true, state: { from: location.pathname } });
   }, [isLoading, isAuthenticated, navigate, location.pathname]);
 
+  // <main> is the scroll container and stays mounted between pages, so it keeps its scroll offset: start every page at its top.
+  useEffect(() => { scrollAppToTop(); }, [location.pathname]);
+
   if (isLoading || (isAuthenticated && (user === undefined || business === undefined)) || resetting) return <LoadingScreen />;
   if (!isAuthenticated) return <LoadingScreen />;
   if (user === null) return <div className="min-h-screen flex items-center justify-center bg-slate-950 p-5 text-white"><div className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 text-center shadow-2xl"><h1 className="text-xl font-bold">{tr("Tunamalizia akaunti yako…")}</h1><p className="mt-2 text-sm text-slate-300">{tr("Ikiwa ukurasa huu hautabadilika, jaribu kutoka na kuingia tena.")}</p><div className="mt-5"><SignInButton /></div></div></div>;
@@ -98,10 +102,10 @@ export default function AppLayout() {
   return <div className="app-bg flex h-dvh overflow-hidden">
     {isMobile && sidebarOpen && <div className="fixed inset-0 z-30 bg-black/50" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
     <Sidebar open={sidebarOpen} mobile={isMobile} onNavigate={() => { if (isMobile) setSidebarOpen(false); }} onToggle={() => setSidebarOpen((o) => !o)} />
-    <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <TopBar onMenuToggle={() => setSidebarOpen((o) => !o)} />
       <SubscriptionBanner />
-      <main className="flex-1 overflow-auto p-3 sm:p-4 md:p-6">{blocked ? <Navigate to={sellingStaff ? "/selling-point" : "/dashboard"} replace /> : <ErrorBoundary resetKey={location.pathname}><Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center" role="status" aria-live="polite"><div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" /></div>}><Outlet /></Suspense></ErrorBoundary>}</main>
+      <main data-app-scroll className="min-h-0 flex-1 overflow-auto overscroll-contain p-3 sm:p-4 md:p-6">{blocked ? <Navigate to={sellingStaff ? "/selling-point" : "/dashboard"} replace /> : <ErrorBoundary resetKey={location.pathname}><Suspense fallback={<div className="flex min-h-[40vh] items-center justify-center" role="status" aria-live="polite"><div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" /></div>}><Outlet /></Suspense></ErrorBoundary>}</main>
     </div>
     <AnnouncementPopup />
   </div>;

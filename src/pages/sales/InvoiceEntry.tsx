@@ -1,4 +1,6 @@
 import { useMemo, useRef, useState } from "react";
+import ServicePointFields from "@/components/ServicePointFields.tsx";
+import { emptyServicePoint, formatServicePoint, pickWalkInClient, serviceWords, type ServicePoint } from "@/lib/sales-flow.ts";
 import { Printer } from "lucide-react";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate } from "react-router-dom";
@@ -42,11 +44,14 @@ export default function InvoiceEntry() {
   const markPrinted = useMutation(api.waiterOrders.markPrinted);
   const myOrders = useQuery(api.waiterOrders.list, waiterMode ? {} : "skip");
   const [placedId, setPlacedId] = useState<Id<"waiterOrders"> | null>(null);
-  const [tableNo, setTableNo] = useState("");
+  const [servicePoint, setServicePoint] = useState<ServicePoint>(emptyServicePoint());
+  const tableNo = formatServicePoint(servicePoint, serviceWords());
   const settings = useQuery(api.maintenance.getSettings, {});
   const allowNegative = !!settings?.company?.allowNegativeStock; // same switch the server uses (Maintenance > Company)
 
-  const [clientId, setClientId] = useState("");
+  const [pickedClient, setClientId] = useState("");
+  // Walk-in retail: when the business has exactly one Cash / Walk-in customer it is pre-selected (still changeable).
+  const clientId = pickedClient || (clients ? pickWalkInClient(clients) : "");
   const [date, setDate] = useState(today());
   const [source, setSource] = useState("Counter");
   const [taxRate, setTaxRate] = useState("0");
@@ -71,7 +76,7 @@ export default function InvoiceEntry() {
   const unitName = useMemo(() => new Map((units ?? []).map((u) => [String(u._id), u.name])), [units]);
   const productById = useMemo(() => new Map((products ?? []).map((p) => [String(p._id), p])), [products]);
 
-  if (!clients || !products) return <div className="p-6 text-sm text-muted-foreground">{tr("Inapakiaâ€¦")}</div>;
+  if (!clients || !products) return <div className="p-6 text-sm text-muted-foreground">{tr("Inapakia…")}</div>;
 
   const update = (i: number, patch: Partial<Line>) => setLines((old) => old.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
   const choose = (i: number, productId: string) => update(i, { productId, price: String(productById.get(productId)?.sellingPrice ?? 0) });
@@ -92,7 +97,7 @@ export default function InvoiceEntry() {
     const code = scan.trim().toLowerCase();
     if (!code) return;
     const p = products.find((x) => (x.barcode ?? "").toLowerCase() === code || x.itemCode.toLowerCase() === code);
-    if (!p) { toast.error(tr("Bidhaa yenye barcode/code â€œ{0}â€ haijapatikana.", [scan])); return; }
+    if (!p) { toast.error(tr("Bidhaa yenye barcode/code “{0}” haijapatikana.", [scan])); return; }
     setLines((old) => {
       const idx = old.findIndex((l) => l.productId === p._id);
       if (idx >= 0) return old.map((l, i) => (i === idx ? { ...l, qty: String(num(l.qty) + 1) } : l));
@@ -153,7 +158,7 @@ export default function InvoiceEntry() {
     setBusy(true);
     try {
       const id = await placeOrder({ customerName, tableNumber: tableNo.trim() || undefined, notes: notes.trim() || undefined, lines: lines.map((l) => ({ productId: l.productId as Id<"products">, qty: num(l.qty) })) });
-      setPlacedId(id); setLines([emptyLine()]); setNotes(""); setTableNo("");
+      setPlacedId(id); setLines([emptyLine()]); setNotes(""); setServicePoint(emptyServicePoint());
       toast.success(tr("Oda imewekwa bila kupunguza stock. Sasa chagua Send au Print."));
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuweka oda.")); }
     finally { setBusy(false); }
@@ -201,7 +206,7 @@ export default function InvoiceEntry() {
       // Printing is configured centrally under Maintenance > Hardware Setup.
       // BillSheet prints only after its saved invoice data is loaded; it never creates another invoice.
       setPrintToken((n) => tokenAfterSave(n, !!hardware.autoPrintReceipt));
-      toast.success(tr("Invoice {0} imehifadhiwa â€” jumla {1}, deni {2}.", [r.invoiceNo, fmt(r.total), fmt(r.outstanding)]));
+      toast.success(tr("Invoice {0} imehifadhiwa — jumla {1}, deni {2}.", [r.invoiceNo, fmt(r.total), fmt(r.outstanding)]));
       if (r.creditWarning) toast.warning(tr("Onyo: mteja huyu amevuka kikomo chake cha mkopo."));
       setLines([emptyLine()]); setInvoiceDiscount("0"); setNotes("");
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuhifadhi invoice.")); }
@@ -209,15 +214,15 @@ export default function InvoiceEntry() {
   };
 
   return (
-    <main className="mx-auto max-w-7xl space-y-5 p-5">
-      <Button variant="outline" onClick={() => navigate("/sales")}>{tr("â† Sales")}</Button>
+    <div className="mx-auto max-w-7xl space-y-5 p-5">
+      <Button variant="outline" onClick={() => navigate("/sales")}>{tr("← Sales")}</Button>
       <section className="rounded-xl border p-5">
-        <h1 className="mb-1 text-2xl font-bold">{tr("Invoicing â€” uza bidhaa")}</h1>
+        <h1 className="mb-1 text-2xl font-bold">{tr("Invoicing — uza bidhaa")}</h1>
         <p className="mb-4 text-sm text-muted-foreground">{tr("Ongeza bidhaa nyingi kwenye invoice moja. Stock itapungua mara moja baada ya kuhifadhi.")}</p>
         {!clients.length && (
           <div className="mb-4 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
             
-            {tr("Hakuna mteja bado. Tengeneza mteja (mfano â€œCash Customerâ€) kwanza.")} <Button size="sm" className="ml-2" onClick={() => navigate("/sales/clients")}>{tr("Add Client")}</Button>
+            {tr("Hakuna mteja bado. Tengeneza mteja (mfano “Cash Customer”) kwanza.")} <Button size="sm" className="ml-2" onClick={() => navigate("/sales/clients")}>{tr("Add Client")}</Button>
           </div>
         )}
         <div className="grid gap-4 md:grid-cols-3">
@@ -255,7 +260,7 @@ export default function InvoiceEntry() {
                       </select>
                     </td>
                     <td className="p-2">{p?.unitId ? unitName.get(String(p.unitId)) ?? tr("Unit") : tr("Unit")}</td>
-                    <td className={`p-2 tabular-nums ${over ? "font-semibold text-destructive" : ""}`}>{p ? fmt(p.currentQty, 4) : "â€”"}</td>
+                    <td className={`p-2 tabular-nums ${over ? "font-semibold text-destructive" : ""}`}>{p ? fmt(p.currentQty, 4) : "—"}</td>
                     <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.qty} onChange={(e) => update(i, { qty: e.target.value })} /></td>
                     <td className="p-2"><Input className="w-28" type="number" step="any" min="0" value={l.price} onChange={(e) => update(i, { price: e.target.value })} /></td>
                     <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.discount} onChange={(e) => update(i, { discount: e.target.value })} /></td>
@@ -269,7 +274,7 @@ export default function InvoiceEntry() {
         </div>
 
         <div className="mt-4 flex flex-wrap items-start justify-between gap-6">
-          <Button variant="outline" onClick={() => setLines((old) => [...old, emptyLine()])}>{tr("ï¼‹ Add Line")}</Button>
+          <Button variant="outline" onClick={() => setLines((old) => [...old, emptyLine()])}>{tr("＋ Add Line")}</Button>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="grid gap-1 text-sm">{tr("Discount ya invoice")}<Input type="number" step="any" min="0" value={invoiceDiscount} onChange={(e) => setInvoiceDiscount(e.target.value)} /></label>
             <label className="grid gap-1 text-sm">{tr("Tax (%)")}<Input type="number" step="any" min="0" max="100" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></label>
@@ -284,15 +289,15 @@ export default function InvoiceEntry() {
         </div>
         {waiterMode
           ? <div className="mt-4 flex flex-wrap items-end gap-3">
-              <label className="grid gap-1 text-sm">{tr("Namba ya meza (hiari)")}<Input value={tableNo} onChange={(e) => setTableNo(e.target.value)} /></label>
+              <details className="text-sm"><summary className="cursor-pointer select-none py-2">{tr("Eneo la huduma (hiari)")}</summary><ServicePointFields value={servicePoint} onChange={setServicePoint} /></details>
               <Button disabled={busy} onClick={() => void weka()}>{busy ? tr("Inaweka...") : tr("Weka Order")}</Button>
             </div>
-          : <div className="mt-4"><Button disabled={busy} onClick={() => void submit()}>{busy ? tr("Inahifadhiâ€¦") : tr("Hifadhi Invoice")}</Button></div>}
+          : <div className="mt-4"><Button disabled={busy} onClick={() => void submit()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi Invoice")}</Button></div>}
       </section>
 
       {waiterMode && placedId && <section className="space-y-3 rounded-xl border p-4">
-        <h2 className="font-semibold">{tr("Oda imewekwa")}{placedOrder ? ` â€” ${placedOrder.customerName}` : ""}</h2>
-        <p className="text-sm text-muted-foreground">{tr("Send na Print havipunguzi stock.")}</p>
+        <h2 className="font-semibold">{tr("Oda imewekwa")}{placedOrder ? ` — ${placedOrder.customerName}` : ""}</h2>
+        <p className="text-sm text-muted-foreground">{tr("Send na Print vinapunguza stock mara moja tu.")}</p>
           {waiterOrderMode === "cashier"
             ? <Button onClick={() => void sendPlaced()}>{tr("Send")}</Button>
             : <Button variant="outline" disabled={!placedOrder} onClick={() => void printPlaced()}><Printer className="mr-1 h-4 w-4" />{tr("Print")}</Button>}
@@ -364,6 +369,6 @@ export default function InvoiceEntry() {
           </section>
         </div>
       )}
-    </main>
+    </div>
   );
 }

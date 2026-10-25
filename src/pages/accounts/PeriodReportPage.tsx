@@ -11,6 +11,7 @@ import { Empty, FormField, PageHeader, Panel, SelectBox, Table } from "@/compone
 import { formatDate, formatNumber, localDate } from "@/lib/format.ts";
 import { errorText, getLocale, tr } from "@/lib/i18n.ts";
 import { printElement } from "@/lib/print-area.ts";
+import { scrollAppToTop } from "@/lib/app-scroll.ts";
 import { bucketDaily, chunkRange, halve, periodRange, sumSections, summarize, type Period, type Row, type Summary } from "@/convex/reportCore.ts";
 import { toast } from "sonner";
 
@@ -327,7 +328,7 @@ export default function PeriodReportPage() {
                 <td className="whitespace-nowrap text-xs text-muted-foreground">{h.createdByName}<br />{new Date(h.createdAt).toLocaleString(getLocale())}</td>
                 <td className="text-right">
   <div className="flex justify-end gap-2">
-    <Button size="sm" variant="outline" onClick={() => { setResult(null); setOpenId(h._id); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{tr("Fungua")}</Button>
+    <Button size="sm" variant="outline" onClick={() => { setResult(null); setOpenId(h._id); scrollAppToTop("smooth"); }}>{tr("Fungua")}</Button>
     {(superAdminInfo?.isSuperAdmin === true || canDeleteReports) && <Button size="sm" variant="destructive" onClick={async () => {
       if (!window.confirm(`Una uhakika unataka kufuta ripoti "${periodText(h.period as Period, h.startDate, h.endDate)}"? Kitendo hiki hakiwezi kutenguliwa.`)) return;
       try {

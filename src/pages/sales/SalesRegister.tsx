@@ -79,7 +79,7 @@ export default function SalesRegister() {
       <DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} />
     </div>
   );
-  if (!data) return <main className="mx-auto max-w-7xl space-y-5 p-5">{header}<div className="p-6 text-sm text-muted-foreground">{tr("Inapakia taarifa za Sales…")}</div></main>;
+  if (!data) return <div className="mx-auto max-w-7xl space-y-5 p-5">{header}<div className="p-6 text-sm text-muted-foreground">{tr("Inapakia taarifa za Sales…")}</div></div>;
 
   const { invoices, lines, payments, clients, balances, totals } = data;
   let rows: Row[] = [];
@@ -183,7 +183,7 @@ export default function SalesRegister() {
   const listRows = path === "payments" ? payments.map((p) => ({ Tarehe: p.date, Mteja: p.clientName, Invoice: p.invoiceNo, Kiasi: p.amount, Njia: trValue(p.method), Reference: p.reference || "—" })) : rows;
 
   return (
-    <main className="mx-auto max-w-7xl space-y-5 p-5">
+    <div className="mx-auto max-w-7xl space-y-5 p-5">
       {header}
       {data.truncated && <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 print:hidden">{tr("Kipindi hiki kina data nyingi sana; baadhi ya rekodi hazijaonyeshwa. Chagua kipindi kifupi zaidi ili kupata jumla kamili.")}</p>}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -193,6 +193,6 @@ export default function SalesRegister() {
       {lastReceipt && <TransactionReceipt title={tr("RISITI YA MALIPO YA MAUZO")} reference={lastReceipt.reference} date={lastReceipt.date} partyLabel={tr("Mteja")} party={lastReceipt.party} amount={lastReceipt.amount} method={lastReceipt.method} note={tr("Malipo yamepokelewa. Hifadhi risiti hii kwa kumbukumbu.")} />}
       {statementPicker}
       {path === "reports/client-statement" && !clientId ? <p className="text-sm text-muted-foreground">{tr("Chagua mteja kuona statement yake.")}</p> : <ReportTable title={title === "Payment Received" ? tr("Malipo yaliyopokelewa") : title} rows={listRows} sumCols={path === "payments" ? ["Kiasi"] : sumCols} note={note} onPrintRow={path === "reports/sold-items" ? (row, copies, paper) => printSoldItem(row, copies, paper, data.company) : undefined} />}
-    </main>
+    </div>
   );
 }

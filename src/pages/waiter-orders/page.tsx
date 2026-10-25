@@ -8,6 +8,7 @@ import WaiterDirectory from "./WaiterDirectory.tsx";
 import SellingPoint from "./SellingPoint.tsx";
 import BillsPanel from "./BillsPanel.tsx";
 import StaffSettlement from "./StaffSettlement.tsx";
+import ErrorBoundary from "@/components/error-boundary.tsx";
 import { printWaiterOrder, type PrintableOrder } from "@/lib/print-waiter-order.ts";
 
 const waiterApi = api.waiterOrders;
@@ -111,8 +112,12 @@ export default function WaiterOrdersPage() {
         </article>)}
         {orders && orders.length === 0 && <p className="rounded-xl border p-5 text-sm text-muted-foreground">{tr("Hakuna oda bado.")}</p>}
       </section>
-      <BillsPanel />
-      {cashier && role !== "super_admin" && role !== "superadmin" && <><StaffSettlement /><WaiterDirectory /></>}
+      {/* Each optional panel has its own boundary: one panel failing (e.g. a Convex function not deployed yet) must not blank the whole page. */}
+      <ErrorBoundary inline><BillsPanel /></ErrorBoundary>
+      {cashier && role !== "super_admin" && role !== "superadmin" && <>
+        <ErrorBoundary inline><StaffSettlement /></ErrorBoundary>
+        <ErrorBoundary inline><WaiterDirectory /></ErrorBoundary>
+      </>}
     </div>
   );
 }

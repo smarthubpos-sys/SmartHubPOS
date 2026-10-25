@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input.tsx";
 import { AdSlide } from "@/components/ads-carousel.tsx";
 import { errorText, tr } from "@/lib/i18n.ts";
 import { formatDate } from "@/lib/format.ts";
+import { scrollAppToTop } from "@/lib/app-scroll.ts";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 
 const THEMES = [["blue", "bg-blue-500"], ["green", "bg-emerald-500"], ["orange", "bg-orange-500"], ["purple", "bg-violet-500"], ["red", "bg-rose-500"]] as const;
@@ -54,7 +55,7 @@ export default function AnnouncementsAdmin() {
     setEditingId(r._id); setKind(r.kind === "banner" ? "banner" : "message");
     setTitle(r.title); setBody(r.body); setImageUrl(r.imageUrl ?? ""); setLinkUrl(r.linkUrl ?? ""); setTheme(r.theme ?? "blue");
     setTenantId(r.tenantId ? String(r.tenantId) : ""); setStartsAt(r.startsAt ?? ""); setEndsAt(r.endsAt ?? "");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    scrollAppToTop("smooth");
   }
 
   return (

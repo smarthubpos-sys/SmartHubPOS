@@ -458,9 +458,9 @@ export default function StockWorkspace() {
     default: screen = <ProductsScreen />;
   }
   return (
-    <main className="mx-auto max-w-7xl space-y-5 p-5">
+    <div className="mx-auto max-w-7xl space-y-5 p-5">
       <Button variant="outline" className="print:hidden" onClick={() => navigate("/stock")}>{tr("← Stock")}</Button>
       {screen}
-    </main>
+    </div>
   );
 }

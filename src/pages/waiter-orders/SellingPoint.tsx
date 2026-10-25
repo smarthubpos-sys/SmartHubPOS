@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { tr, errorText } from "@/lib/i18n.ts";
+import ServicePointFields from "@/components/ServicePointFields.tsx";
+import { emptyServicePoint, filterProducts, formatServicePoint, serviceWords, type ServicePoint } from "@/lib/sales-flow.ts";
 import { printWaiterOrder } from "@/lib/print-waiter-order.ts";
 
 const money = (n: number) => Number(n).toLocaleString();
@@ -23,13 +25,15 @@ export default function SellingPoint() {
 
   const [groupId, setGroupId] = useState<string>("all");
   const [cart, setCart] = useState<Record<string, number>>({});
-  const [table, setTable] = useState("");
+  const [servicePoint, setServicePoint] = useState<ServicePoint>(emptyServicePoint());
+  const [query, setQuery] = useState(""); // optional: name / item code / barcode (scanner types the code and presses Enter)
+  const table = formatServicePoint(servicePoint, serviceWords());
   const [clientKey, setClientKey] = useState(newKey); // one key per cart: a repeated tap/retry cannot create a second order
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ orderId: string; status: string } | null>(null);
 
   const activeGroups = useMemo(() => (groups ?? []).filter((g) => g.isActive !== false), [groups]);
-  const shown = useMemo(() => (products ?? []).filter((p) => groupId === "all" || String(p.groupId ?? "") === groupId), [products, groupId]);
+  const shown = useMemo(() => filterProducts(products ?? [], { groupId, query }), [products, groupId, query]);
   const byId = useMemo(() => new Map((products ?? []).map((p) => [String(p._id), p])), [products]);
   const lines = Object.entries(cart).filter(([, q]) => q > 0).map(([id, qty]) => ({ id, qty, p: byId.get(id) })).filter((l) => !!l.p);
   const total = lines.reduce((s, l) => s + l.qty * (l.p?.sellingPrice ?? 0), 0);
@@ -53,11 +57,21 @@ export default function SellingPoint() {
     } finally { setBusy(false); }
   }
 
-  function reset() { setCart({}); setTable(""); setDone(null); setClientKey(newKey()); setGroupId("all"); }
+  function reset() { setCart({}); setServicePoint(emptyServicePoint()); setQuery(""); setDone(null); setClientKey(newKey()); setGroupId("all"); }
 
   return (
     <section className="grid gap-4 lg:grid-cols-[1fr_340px]">
       <div className="space-y-3">
+        <Input value={query} disabled={locked} placeholder={tr("Tafuta bidhaa au scan code")} aria-label={tr("Tafuta bidhaa au scan code")}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            const code = query.trim().toLowerCase();
+            const hit = code ? (products ?? []).find((p) => (p.barcode ?? "").toLowerCase() === code || (p.itemCode ?? "").toLowerCase() === code) : undefined;
+            if (hit) { add(String(hit._id), 1); setQuery(""); } else if (code && shown.length !== 1) toast.error(tr("Bidhaa haijapatikana."));
+            else if (shown.length === 1) { add(String(shown[0]._id), 1); setQuery(""); }
+          }} />
         <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label={tr("Makundi ya bidhaa")}>
           {[{ _id: "all", name: tr("Zote") }, ...activeGroups].map((g) => (
             <button key={String(g._id)} type="button" role="tab" aria-selected={groupId === String(g._id)} onClick={() => setGroupId(String(g._id))}
@@ -95,9 +109,9 @@ export default function SellingPoint() {
           ))}
           {lines.length === 0 && <li className="text-sm text-muted-foreground">{tr("Gusa bidhaa kuiongeza kwenye oda.")}</li>}
         </ul>
-        <label className="grid gap-1 text-sm">{tr("Namba ya meza (hiari)")}
-          <Input value={table} disabled={locked} onChange={(e) => setTable(e.target.value)} inputMode="text" />
-        </label>
+        <details className="text-sm"><summary className="cursor-pointer select-none py-2">{tr("Eneo la huduma (hiari)")}</summary>
+          <ServicePointFields className="grid gap-3" value={servicePoint} disabled={locked} onChange={setServicePoint} />
+        </details>
         <p className="text-xl font-bold">{tr("Jumla")}: {money(total)}</p>
         {done ? (
           <div className="space-y-2" role="status">

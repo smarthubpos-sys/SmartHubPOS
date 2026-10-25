@@ -31,6 +31,8 @@ export default class ErrorBoundary extends Component<
 
     const rawMessage = String(error.message || error);
     const forbidden = /\bForbidden\s*:/i.test(rawMessage);
+    // The screen calls a Convex function that the deployment does not have yet (frontend newer than `npx convex deploy`).
+    const backendOutdated = /Could not find public function/i.test(rawMessage);
     const detail =
       rawMessage
         .replace(/^\[CONVEX [^\]]*\]\s*/, "")
@@ -71,6 +73,11 @@ export default class ErrorBoundary extends Component<
           <p className="font-medium">
             {tr("Paneli hii imeshindwa kufunguka.")}
           </p>
+          {backendOutdated && (
+            <p className="text-xs">
+              {tr("Server (Convex) bado haina toleo jipya la mfumo. Msimamizi wa mfumo anapaswa kutuma (deploy) functions mpya za Convex.")}
+            </p>
+          )}
           {detail && (
             <p className="break-words text-xs opacity-80">{detail}</p>
           )}
@@ -93,6 +100,11 @@ export default class ErrorBoundary extends Component<
         <p className="text-lg font-semibold">
           {tr("Kuna hitilafu imetokea kwenye ukurasa huu.")}
         </p>
+        {backendOutdated && (
+          <p className="text-sm text-muted-foreground">
+            {tr("Server (Convex) bado haina toleo jipya la mfumo. Msimamizi wa mfumo anapaswa kutuma (deploy) functions mpya za Convex.")}
+          </p>
+        )}
         {detail && (
           <p className="break-words text-sm text-muted-foreground">{detail}</p>
         )}
