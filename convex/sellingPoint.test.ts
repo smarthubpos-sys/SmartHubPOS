@@ -103,7 +103,37 @@ describe("Selling Point: bills", () => {
     expect(await asWaiter.query(api.waiterOrders.listForBills, {})).toHaveLength(3);
     expect(await asWaiter2.query(api.waiterOrders.listForBills, {})).toHaveLength(0);
     await expect(asWaiter2.query(api.waiterOrders.billSummary, { orderIds: [c.orderId] })).rejects.toThrow();
-    expect(await asCashier.query(api.waiterOrders.listForBills, {})).toHaveLength(3); // cashier sees the department
+    expect(await asCashier.query(api.waiterOrders.listForBills, {})).toHaveLength(0); // each person keeps his own bills: the waiter's bills do NOT reach the cashier by themselves
+    await expect(asCashier.query(api.waiterOrders.billSummary, { orderIds: [a.orderId] })).rejects.toThrow(); // ...and he cannot total them either
+  });
+
+  it("a waiter's bill reaches the cashier's Bills screen only after the waiter sends it", async () => {
+    const { asWaiter, asWaiter2, asCashier, asCashierOther, bia, soda } = await setup();
+    const a = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "send-1-abcdefgh", mode: "send", tableNumber: "7", lines: [{ productId: bia, qty: 1 }] });
+    const b = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "send-2-abcdefgh", mode: "print", tableNumber: "7", lines: [{ productId: soda, qty: 1 }] });
+    await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "send-3-abcdefgh", mode: "send", lines: [{ productId: soda, qty: 1 }] }); // never sent
+    expect(await asCashier.query(api.waiterOrders.listForBills, {})).toHaveLength(0);
+
+    await asWaiter.mutation(api.waiterOrders.sendBillToCashier, { orderIds: [a.orderId, b.orderId] });
+    await asWaiter.mutation(api.waiterOrders.sendBillToCashier, { orderIds: [a.orderId] }); // sending twice is harmless
+    const seen = await asCashier.query(api.waiterOrders.listForBills, {});
+    expect(seen.map((o) => String(o._id)).sort()).toEqual([String(a.orderId), String(b.orderId)].sort()); // only the SENT ones, not the third order
+    expect((await asCashier.query(api.waiterOrders.billSummary, { orderIds: [a.orderId, b.orderId] })).total).toBe(2000 + 1000);
+    expect(await asWaiter.query(api.waiterOrders.listForBills, {})).toHaveLength(3); // the waiter still keeps all his own bills
+
+    expect(await asWaiter2.query(api.waiterOrders.listForBills, {})).toHaveLength(0); // another waiter never sees them
+    expect(await asCashierOther.query(api.waiterOrders.listForBills, {})).toHaveLength(0); // nor a cashier of another business
+
+    await asCashier.mutation(api.waiterOrders.markBillPrinted, { orderIds: [a.orderId, b.orderId] });
+    expect(await asCashier.query(api.waiterOrders.listForBills, {})).toHaveLength(0); // printed bills leave the list
+  });
+
+  it("only a waiter sends his OWN orders; a cashier cannot send, nobody can send somebody else's order", async () => {
+    const { asWaiter, asWaiter2, asCashier, bia } = await setup();
+    const a = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "own-1-abcdefgh", mode: "send", lines: [{ productId: bia, qty: 1 }] });
+    await expect(asWaiter2.mutation(api.waiterOrders.sendBillToCashier, { orderIds: [a.orderId] })).rejects.toThrow();
+    await expect(asCashier.mutation(api.waiterOrders.sendBillToCashier, { orderIds: [a.orderId] })).rejects.toThrow();
+    await expect(asWaiter.mutation(api.waiterOrders.sendBillToCashier, { orderIds: [] })).rejects.toThrow();
   });
 
   it("another business never sees or totals these orders", async () => {

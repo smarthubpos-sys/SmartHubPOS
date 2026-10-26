@@ -119,3 +119,61 @@ describe("Selling Point orders reach the cashier, and the cashier receives the m
     expect(await t.run(async (ctx) => (await ctx.db.query("journalEntries").collect()).length)).toBe(1);
   });
 });
+
+describe("Cashier counter sale: sells to his own customer and takes the money in one step", () => {
+  async function counterSetup() {
+    const base = await setup();
+    const barCashier = await base.t.run(async (ctx) => {
+      const bar = (await ctx.db.query("branches").collect()).find((b) => b.name === "Bar")!;
+      return await ctx.db.insert("users", { name: "Rehema", username: "rehema", role: "cashier", tenantId: base.tenantId, branchId: bar._id, isActive: true });
+    });
+    return { ...base, barCashier, asBarCashier: base.t.withIdentity({ subject: barCashier, tokenIdentifier: "x|50" }) };
+  }
+
+  it("takes stock out once, books the sale and cash, and leaves nothing owed", async () => {
+    const { t, asBarCashier, asBoss, productId } = await counterSetup();
+    await t.run(async (ctx) => { await ctx.db.patch("products", productId, { weightedAvgCost: 1200 }); });
+    const res = await asBarCashier.mutation(api.waiterCollections.counterSale, { clientKey: "counter-1-abcdefgh", lines: [{ productId, qty: 2 }], splits: [{ method: "cash", amount: 4000 }] });
+    expect(res).toMatchObject({ total: 4000, duplicate: false });
+    expect(await asBarCashier.query(api.waiterCollections.owing, {})).toHaveLength(0); // the order is born settled
+    const stock = await asBoss.query(api.inventory.stockRegisters, {});
+    expect(stock.products.find((p) => p._id === productId)?.currentQty).toBe(8);
+    const journal = await t.run(async (ctx) => (await ctx.db.query("journalEntries").collect()).map((e) => e.sourceType));
+    expect(journal).toEqual(["waiter_sale"]);
+    const receipts = await asBarCashier.query(api.waiterCollections.receipts, { date: new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10) });
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ total: 4000, splits: [{ method: "cash", amount: 4000 }] });
+  });
+
+  it("a repeated tap (same key) returns the same sale and never deducts twice", async () => {
+    const { asBarCashier, asBoss, productId } = await counterSetup();
+    const args = { clientKey: "counter-2-abcdefgh", lines: [{ productId, qty: 1 }], splits: [{ method: "cash", amount: 2000 }] };
+    const a = await asBarCashier.mutation(api.waiterCollections.counterSale, args);
+    const b = await asBarCashier.mutation(api.waiterCollections.counterSale, args);
+    expect(b).toMatchObject({ duplicate: true, orderId: a.orderId });
+    const stock = await asBoss.query(api.inventory.stockRegisters, {});
+    expect(stock.products.find((p) => p._id === productId)?.currentQty).toBe(9);
+  });
+
+  it("a wrong payment amount is refused and nothing is recorded", async () => {
+    const { asBarCashier, asBoss, productId } = await counterSetup();
+    await expect(asBarCashier.mutation(api.waiterCollections.counterSale, { clientKey: "counter-3-abcdefgh", lines: [{ productId, qty: 1 }], splits: [{ method: "cash", amount: 1500 }] })).rejects.toThrow();
+    const stock = await asBoss.query(api.inventory.stockRegisters, {});
+    expect(stock.products.find((p) => p._id === productId)?.currentQty).toBe(10);
+  });
+
+  it("not enough stock rolls the whole sale back", async () => {
+    const { asBarCashier, asBoss, productId } = await counterSetup();
+    await expect(asBarCashier.mutation(api.waiterCollections.counterSale, { clientKey: "counter-4-abcdefgh", lines: [{ productId, qty: 50 }], splits: [{ method: "cash", amount: 100000 }] })).rejects.toThrow();
+    expect(await asBarCashier.query(api.waiterCollections.receipts, { date: new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10) })).toHaveLength(0);
+    const stock = await asBoss.query(api.inventory.stockRegisters, {});
+    expect(stock.products.find((p) => p._id === productId)?.currentQty).toBe(10);
+  });
+
+  it("waiters and Super Admin cannot use the counter", async () => {
+    const { asWaiter, asBoss, productId } = await counterSetup();
+    const args = { lines: [{ productId, qty: 1 }], splits: [{ method: "cash", amount: 2000 }] };
+    await expect(asWaiter.mutation(api.waiterCollections.counterSale, { clientKey: "counter-5-abcdefgh", ...args })).rejects.toThrow();
+    await expect(asBoss.mutation(api.waiterCollections.counterSale, { clientKey: "counter-6-abcdefgh", ...args })).rejects.toThrow();
+  });
+});

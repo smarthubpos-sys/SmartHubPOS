@@ -9,6 +9,10 @@ import { localDate } from "@/lib/format.ts";
 import { usePaymentMethods } from "@/hooks/use-payment-methods.ts";
 import PaymentSplit from "@/components/PaymentSplit.tsx";
 import { newSplitLine, splitsTotal, toSplits, type SplitLine } from "@/lib/payment-split.ts";
+import { brandingFromSettings } from "@/lib/receipt-branding.ts";
+import { qzPrinterFrom } from "@/lib/print-waiter-order.ts";
+import { printPaymentReceipt } from "@/lib/print-payment-receipt.ts";
+import { PRINT_RECEIPT_KEY, readPrintReceiptChoice } from "@/lib/print-receipt-choice.ts";
 
 const money = (n: number) => Number(n).toLocaleString();
 
@@ -22,6 +26,12 @@ export default function WaiterCollection() {
   const [picked, setPicked] = useState<string[]>([]);
   const [lines, setLines] = useState<SplitLine[]>(() => [newSplitLine(methods)]);
   const [busy, setBusy] = useState(false);
+  const [printReceipt, setPrintReceipt] = useState<boolean>(readPrintReceiptChoice); // option: print a payment receipt after receiving
+  const user = useQuery(api.users.getCurrentUser);
+  const settings = useQuery(api.maintenance.getSettings, {});
+  const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
+  const hw = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
+  const cashierName = user?.name ?? user?.username ?? "";
 
   const waiter = (owing ?? []).find((w) => String(w.staffId) === staffId);
   const chosen = (waiter?.orders ?? []).filter((o) => picked.includes(String(o._id)));
@@ -42,12 +52,31 @@ export default function WaiterCollection() {
     if (!waiter || !canSave) return;
     setBusy(true);
     try {
-      await collect({ staffId: waiter.staffId as Id<"users">, orderIds: chosen.map((o) => o._id), splits: toSplits(lines, methods) as never });
+      const splits = toSplits(lines, methods);
+      const res = await collect({ staffId: waiter.staffId as Id<"users">, orderIds: chosen.map((o) => o._id), splits: splits as never });
       toast.success(tr("Fedha zimepokelewa na kuhifadhiwa."));
+      const receipt = {
+        receiptNo: String(res.collectionId).slice(-6).toUpperCase(),
+        cashierName,
+        fromName: waiter.staffName,
+        orders: chosen.map((o) => ({ label: `${new Date(o.createdAt).toLocaleTimeString()}${o.tableNumber ? ` · ${o.tableNumber}` : ""}`, amount: o.total })),
+        payments: splits.map((p) => ({ method: p.method, amount: p.amount })),
+        total: res.total,
+      };
       setPicked([]); setStaffId(""); setLines([newSplitLine(methods)]);
+      if (printReceipt) {
+        const ok = await printPaymentReceipt(receipt, qzPrinterFrom(hw), hw.paperWidth, branding);
+        if (!ok) toast.message(tr("Fedha zimepokelewa. Risiti haikuchapishwa; unaweza kuichapa tena kutoka \"Zilizopokelewa leo\"."));
+      }
     } catch (e) {
       toast.error(errorText(e, tr("Imeshindikana kupokea fedha. Hakuna kilichorekodiwa; jaribu tena.")));
     } finally { setBusy(false); }
+  }
+
+  // Reprint a receipt taken earlier today. Only prints what was already saved; money and stock are untouched.
+  async function reprint(r: NonNullable<typeof receipts>[number]) {
+    if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
+    await printPaymentReceipt({ receiptNo: String(r._id).slice(-6).toUpperCase(), cashierName: r.cashierName || cashierName, fromName: r.staffName, payments: r.splits, total: r.total }, qzPrinterFrom(hw), hw.paperWidth, branding);
   }
 
   return (
@@ -80,6 +109,7 @@ export default function WaiterCollection() {
           </ul>
           <p className="text-base font-bold">{tr("Jumla ya kupokea")}: {money(due)}</p>
           <PaymentSplit methods={methods} lines={lines} onChange={setLines} due={due} disabled={busy} />
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4" checked={printReceipt} onChange={(e) => { setPrintReceipt(e.target.checked); try { localStorage.setItem(PRINT_RECEIPT_KEY, e.target.checked ? "1" : "0"); } catch { /* remembering the choice is optional */ } }} />{tr("Chapisha risiti ya malipo")}</label>
           <Button disabled={!canSave} onClick={() => void receive()}>{busy ? tr("Inahifadhi...") : tr("Pokea fedha")}</Button>
         </div>
       )}
@@ -89,7 +119,7 @@ export default function WaiterCollection() {
           {receipts.map((r) => (
             <div key={String(r._id)} className="flex flex-wrap justify-between gap-2 text-sm">
               <span>{new Date(r.createdAt).toLocaleTimeString()} · {r.staffName} · {r.orders} {tr("oda")} · {r.methods}</span>
-              <strong className="tabular-nums">{money(r.total)}</strong>
+              <span className="flex items-center gap-2"><strong className="tabular-nums">{money(r.total)}</strong><Button type="button" size="sm" variant="outline" onClick={() => void reprint(r)}>{tr("Chapisha risiti")}</Button></span>
             </div>
           ))}
         </div>

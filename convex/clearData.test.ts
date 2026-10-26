@@ -56,11 +56,70 @@ describe("Maintenance > Clear Data File", () => {
   it("stock group deletes movements and resets product quantities to 0 for that business", async () => {
     const { t, tenantA, superId, a, b } = await setup();
     await t.run(async (ctx) => { await ctx.db.insert("stockMovements", { tenantId: tenantA, productId: a.productId, movementDate: "2026-10-01", movementType: "purchase", qtyIn: 5, qtyOut: 0, runningBalance: 5, createdBy: superId }); });
-    await runCategory(t, superId, tenantA, "stock", 3);
+    await runCategory(t, superId, tenantA, "stock", CLEAR_CATEGORIES.stock.steps.length);
     const out = await t.run(async (ctx) => ({ pa: await ctx.db.get("products", a.productId), pb: await ctx.db.get("products", b.productId), mv: await ctx.db.query("stockMovements").collect() }));
     expect(out.pa?.currentQty).toBe(0);
     expect(out.pb?.currentQty).toBe(5);
     expect(out.mv).toHaveLength(0);
+  });
+
+  /** Rows that the REPORTS read (journals, stock history, saved period reports) for both businesses, tagged by the document that wrote them. */
+  async function seedReportRows(t: TestConvex<typeof schema>, tenantId: Id<"tenants">, productId: Id<"products">, userId: Id<"users">) {
+    await t.run(async (ctx) => {
+      for (const sourceType of ["sale", "sale_return", "payment", "waiter_sale", "purchase", "supplier_payment", "stock_adjustment", "manual"]) {
+        const entryId = await ctx.db.insert("journalEntries", { tenantId, entryDate: "2026-10-01", reference: `R-${sourceType}`, description: sourceType, status: "posted", sourceType, totalDebit: 10, totalCredit: 10, createdBy: userId });
+        const accountId = await ctx.db.insert("accounts", { tenantId, code: `9${sourceType.length}${Math.floor(Math.random() * 1000)}`, name: sourceType, type: "asset", balance: 0, isActive: true });
+        await ctx.db.insert("journalLines", { tenantId, entryId, accountId, debit: 10, credit: 0 });
+      }
+      for (const movementType of ["sale", "waiter_order", "purchase", "adjustment"]) {
+        await ctx.db.insert("stockMovements", { tenantId, productId, movementDate: "2026-10-01", movementType, qtyIn: 1, qtyOut: 0, runningBalance: 1, createdBy: userId });
+      }
+      await ctx.db.insert("reportRuns", { tenantId, period: "day", startDate: "2026-10-01", endDate: "2026-10-01", scope: "all", scopeLabel: "All", title: "Daily", netProfit: 1, netSales: 1, totalExpenses: 0, data: "{}", createdBy: userId, createdByName: "x", createdAt: "2026-10-01T00:00:00.000Z" });
+    });
+  }
+  const snapshot = (t: TestConvex<typeof schema>) => t.run(async (ctx) => ({
+    sources: (await ctx.db.query("journalEntries").collect()).map((e) => `${e.tenantId}:${e.sourceType}`),
+    lines: (await ctx.db.query("journalLines").collect()).length,
+    moves: (await ctx.db.query("stockMovements").collect()).map((m) => `${m.tenantId}:${m.movementType}`),
+    reports: (await ctx.db.query("reportRuns").collect()).map((r) => String(r.tenantId)),
+  }));
+
+  it("clearing Sales also clears its reports: sale journals, sale stock history and saved period reports - nothing is left", async () => {
+    const { t, tenantA, tenantB, superId, a, b } = await setup();
+    await seedReportRows(t, tenantA, a.productId, superId);
+    await seedReportRows(t, tenantB, b.productId, superId);
+    await runCategory(t, superId, tenantA, "invoices", CLEAR_CATEGORIES.invoices.steps.length);
+    const left = await snapshot(t);
+    const mine = (x: string) => x.startsWith(String(tenantA));
+    expect(left.sources.filter(mine).sort()).toEqual([`${tenantA}:manual`, `${tenantA}:purchase`, `${tenantA}:stock_adjustment`, `${tenantA}:supplier_payment`].sort()); // no sale, return, payment or waiter sale left
+    expect(left.moves.filter(mine).sort()).toEqual([`${tenantA}:adjustment`, `${tenantA}:purchase`].sort());
+    expect(left.reports).not.toContain(String(tenantA));
+    // the other business is untouched
+    expect(left.sources.filter((x) => x.startsWith(String(tenantB)))).toHaveLength(8);
+    expect(left.moves.filter((x) => x.startsWith(String(tenantB)))).toHaveLength(4);
+    expect(left.reports).toContain(String(tenantB));
+    expect(left.lines).toBe(8 + 4); // journal lines of removed entries are gone too
+  });
+
+  it("clearing Purchases also clears purchase journals, purchase stock history and saved reports", async () => {
+    const { t, tenantA, superId, a } = await setup();
+    await seedReportRows(t, tenantA, a.productId, superId);
+    await runCategory(t, superId, tenantA, "purchases", CLEAR_CATEGORIES.purchases.steps.length);
+    const left = await snapshot(t);
+    expect(left.sources.filter((x) => x.includes("purchase") || x.includes("supplier_payment"))).toHaveLength(0);
+    expect(left.sources.filter((x) => x.startsWith(String(tenantA)))).toHaveLength(6);
+    expect(left.moves.some((m) => m.endsWith(":purchase"))).toBe(false);
+    expect(left.reports).toHaveLength(0);
+  });
+
+  it("clearing Stock also clears stock history, adjustment journals and saved reports", async () => {
+    const { t, tenantA, superId, a } = await setup();
+    await seedReportRows(t, tenantA, a.productId, superId);
+    await runCategory(t, superId, tenantA, "stock", CLEAR_CATEGORIES.stock.steps.length);
+    const left = await snapshot(t);
+    expect(left.moves).toHaveLength(0);
+    expect(left.sources.some((x) => x.endsWith(":stock_adjustment"))).toBe(false);
+    expect(left.reports).toHaveLength(0);
   });
 
   it("refuses anyone who is not a Super Admin", async () => {

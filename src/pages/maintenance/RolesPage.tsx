@@ -2,7 +2,7 @@ import { useMaintenanceSettings, useRun } from "./helpers.ts";
 import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { PERMISSION_GROUPS } from "@/convex/permissions";
+import { PERMISSION_BUNDLES, PERMISSION_GROUPS, togglePermission } from "@/convex/permissions";
 import { Button } from "@/components/ui/button";
 import { Card, Loading, PageShell, TextField } from "./_shared";
 import { tr } from "@/lib/i18n.ts";
@@ -17,7 +17,7 @@ export default function RolesPage() {
   const { busy, run } = useRun();
   const [d, setD] = useState<Draft | null>(null);
   const can = settings?.canEdit["maintenance.roles"] ?? false;
-  const toggle = (key: string) => setD((p) => (p ? { ...p, permissions: p.permissions.includes(key) ? p.permissions.filter((x) => x !== key) : [...p.permissions, key] } : p));
+  const toggle = (key: string) => setD((p) => (p ? { ...p, permissions: togglePermission(p.permissions, key) } : p));
 
   if (d) {
     return (
@@ -34,7 +34,7 @@ export default function RolesPage() {
               {g.items.map((i) => (
                 <label key={i.key} className="flex items-start gap-2 text-sm">
                   <input type="checkbox" className="mt-1" checked={d.permissions.includes(i.key)} onChange={() => toggle(i.key)} />
-                  <span>{i.label}<span className="block font-mono text-xs text-muted-foreground">{i.key}</span></span>
+                  <span>{i.label}<span className="block font-mono text-xs text-muted-foreground">{i.key}</span>{PERMISSION_BUNDLES[i.key] && <span className="block text-xs text-muted-foreground">{tr("Inajumuisha ripoti zake zote (ticked pamoja)")}</span>}</span>
                 </label>
               ))}
             </div>

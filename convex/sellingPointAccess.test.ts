@@ -68,11 +68,14 @@ describe("Selling Point access: Super Admin", () => {
 });
 
 describe("Selling Point access: waiter / waitress and ordinary users", () => {
-  it("a waiter with waiterOrders.view sees Selling Point data and only HIS orders; the cashier of the department sees all of them", async () => {
+  it("a waiter with waiterOrders.view sees Selling Point data and only HIS orders; the cashier sees a bill only after the waiter sent it", async () => {
     const { as, waiter, cashier, bia } = await setup();
     const asWaiter = as(waiter, 20);
     await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "w-1-abcdefgh", mode: "send", lines: [{ productId: bia, qty: 1 }] });
     expect(await asWaiter.query(api.waiterOrders.listForBills, {})).toHaveLength(1);
+    expect(await as(cashier, 21).query(api.waiterOrders.listForBills, {})).toHaveLength(0); // the waiter's bill stays his own until he sends it
+    const mine = await asWaiter.query(api.waiterOrders.listForBills, {});
+    await asWaiter.mutation(api.waiterOrders.sendBillToCashier, { orderIds: [mine[0]._id] });
     expect(await as(cashier, 21).query(api.waiterOrders.listForBills, {})).toHaveLength(1);
   });
 

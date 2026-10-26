@@ -56,6 +56,25 @@ export const PERMISSION_GROUPS: { group: string; items: { key: string; label: st
   },
 ];
 
+/**
+ * Choosing a module's main permission brings ALL of its reports with it (and removing it takes them away again), so
+ * "Sales" / "Stock" / "Purchasing" are never given without their reports by accident. A report permission can still be
+ * unticked on its own afterwards. Used by the Role Management screen when a box is ticked.
+ */
+export const PERMISSION_BUNDLES: Record<string, string[]> = {
+  "sales.view": ["sales.reports.view"],
+  "stock.view": ["stock.reports.view"],
+  "purchasing.view": ["purchasing.reports.view"],
+};
+
+/** The permission list after one box was ticked / unticked, applying PERMISSION_BUNDLES. */
+export function togglePermission(current: string[], key: string): string[] {
+  const has = current.includes(key);
+  const linked = PERMISSION_BUNDLES[key] ?? [];
+  if (has) return current.filter((k) => k !== key && !linked.includes(k));
+  return [...new Set([...current, key, ...linked])];
+}
+
 /** Permissions that can also be given to ONE user directly (on top of his role) from the Users form. */
 export const USER_GRANTABLE_PERMISSIONS: { key: string; label: string }[] = [
   { key: "sales.void", label: "Anaweza kufuta / kubatilisha oda (invoice za Sales na oda za Waiter)" },

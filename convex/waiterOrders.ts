@@ -16,7 +16,7 @@ const isSuper = (role?: string) => ["super_admin", "superadmin"].includes(String
  * mutation (Convex mutations are serialised per document), so a double tap, a retry or two devices can never deduct twice.
  * Send and Print both come through here; the cashier's receive/print (markHandled) never does.
  */
-async function deductStockOnce(
+export async function deductStockOnce(
   ctx: MutationCtx,
   order: Doc<"waiterOrders">,
   user: Doc<"users">,
@@ -401,7 +401,15 @@ export const submit = mutation({
   },
 });
 
-/** Orders for the Bills screen: a waiter sees his own, cashier/manager see the whole department. Optional table filter. Read-only. */
+/**
+ * Who may see an order on the Bills screen. Every person keeps HIS OWN bills (orders he made himself). A waiter's orders reach the
+ * cashier's Bills screen only after the waiter generated his bill and pressed "Send to cashier" (`billSentAt`). Super Admin never gets
+ * other people's bills.
+ */
+const billVisible = (user: { _id: Id<"users">; role?: string }, o: Doc<"waiterOrders">) =>
+  o.waiterId === user._id || (!isWaiter(user.role) && !isSuper(user.role) && !!o.billSentAt);
+
+/** Orders for the Bills screen: your own orders, plus (cashier / manager) bills that waiters sent to the cashier. Optional table filter. Read-only. */
 export const listForBills = query({
   args: { table: v.optional(v.string()), includePrinted: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
@@ -411,7 +419,7 @@ export const listForBills = query({
     const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId)).collect();
     const needle = (args.table ?? "").trim().toLowerCase();
     return rows
-      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || r.waiterId === user._id))
+      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && billVisible(user, r))
       .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
   },
@@ -429,7 +437,7 @@ export const billSummary = query({
     for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
       const o = await ctx.db.get("waiterOrders", id);
       if (!o || !orderInScope(user, scope, o) || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
-      if (isWaiter(user.role) && o.waiterId !== user._id) throw new Error("Hii si oda yako.");
+      if (!billVisible(user, o)) throw new Error("Hii si bili yako.");
       if (o.tableNumber) tables.add(o.tableNumber);
       for (const l of o.lines) {
         const k = `${l.productId}|${l.unitPrice}`;
@@ -455,8 +463,8 @@ export const markBillPrinted = mutation({
         if (!order || !orderInScope(user, scope, order) || order.status === "cancelled") {
           throw new Error("Oda haipo kwenye biashara au tawi lako.");
         }
-        if (isWaiter(user.role) && order.waiterId !== user._id) {
-          throw new Error("Hii si oda yako.");
+        if (!billVisible(user, order)) {
+          throw new Error("Hii si bili yako.");
         }
         if (!order.billPrintedAt) {
           await ctx.db.patch("waiterOrders", order._id, {
@@ -465,6 +473,35 @@ export const markBillPrinted = mutation({
           });
         }
       }
+      return true;
+    } catch (e) {
+      throw surfaceError(e);
+    }
+  },
+});
+
+/**
+ * A waiter generated his bill (picked his orders on the Bills screen) and now SENDS it to the cashier. Only then does the cashier see
+ * these orders on his Bills screen. Only the waiter's own orders can be sent; nothing about stock, payments or sales changes.
+ * Sending twice is harmless.
+ */
+export const sendBillToCashier = mutation({
+  args: { orderIds: v.array(v.id("waiterOrders")) },
+  handler: async (ctx, args) => {
+    try {
+      const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
+      if (!isWaiter(user.role)) throw new Error("Ni mhudumu pekee anayetuma bili kwa cashier.");
+      const scope = await viewScope(ctx, user);
+      if (args.orderIds.length === 0) throw new Error("Chagua angalau oda moja.");
+      const now = new Date().toISOString();
+      for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
+        const order = await ctx.db.get("waiterOrders", id);
+        if (!order || !orderInScope(user, scope, order) || order.status === "cancelled" || order.status === "placed") throw new Error("Oda haipo kwenye biashara au tawi lako.");
+        if (order.waiterId !== user._id) throw new Error("Hii si oda yako.");
+        if (order.billPrintedAt) throw new Error("Bili hii tayari imechapishwa.");
+        if (!order.billSentAt) await ctx.db.patch("waiterOrders", order._id, { billSentAt: now, billSentBy: user._id, updatedAt: now });
+      }
+      await logAudit(ctx, user, { action: "send_bill_to_cashier", module: "sales", details: `oda ${args.orderIds.length}` });
       return true;
     } catch (e) {
       throw surfaceError(e);

@@ -954,13 +954,18 @@ export const purgeAuditLogs = mutation({
 
 /* ───────────────────────── Clear Data File (Super Admin + Super Admin password) ───────────────────────── */
 
-type ClearStep = { table: string; index?: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean };
+/**
+ * `journalSources` = delete the journal entries (and their lines) that were posted by these kinds of documents (sales, purchases ...),
+ * `movementTypes` = delete the stock movements written by these kinds of documents. Reports (Profit & Loss, stock history, item history...)
+ * are calculated from those rows, so a category is only really "cleared, nothing left" when they go too.
+ */
+type ClearStep = { table: string; index?: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean; journalSources?: string[]; movementTypes?: string[] };
 type ClearCategory = { label: string; description: string; steps: ClearStep[]; resetSequences?: ("salesSequences" | "purchaseSequences")[]; rebuildStats?: boolean };
 
 /** What the Super Admin can wipe. Child tables (lines) are removed together with their parent record. */
 export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
   invoices: {
-    label: "Sales Invoices", description: "Invoices za mauzo, mistari yake, malipo ya wateja, sales returns, bili za wateja na mauzo ya Selling Point (oda na makusanyo ya wahudumu)",
+    label: "Sales Invoices", description: "Invoices za mauzo, malipo ya wateja, sales returns, bili za wateja, mauzo ya Selling Point, PAMOJA na ripoti zake zote (journals za mauzo, historia ya stock ya mauzo, ripoti za kipindi). Hakuna kinachobaki.",
     steps: [
       { table: "customerPayments" },
       { table: "salesReturns", via: "clients" },
@@ -968,11 +973,15 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
       { table: "waiterCollections", index: "by_tenant_date" },
       { table: "waiterOrders", index: "by_scope_status" },
       { table: "invoices", children: [{ table: "invoiceLines", index: "by_invoice", field: "invoiceId" }] },
+      // What the reports read: sales journals (profit & loss, cash, receivables), the stock the sales took out (item history) and saved period reports.
+      { table: "journalEntries", journalSources: ["sale", "sale_return", "sale_void", "payment", "waiter_sale"] },
+      { table: "stockMovements", movementTypes: ["sale", "sale_return", "waiter_order", "waiter_order_cancel"] },
+      { table: "reportRuns", index: "by_tenant" },
     ],
     resetSequences: ["salesSequences"], rebuildStats: true,
   },
   purchases: {
-    label: "Purchases", description: "Manunuzi, purchase orders, GRN, malipo ya suppliers na purchase returns",
+    label: "Purchases", description: "Manunuzi, purchase orders, GRN, malipo ya suppliers na purchase returns, PAMOJA na ripoti zake zote (journals za manunuzi, historia ya stock ya manunuzi, ripoti za kipindi). Hakuna kinachobaki.",
     steps: [
       { table: "supplierPayments" },
       { table: "purchaseReturns", children: [{ table: "purchaseReturnLines", index: "by_return", field: "returnId" }] },
@@ -980,14 +989,23 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
       { table: "purchaseOrders", children: [{ table: "purchaseOrderLines", index: "by_order", field: "orderId" }] },
       { table: "purchases", children: [{ table: "purchaseLines", index: "by_purchase", field: "purchaseId" }] },
       { table: "purchasePriceHistory", via: "products" },
+      { table: "journalEntries", journalSources: ["purchase", "purchase_edit", "purchase_void", "grn", "grn_void", "purchase_return", "purchase_return_void", "supplier_payment"] },
+      { table: "stockMovements", movementTypes: ["purchase", "purchase_edit", "purchase_void", "grn", "grn_void", "purchase_return", "purchase_return_void"] },
+      { table: "reportRuns", index: "by_tenant" },
     ],
     resetSequences: ["purchaseSequences"], rebuildStats: true,
   },
   suppliers: { label: "Suppliers", description: "Orodha ya suppliers wote", steps: [{ table: "suppliers" }] },
   customers: { label: "Customers", description: "Orodha ya wateja wote (clients)", steps: [{ table: "salesReturns", via: "clients" }, { table: "clients" }], rebuildStats: true },
   stock: {
-    label: "Stock", description: "Stock movements, stock adjustments, na kuweka idadi ya bidhaa zote kuwa 0",
-    steps: [{ table: "stockMovements" }, { table: "stockAdjustments" }, { table: "products", resetStock: true }], rebuildStats: true,
+    label: "Stock", description: "Stock movements, adjustments, Store/Ghala (stock, transfers na movements), journals za stock, ripoti zote za stock na idadi ya bidhaa zote kuwa 0. Hakuna kinachobaki.",
+    steps: [
+      { table: "stockMovements" }, { table: "stockAdjustments" },
+      { table: "warehouseMovements", index: "by_tenant_date" }, { table: "stockTransferLines", index: "by_tenant" }, { table: "stockTransfers", index: "by_tenant" }, { table: "warehouseStock", index: "by_tenant" },
+      { table: "journalEntries", journalSources: ["stock_adjustment", "opening_stock"] },
+      { table: "products", resetStock: true },
+      { table: "reportRuns", index: "by_tenant" },
+    ], rebuildStats: true,
   },
   products: {
     label: "Products", description: "Bidhaa zote, makundi (groups) na units",
@@ -998,6 +1016,7 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
     steps: [
       { table: "journalLines" }, { table: "journalEntries" }, { table: "expenses" }, { table: "capitalReceipts" },
       { table: "billPayments" }, { table: "bills" }, { table: "accounts", resetBalances: true },
+      { table: "reportRuns", index: "by_tenant" },
     ],
     rebuildStats: true,
   },
@@ -1047,10 +1066,33 @@ export const clearStepBatch = internalMutation({
       const parents = await db.query(step.via).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).collect();
       for (const p of parents) {
         const rows = await db.query(childTable).withIndex(index, (q) => q.eq(field, p._id)).take(200);
-        for (const r of rows) { await db.delete(childTable, r._id); deleted++; }
+        for (const r of rows) {
+          if (childTable === "salesReturns") for (const l of await db.query("salesReturnLines").withIndex("by_return", (q) => q.eq("returnId", r._id)).collect()) await db.delete("salesReturnLines", l._id);
+          await db.delete(childTable, r._id); deleted++;
+        }
         if (deleted >= 400) return { done: false, deleted };
       }
       return { done: true, deleted };
+    }
+
+    if (step.journalSources) {
+      // Journal entries posted by these documents, with their lines.
+      const sources = step.journalSources;
+      // eslint-disable-next-line @convex-dev/no-filter-in-query -- one-off Super Admin wipe: the document kind has no index, the scan stops after one batch of matches
+      const entries = await ctx.db.query("journalEntries").withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).filter((q) => q.or(...sources.map((src) => q.eq(q.field("sourceType"), src)))).take(CLEAR_BATCH);
+      for (const e of entries) {
+        for (const l of await ctx.db.query("journalLines").withIndex("by_entry", (q) => q.eq("entryId", e._id)).collect()) await ctx.db.delete("journalLines", l._id);
+        await ctx.db.delete("journalEntries", e._id); deleted++;
+      }
+      return { done: entries.length < CLEAR_BATCH, deleted };
+    }
+
+    if (step.movementTypes) {
+      const types = step.movementTypes;
+      // eslint-disable-next-line @convex-dev/no-filter-in-query -- one-off Super Admin wipe: the document kind has no index, the scan stops after one batch of matches
+      const moves = await ctx.db.query("stockMovements").withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).filter((q) => q.or(...types.map((t) => q.eq(q.field("movementType"), t)))).take(CLEAR_BATCH);
+      for (const m of moves) { await ctx.db.delete("stockMovements", m._id); deleted++; }
+      return { done: moves.length < CLEAR_BATCH, deleted };
     }
 
     if (step.resetStock || step.resetBalances) {

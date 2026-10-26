@@ -6,6 +6,8 @@ import { normaliseSplits, splitValidator } from "./paymentMethods";
 import { bumpStats } from "./stats";
 import { assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal } from "./ledger";
 import { surfaceError } from "./surfaceError";
+import { deductStockOnce } from "./waiterOrders";
+import { waiterOrdersAllowedFor } from "./waiterSettings";
 
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const isWaiter = (role?: string) => ["waiter", "waitress"].includes(normalizeRole(role));
@@ -135,13 +137,86 @@ export const collect = mutation({
   },
 });
 
+/**
+ * COUNTER SALE: the cashier sells to his own walk-in customer and receives the money in the same step.
+ * One safe mutation: creates the order, takes the stock out ONCE, records the payment and books the sale (ledger + dashboard) exactly like
+ * a receipt of waiter money. The order is born settled, so it never shows up as money owed by anybody.
+ * `clientKey` (one per cart) makes a double tap / retry return the SAME sale instead of a second one.
+ */
+export const counterSale = mutation({
+  args: {
+    clientKey: v.string(),
+    customerName: v.optional(v.string()),
+    tableNumber: v.optional(v.string()),
+    lines: v.array(v.object({ productId: v.id("products"), qty: v.number() })),
+    splits: v.array(splitValidator),
+  },
+  handler: async (ctx, args) => {
+    try {
+      const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
+      if (isWaiter(user.role) || [ "super_admin", "superadmin" ].includes(normalizeRole(user.role))) throw new Error("Mauzo ya counter ni ya cashier pekee.");
+      const scope = await resolveWriteScope(ctx, user);
+      if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
+      const tenantId = scope.tenantId;
+      const key = args.clientKey.trim();
+      if (key.length < 8 || key.length > 80) throw new Error("Ombi si sahihi. Fungua ukurasa upya.");
+      const existing = await ctx.db.query("waiterOrders").withIndex("by_client_key", (q) => q.eq("waiterId", user._id).eq("clientKey", key)).first();
+      if (existing) return { orderId: existing._id, collectionId: existing.collectionId ?? null, total: existing.total, duplicate: true };
+      const settings = await ctx.db.query("tenantSettings").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).first();
+      if (!waiterOrdersAllowedFor(user.role, settings)) throw new Error("Selling Point imezimwa kwa biashara hii.");
+      if (args.lines.length === 0) throw new Error("Ongeza angalau bidhaa moja.");
+
+      const merged = new Map<string, number>(); // the same product tapped many times = one line
+      for (const l of args.lines) {
+        if (!Number.isFinite(l.qty) || l.qty <= 0) throw new Error("Kiasi cha bidhaa lazima kiwe zaidi ya sifuri.");
+        merged.set(String(l.productId), (merged.get(String(l.productId)) ?? 0) + l.qty);
+      }
+      const lines = [];
+      for (const [pid, qty] of merged) {
+        const product = await ctx.db.get("products", pid as Id<"products">);
+        if (!product || product.isActive === false) throw new Error("Bidhaa haipo au haifanyi kazi.");
+        if (product.tenantId !== tenantId || (scope.branchId && product.branchId && product.branchId !== scope.branchId)) throw new Error("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
+        if (!Number.isFinite(product.sellingPrice) || product.sellingPrice < 0) throw new Error("Bei ya bidhaa si sahihi.");
+        lines.push({ productId: product._id, productName: product.name, qty, unitPrice: product.sellingPrice, lineTotal: r2(qty * product.sellingPrice) });
+      }
+      const total = r2(lines.reduce((n, l) => n + l.lineTotal, 0));
+      const { splits, total: paid } = await normaliseSplits(ctx, user, args.splits);
+      if (Math.abs(paid - total) > 0.005) throw new Error(`Kiasi kilichopokelewa (${paid}) lazima kilingane na jumla ya mauzo (${total}).`);
+
+      const now = new Date().toISOString();
+      const date = eatDay(now);
+      const staffName = user.name ?? user.username ?? "cashier";
+      const orderId = await ctx.db.insert("waiterOrders", {
+        tenantId, branchId: scope.branchId,
+        customerName: args.customerName?.trim() || "Mteja wa counter",
+        tableNumber: args.tableNumber?.trim() || undefined,
+        waiterId: user._id, waiterName: staffName,
+        status: "accepted", stockDeducted: false, clientKey: key, lines, total,
+        createdAt: now, updatedAt: now, sentAt: now,
+      });
+      const order = (await ctx.db.get("waiterOrders", orderId))!;
+      await deductStockOnce(ctx, order, user, { tenantId, branchId: scope.branchId }); // throws -> everything rolls back: no sale, no stock change, no money
+      const collectionId = await ctx.db.insert("waiterCollections", {
+        tenantId, branchId: scope.branchId, staffId: user._id, staffName,
+        cashierId: user._id, cashierName: staffName, date, total, splits, orderIds: [orderId], createdAt: now,
+      });
+      await ctx.db.patch("waiterOrders", orderId, { settledAt: now, collectionId, updatedAt: now });
+      const settled = (await ctx.db.get("waiterOrders", orderId))!;
+      await postCollectionJournal(ctx, { collectionId, userId: user._id, date, staffName, orders: [settled], splits });
+      await bumpStats(ctx, { tenantId, branchId: scope.branchId }, { date, sales: total, collected: total, invoices: 1 });
+      await logAudit(ctx, user, { action: "counter_sale", module: "sales", referenceId: String(collectionId), referenceType: "waiterCollection", details: `counter; jumla ${total}; stock imepunguzwa mara moja` });
+      return { orderId, collectionId, total, duplicate: false };
+    } catch (e) { throw surfaceError(e); }
+  },
+});
+
 /** Today's receipts (or a chosen day) for the cashier. Read-only. */
 export const receipts = query({
   args: { date: v.string() },
   handler: async (ctx, args) => {
     const { tenantId, branchId } = await cashierScope(ctx).catch((e) => { throw surfaceError(e); });
     const rows = (await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).eq("date", args.date)).collect()).filter((c) => !branchId || c.branchId === branchId);
-    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ _id: c._id, staffName: c.staffName, cashierName: c.cashierName, total: c.total, orders: c.orderIds.length, createdAt: c.createdAt, methods: c.splits.map((s) => `${s.method} ${s.amount}`).join(" + ") }));
+    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ _id: c._id, staffName: c.staffName, cashierName: c.cashierName, total: c.total, orders: c.orderIds.length, createdAt: c.createdAt, methods: c.splits.map((s) => `${s.method} ${s.amount}`).join(" + "), splits: c.splits.map((s) => ({ method: s.method, amount: s.amount })) }));
   },
 });
 

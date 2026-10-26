@@ -10,6 +10,11 @@ import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 import ServicePointFields from "@/components/ServicePointFields.tsx";
 import { emptyServicePoint, filterProducts, formatServicePoint, serviceWords, type ServicePoint } from "@/lib/sales-flow.ts";
 import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
+import { printPaymentReceipt } from "@/lib/print-payment-receipt.ts";
+import { usePaymentMethods } from "@/hooks/use-payment-methods.ts";
+import PaymentSplit from "@/components/PaymentSplit.tsx";
+import { newSplitLine, splitsTotal, toSplits, type SplitLine } from "@/lib/payment-split.ts";
+import { PRINT_RECEIPT_KEY, readPrintReceiptChoice } from "@/lib/print-receipt-choice.ts";
 
 const money = (n: number) => Number(n).toLocaleString();
 const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -27,14 +32,22 @@ const groupStyle = (id: string, groups: Array<{ _id: unknown }>) => {
   return GROUP_STYLES[(Math.max(0, index) + 1) % GROUP_STYLES.length];
 };
 
-/** Selling Point: product groups -> product tiles -> cart. Tap = +1. Send / Print create the order AND deduct stock once (server-guarded). */
-export default function SellingPoint() {
+/**
+ * Selling Point: product groups -> product tiles -> cart. Tap = +1. Send / Print create the order AND deduct stock once (server-guarded).
+ * `counter` = the cashier sells to his own walk-in customer: no Send / Print to a queue; he takes the payment right here
+ * (one or many methods), the sale is booked at once, and he may print a payment receipt.
+ */
+export default function SellingPoint({ counter = false }: { counter?: boolean } = {}) {
   const products = useQuery(api.products.listActive);
   const groups = useQuery(api.products.listGroups);
   const user = useQuery(api.users.getCurrentUser);
   const settings = useQuery(api.maintenance.getSettings, {});
   const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
   const submit = useMutation(api.waiterOrders.submit);
+  const counterSale = useMutation(api.waiterCollections.counterSale);
+  const methods = usePaymentMethods();
+  const [payLines, setPayLines] = useState<SplitLine[]>(() => [newSplitLine(methods)]);
+  const [printReceipt, setPrintReceipt] = useState<boolean>(readPrintReceiptChoice);
   const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
 
   const [groupId, setGroupId] = useState<string>("all");
@@ -73,6 +86,30 @@ export default function SellingPoint() {
       }
     } catch (e) {
       toast.error(errorText(e, tr("Imeshindikana kuchakata oda.")));
+    } finally { setBusy(false); }
+  }
+
+  // One payment line left empty = "all of it" (cash by default), so a simple cash sale needs no typing.
+  const effectivePay: SplitLine[] = payLines.length === 1 && splitsTotal(payLines) === 0 ? [{ ...payLines[0], amount: String(total) }] : payLines;
+  const paidNow = splitsTotal(effectivePay);
+  const canCounterSell = !locked && lines.length > 0 && Math.abs(paidNow - total) < 0.005;
+
+  async function sellAtCounter() {
+    if (!canCounterSell) return;
+    setBusy(true);
+    try {
+      const splits = toSplits(effectivePay, methods);
+      const res = await counterSale({ clientKey, tableNumber: table.trim() || undefined, lines: lines.map((l) => ({ productId: l.id as Id<"products">, qty: l.qty })), splits: splits as never });
+      toast.success(res.duplicate ? tr("Mauzo haya yalishachakatwa tayari. Stock haikupunguzwa tena.") : tr("Mauzo yamehifadhiwa na fedha zimepokelewa. Stock imepunguzwa mara moja."));
+      const sold = lines.map((l) => ({ name: l.p!.name, qty: l.qty, amount: l.qty * l.p!.sellingPrice }));
+      const tableNo = table.trim() || undefined;
+      setCart({}); setServicePoint(emptyServicePoint()); setQuery(""); setClientKey(newKey()); setPayLines([newSplitLine(methods)]);
+      if (printReceipt && !res.duplicate) {
+        const ok = await printPaymentReceipt({ receiptNo: String(res.collectionId ?? "").slice(-6).toUpperCase() || undefined, cashierName: user?.name ?? user?.username ?? "", tableNumber: tableNo, items: sold, payments: splits.map((p) => ({ method: p.method, amount: p.amount })), total: res.total }, qzPrinterFrom(hardware), hardware.paperWidth, branding);
+        if (!ok) toast.message(tr("Mauzo yamehifadhiwa. Risiti haikuchapishwa; unaweza kuichapa tena kupitia Cashier > Zilizopokelewa leo."));
+      }
+    } catch (e) {
+      toast.error(errorText(e, tr("Imeshindikana kuchakata mauzo. Hakuna kilichorekodiwa.")));
     } finally { setBusy(false); }
   }
 
@@ -139,10 +176,14 @@ export default function SellingPoint() {
           <ServicePointFields className="grid gap-3" value={servicePoint} disabled={locked} onChange={setServicePoint} />
         </details>
         <p className="text-xl font-bold">{tr("Jumla")}: {money(total)}</p>
-        <div className="grid grid-cols-2 gap-2">
+        {counter ? <div className="space-y-2">
+          <PaymentSplit methods={methods} lines={payLines} onChange={setPayLines} due={total} disabled={locked} />
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4" checked={printReceipt} onChange={(e) => { setPrintReceipt(e.target.checked); try { localStorage.setItem(PRINT_RECEIPT_KEY, e.target.checked ? "1" : "0"); } catch { /* remembering the choice is optional */ } }} />{tr("Chapisha risiti ya malipo")}</label>
+          <Button type="button" className="h-11 w-full text-sm" disabled={!canCounterSell} onClick={() => void sellAtCounter()}>{busy ? tr("Inachakata...") : tr("Uza na pokea malipo")}</Button>
+        </div> : <div className="grid grid-cols-2 gap-2">
           <Button type="button" className="h-10 text-sm" disabled={locked || lines.length === 0} onClick={() => void finish("send")}>{busy ? tr("Inachakata...") : tr("Send")}</Button>
           <Button type="button" variant="outline" className="h-10 text-sm" disabled={locked || lines.length === 0} onClick={() => void finish("print")}>{busy ? tr("Inachakata...") : tr("Print")}</Button>
-        </div>
+        </div>}
       </aside>
     </section>
   );

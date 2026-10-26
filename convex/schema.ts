@@ -885,6 +885,8 @@ export default defineSchema({
     settledAt: v.optional(v.string()), // cashier received the money for this order from the waiter
     collectionId: v.optional(v.id("waiterCollections")),
     billPrintedAt: v.optional(v.string()), // set only after a Bills-screen print succeeded; the order itself is never deleted
+    billSentAt: v.optional(v.string()), // the waiter generated his bill and SENT it to the cashier: only then does the cashier see it on the Bills screen
+    billSentBy: v.optional(v.id("users")),
     cancelledAt: v.optional(v.string()),
     cancelledBy: v.optional(v.id("users")),
     lines: v.array(v.object({
