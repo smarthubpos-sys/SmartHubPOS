@@ -21,6 +21,7 @@ export default function WaiterOrdersPage() {
   const user = useQuery(api.users.getCurrentUser);
   const business = useQuery(api.tenants.current);
   const orders = useQuery(waiterApi.list);
+  const queueHealth = useQuery(waiterApi.queueHealth);
   const markHandled = useMutation(waiterApi.markHandled);
   const sendToCashier = useMutation(waiterApi.sendToCashier);
   const markPrinted = useMutation(waiterApi.markPrinted);
@@ -145,7 +146,13 @@ export default function WaiterOrdersPage() {
               : business?.waiterOrderMode === "print" && (order.status === "placed" || order.status === "printed") ? <Button variant="outline" onClick={() => void printPlaced(order)}>{tr("Print")}</Button> : null}
           </div>
         </article>)}
-        {orders && orders.length === 0 && <p className="rounded-xl border p-5 text-sm text-muted-foreground">{tr("Hakuna oda bado.")}</p>}
+        {orders && orders.length === 0 && <div className="space-y-1 rounded-xl border p-5 text-sm text-muted-foreground">
+          <p>{tr("Hakuna oda bado.")}</p>
+          {queueHealth && !queueHealth.allowed && <p className="font-medium text-foreground">{tr("Waiter Orders imezimwa kwa biashara hii. Super Admin aiwashe kupitia Edit Business.")}</p>}
+          {queueHealth && queueHealth.allowed && queueHealth.mode === "print" && <p className="font-medium text-foreground">{tr("Biashara imewekwa mode ya Print: oda za wahudumu hazitumwi kwa cashier.")}</p>}
+          {queueHealth && queueHealth.allowed && queueHealth.mode !== "print" && queueHealth.otherDepartments > 0 && <p className="font-medium text-foreground">{tr("Kuna oda {0} zinazosubiri kwenye idara nyingine. Wewe uko idara: {1}. Wahudumu wafanye kazi idara yako, au msimamizi akuondoe kwenye idara moja ili uone zote.", [queueHealth.otherDepartments, queueHealth.department ?? "-"])}</p>}
+          {queueHealth && queueHealth.allowed && queueHealth.mode !== "print" && queueHealth.otherDepartments === 0 && queueHealth.pendingAll === 0 && <p>{tr("Hakuna oda zilizotumwa na wahudumu kwa sasa. Zikitumwa zitatokea hapa zenyewe.")}</p>}
+        </div>}
       </section>}
       {/* Waiter orders are handed off to the cashier queue; do not duplicate them below the selling screen. */}
       {/* Each optional panel has its own boundary: one panel failing (e.g. a Convex function not deployed yet) must not blank the whole page. */}

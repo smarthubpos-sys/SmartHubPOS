@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import { surfaceError } from "./surfaceError";
 import type { Doc, Id } from "./_generated/dataModel";
 import { getCompanySettings, logAudit, normalizeRole, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
-import { waiterOrdersAllowedFor } from "./waiterSettings";
+import { resolveWaiterSettings, waiterOrdersAllowedFor } from "./waiterSettings";
 
 
 // Normalised like everywhere else (case / spaces / hyphens): a role label such as "Waitress " must still be limited to its OWN orders.
@@ -99,6 +99,33 @@ export const list = query({
     // Cashier queue is strictly pending work. Accepted/printed orders remain in the database for history.
     const visible = inScope.filter(r => (isWaiterRole || isSuper(user.role)) ? r.waiterId === user._id : r.status === "pending"); // Super Admin sees only orders he made himself, never the cashier queue
     return visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200);
+  },
+});
+
+/**
+ * Why is my cashier queue empty? Read-only counts so the screen can say the real reason (switch off, "Print" mode, orders waiting in
+ * ANOTHER department, or simply none sent yet) instead of showing a silent empty list. Never returns any order's content.
+ */
+export const queueHealth = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
+    const scope = await viewScope(ctx, user).catch(() => ({} as ScopeLike));
+    if (!scope.tenantId) return null;
+    const tenantId = scope.tenantId;
+    const settings = await ctx.db.query("tenantSettings").withIndex("by_tenant", q => q.eq("tenantId", tenantId)).first();
+    const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", tenantId)).collect();
+    const pendingAll = rows.filter(r => r.status === "pending");
+    const visible = pendingAll.filter(r => orderInScope(user, scope, r));
+    const department = scope.branchId ? (await ctx.db.get("branches", scope.branchId))?.name ?? null : null;
+    return {
+      allowed: waiterOrdersAllowedFor(user.role, settings),
+      mode: resolveWaiterSettings(settings).waiterOrderMode,
+      pendingAll: pendingAll.length,
+      visible: visible.length,
+      otherDepartments: pendingAll.length - visible.length,
+      department,
+    };
   },
 });
 
