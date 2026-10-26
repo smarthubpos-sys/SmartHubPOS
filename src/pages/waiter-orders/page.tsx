@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
@@ -36,6 +37,20 @@ export default function WaiterOrdersPage() {
 
   // Waiter and Waitress each follow their own switch (Super Admin > Edit Business); other roles need at least one on.
   const roleEnabled = superAdmin || role === "waitress" ? business?.waitressEnabled === true : role === "waiter" ? business?.waiterEnabled === true : business?.waiterOrdersEnabled === true;
+
+  // Alert the cashier when a new sent order arrives (the list is live, so nobody has to refresh).
+  const seenPending = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (!cashier || orders === undefined) return;
+    const ids = new Set(orders.filter((o) => o.status === "pending").map((o) => String(o._id)));
+    const seen = seenPending.current;
+    seenPending.current = ids;
+    if (!seen) return; // first load: nothing is "new"
+    const fresh = [...ids].filter((id) => !seen.has(id)).length;
+    if (fresh === 0) return;
+    toast.info(tr("Oda mpya imefika kwa cashier: {0}", [fresh]));
+    try { const ac = new window.AudioContext(); const o = ac.createOscillator(); o.connect(ac.destination); o.frequency.value = 880; o.start(); o.stop(ac.currentTime + 0.25); } catch { /* the sound is optional */ }
+  }, [cashier, orders]);
 
   async function send(orderId: string) {
     try {
@@ -80,6 +95,16 @@ export default function WaiterOrdersPage() {
     }
   }
 
+  // Receiving must never depend on the printer: if QZ Tray / the printer is off, the cashier can still receive the order (the waiter is told) and print it later from Bills.
+  async function receiveOnly(order: Order) {
+    try {
+      await markHandled({ orderId: order._id });
+      toast.success(tr("Oda imepokelewa. Mhudumu amearifiwa. Unaweza kuichapa baadaye kupitia Bills."));
+    } catch (error) {
+      toast.error(errorText(error, tr("Imeshindikana kupokea oda.")));
+    }
+  }
+
   return (
     <div className="mx-auto max-w-7xl space-y-4 overflow-x-hidden p-2 sm:p-4">
       <header>
@@ -113,7 +138,10 @@ export default function WaiterOrdersPage() {
             {business?.canVoidInvoice && order.status !== "cancelled" && <Button variant="outline" onClick={() => void remove(order)}>{tr("Futa oda")}</Button>}
             {/* Cashier Print = receive + print: the waiter is notified that the order was received. Waiter Print only prints. */}
             {order.status === "cancelled" ? null : cashier
-              ? (order.status === "pending" || order.status === "accepted") && <Button onClick={() => void receiveAndPrint(order)}>{tr("Print")}</Button>
+              ? (order.status === "pending" || order.status === "accepted") && <>
+                  <Button onClick={() => void receiveAndPrint(order)}>{tr("Print")}</Button>
+                  {order.status === "pending" && <Button variant="outline" onClick={() => void receiveOnly(order)}>{tr("Pokea bila kuchapa")}</Button>}
+                </>
               : business?.waiterOrderMode === "print" && (order.status === "placed" || order.status === "printed") ? <Button variant="outline" onClick={() => void printPlaced(order)}>{tr("Print")}</Button> : null}
           </div>
         </article>)}

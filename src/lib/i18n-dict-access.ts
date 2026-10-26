@@ -63,4 +63,8 @@ export const ACCESS_DICT: Record<string, { sw: string; en: string }> = {
   "Zimeingizwa: {0}. Zimerukwa (kipindi kimefungwa): {1}.": { sw: "Zimeingizwa: {0}. Zimerukwa (kipindi kimefungwa): {1}.", en: "Booked: {0}. Skipped (period closed): {1}." },
   "Ingia kwa username na password": { sw: "Ingia kwa username na password", en: "Sign in with username and password" },
   "Staff PIN": { sw: "Staff PIN", en: "Staff PIN" },
+  "Oda mpya imefika kwa cashier: {0}": { sw: "Oda mpya imefika kwa cashier: {0}", en: "A new order has reached the cashier: {0}" },
+  "Oda imepokelewa. Mhudumu amearifiwa. Unaweza kuichapa baadaye kupitia Bills.": { sw: "Oda imepokelewa. Mhudumu amearifiwa. Unaweza kuichapa baadaye kupitia Bills.", en: "Order received. The waiter has been notified. You can print it later from Bills." },
+  "Imeshindikana kupokea oda.": { sw: "Imeshindikana kupokea oda.", en: "Could not receive the order." },
+  "Pokea bila kuchapa": { sw: "Pokea bila kuchapa", en: "Receive without printing" },
 };
