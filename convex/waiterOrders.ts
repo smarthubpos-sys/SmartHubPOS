@@ -83,7 +83,6 @@ export const list = query({
   handler: async (ctx) => {
     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
     // No department chosen: say so in plain words (an empty queue would look like 'orders never arrive').
-    const scope = await resolveWriteScope(ctx, user).catch((e) => { throw surfaceError(e); });
     const scope = await viewScope(ctx, user).catch((e) => { throw surfaceError(e); });
     if (!scope.tenantId) return [];
     const tenantId = scope.tenantId;
@@ -380,13 +379,11 @@ export const listForBills = query({
   args: { table: v.optional(v.string()), includePrinted: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
-    const scope = await resolveWriteScope(ctx, user).catch((e) => { throw surfaceError(e); });
     const scope = await viewScope(ctx, user).catch((e) => { throw surfaceError(e); });
     if (!scope.tenantId) return [];
     const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId)).collect();
     const needle = (args.table ?? "").trim().toLowerCase();
     return rows
-      .filter(r => r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || r.waiterId === user._id))
       .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || r.waiterId === user._id))
       .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
@@ -423,20 +420,27 @@ export const markBillPrinted = mutation({
   handler: async (ctx, args) => {
     try {
       const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
-      const scope = await resolveWriteScope(ctx, user);
-      const now = new Date().toISOString();
-      for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
-        const o = await ctx.db.get("waiterOrders", id);
-        if (!o || o.tenantId !== scope.tenantId || o.branchId !== scope.branchId || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
       const scope = await viewScope(ctx, user);
       const now = new Date().toISOString();
+
       for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
-        const o = await ctx.db.get("waiterOrders", id);
-        if (!o || !orderInScope(user, scope, o) || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
-        if (isWaiter(user.role) && o.waiterId !== user._id) throw new Error("Hii si oda yako.");
-        if (!o.billPrintedAt) await ctx.db.patch("waiterOrders", o._id, { billPrintedAt: now, updatedAt: now });
+        const order = await ctx.db.get("waiterOrders", id);
+        if (!order || !orderInScope(user, scope, order) || order.status === "cancelled") {
+          throw new Error("Oda haipo kwenye biashara au tawi lako.");
+        }
+        if (isWaiter(user.role) && order.waiterId !== user._id) {
+          throw new Error("Hii si oda yako.");
+        }
+        if (!order.billPrintedAt) {
+          await ctx.db.patch("waiterOrders", order._id, {
+            billPrintedAt: now,
+            updatedAt: now,
+          });
+        }
       }
       return true;
-    } catch (e) { throw surfaceError(e); }
+    } catch (e) {
+      throw surfaceError(e);
+    }
   },
 });

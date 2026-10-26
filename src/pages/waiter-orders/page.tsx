@@ -7,6 +7,7 @@ import { tr, errorText } from "@/lib/i18n.ts";
 import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 import { Link } from "react-router-dom";
 import SellingPoint from "./SellingPoint.tsx";
+import WaiterDirectory from "./WaiterDirectory.tsx";
 import StaffSettlement from "./StaffSettlement.tsx";
 import ErrorBoundary from "@/components/error-boundary.tsx";
 import { printWaiterOrder, qzPrinterFrom, type PrintableOrder } from "@/lib/print-waiter-order.ts";
@@ -30,7 +31,6 @@ export default function WaiterOrdersPage() {
   const role = String(user?.role ?? "").toLowerCase();
   // Cashier = any non-waiter role that may manage waiter orders (custom role names such as "Kassa" included), plus the built-in names.
   const isWaiterRole = role === "waiter" || role === "waitress";
-  const cashier = !isWaiterRole && (["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role) || business?.canManageWaiterOrders === true);
   const superAdmin = ["super_admin", "superadmin"].includes(role.replace(/[\s-]+/g, "_"));
   const cashier = !isWaiterRole && !superAdmin && (["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role) || business?.canManageWaiterOrders === true);
 
@@ -48,7 +48,6 @@ export default function WaiterOrdersPage() {
 
   async function printPlaced(order: Order) {
     if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
-    const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth);
     const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth, branding);
     if (!printed) return;
     try {
@@ -71,7 +70,6 @@ export default function WaiterOrdersPage() {
 
   async function receiveAndPrint(order: Order) {
     if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
-    const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth);
     const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth, branding);
     if (!printed) return;
     try {

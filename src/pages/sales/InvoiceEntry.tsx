@@ -173,7 +173,6 @@ export default function InvoiceEntry() {
   const printPlaced = async () => {
     if (!placedId || !placedOrder) return;
     const printed = await printWaiterOrder(placedOrder, qzPrinterFrom(hardware), hardware.paperWidth, branding);
-    const printed = await printWaiterOrder(placedOrder, qzPrinterFrom(hardware), hardware.paperWidth, branding);
     if (!printed) return;
     try {
       await markPrinted({ orderId: placedId });

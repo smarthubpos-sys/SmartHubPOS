@@ -68,6 +68,7 @@ export const getSettings = query({
     if (scope.tenantId && scope.branchId && app.hardware === undefined) {
       const shared = await readSettingsMap(ctx, { tenantId: scope.tenantId });
       if (shared.hardware !== undefined) app.hardware = shared.hardware;
+    }
     // Printer setup belongs to the till, not to one department. If this user's own scope has none (saved by the Super Admin under
     // another department, or business-wide), fall back to the business-wide one, then to the newest one saved anywhere in the business.
     if (scope.tenantId && app.hardware === undefined) {

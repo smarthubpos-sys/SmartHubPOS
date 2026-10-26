@@ -31,7 +31,6 @@ export default function BillsPanel() {
   async function printBill() {
     if (!summary) return;
     if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
-    const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: summary.tables.join(", ") || undefined, total: summary.total, lines: summary.lines.map((l) => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })) }, qzPrinterFrom(hw), hw.paperWidth);
     const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: summary.tables.join(", ") || undefined, total: summary.total, lines: summary.lines.map((l) => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })) }, qzPrinterFrom(hw), hw.paperWidth, { ...branding, title: tr("BILI YA MTEJA") });
     if (!ok) return; // print failed: the bills stay in the list so they can be printed again
     try {

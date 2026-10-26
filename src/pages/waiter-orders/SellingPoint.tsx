@@ -68,7 +68,6 @@ export default function SellingPoint() {
       setQuery("");
       setClientKey(newKey());
       if (mode === "print" && !res.duplicate) {
-        const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: table.trim() || undefined, total, lines: lines.map((l) => ({ productName: l.p!.name, qty: l.qty, lineTotal: l.qty * l.p!.sellingPrice })) }, qzPrinterFrom(hardware), hardware.paperWidth);
         const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: table.trim() || undefined, total, lines: lines.map((l) => ({ productName: l.p!.name, qty: l.qty, lineTotal: l.qty * l.p!.sellingPrice })) }, qzPrinterFrom(hardware), hardware.paperWidth, branding);
         if (!ok) toast.message(tr("Oda imehifadhiwa. Chapisha tena kupitia Bills (haipunguzi stock)."));
       }
