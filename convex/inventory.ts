@@ -73,6 +73,7 @@ export const stockRegisters = query({
         else if (m.referenceType === "purchase") { const id = ctx.db.normalizeId("purchases", m.referenceId ?? ""); const d = id ? await ctx.db.get("purchases", id) : null; label = d?.invoiceNo ? `Purchase #${d.invoiceNo}` : d?.internalRef ?? label; }
         else if (m.referenceType === "goodsReceivedNote" || m.referenceType === "purchaseReturn") label = m.notes ?? label;
         else if (m.referenceType === "stockAdjustment") label = m.notes ?? "Adjustment";
+        else if (m.referenceType === "waiterOrder") { const id = ctx.db.normalizeId("waiterOrders", m.referenceId ?? ""); const d = id ? await ctx.db.get("waiterOrders", id) : null; label = d ? `Selling Point${d.tableNumber ? ` meza ${d.tableNumber}` : ""} - ${d.waiterName}` : label || "Selling Point"; }
       } catch { /* keep fallback label */ }
       refCache.set(key, label); return label;
     };
@@ -110,6 +111,33 @@ export const stockRegisters = query({
         const e = earn.get(String(l.productId)) ?? { qty: 0, sales: 0, cost: 0, invoices: new Set<string>() };
         e.qty += kept; e.sales += l.lineTotal * keep * factor; e.cost += kept * l.costAtSale; e.invoices.add(String(inv._id));
         earn.set(String(l.productId), e);
+      }
+    }
+    // Selling Point (waiter) sales: their stock left the shelf when the waiter sent / printed the order; the sale counts on the day the cashier received the money.
+    if (user.tenantId) {
+      const tenantId = user.tenantId;
+      const collections = filterScoped(user, await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => {
+        const b = q.eq("tenantId", tenantId);
+        if (a.startDate && a.endDate) return b.gte("date", a.startDate).lte("date", a.endDate);
+        if (a.startDate) return b.gte("date", a.startDate);
+        if (a.endDate) return b.lte("date", a.endDate);
+        return b;
+      }).collect());
+      for (const c of collections) {
+        for (const orderId of c.orderIds) {
+          const o = await ctx.db.get("waiterOrders", orderId); if (!o) continue;
+          const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
+          const unitCostOf = (productId: string) => {
+            let qty = 0, cost = 0;
+            for (const m of moves) if (String(m.productId) === productId) { qty += m.qtyOut - m.qtyIn; cost += (m.qtyOut - m.qtyIn) * (m.unitCost ?? 0); }
+            return qty > 1e-8 ? cost / qty : costOf(pById.get(productId));
+          };
+          for (const l of o.lines) {
+            const e = earn.get(String(l.productId)) ?? { qty: 0, sales: 0, cost: 0, invoices: new Set<string>() };
+            e.qty += l.qty; e.sales += l.lineTotal; e.cost += l.qty * unitCostOf(String(l.productId)); e.invoices.add(String(o._id));
+            earn.set(String(l.productId), e);
+          }
+        }
       }
     }
     const earnings = [...earn.entries()].map(([id, e]) => {

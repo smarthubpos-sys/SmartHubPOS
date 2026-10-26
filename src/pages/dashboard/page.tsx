@@ -45,6 +45,7 @@ function BusinessDashboard() {
     { label: tr("Today's Sales"), value: metrics && money(metrics.todaySales), icon: TrendingUp, tone: "blue" as const },
     { label: tr("Cash Received"), value: metrics && money(metrics.todayCash), icon: DollarSign, tone: "green" as const },
     { label: tr("Today's Purchases"), value: metrics && money(metrics.todayPurchaseTotal), icon: Truck, tone: "violet" as const },
+    { label: tr("Oda za wahudumu zisizolipwa"), value: metrics && money(metrics.waiterOwing), icon: Receipt, tone: "amber" as const },
     { label: tr("Outstanding Receivables"), value: metrics && money(metrics.totalOutstandingCustomer), icon: ShoppingCart, tone: "amber" as const },
     { label: tr("Outstanding Payables"), value: metrics && money(metrics.totalOutstandingSupplier), icon: Users, tone: "rose" as const },
     { label: tr("Inventory Value"), value: metrics && money(metrics.inventoryValue), icon: Package, tone: "cyan" as const },

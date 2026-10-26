@@ -16,6 +16,7 @@ import {
   UserCog,
   Bell,
   LifeBuoy,
+  Wallet,
 } from "lucide-react";
 import { tr } from "@/lib/i18n.ts";
 import { isSellingStaffRole, isSuperAdminRole, showSellingPointInMenu } from "@/lib/selling-point-access.ts";
@@ -28,6 +29,7 @@ const groups = [
       { label: tr("Dashboard"), icon: LayoutDashboard, path: "/dashboard", module: "dashboard" },
       { label: tr("Sales"), icon: ShoppingCart, path: "/sales", module: "sales" },
       { label: tr("Selling Point"), icon: Receipt, path: "/selling-point", module: "waiterOrders" },
+      { label: tr("Cashier"), icon: Wallet, path: "/cashier", module: "cashier" },
       { label: tr("Stock"), icon: Package, path: "/stock", module: "stock" },
       { label: tr("Purchasing"), icon: Truck, path: "/purchasing", module: "purchasing" },
     ],
@@ -86,6 +88,9 @@ export default function Sidebar({
       items: g.items.filter((item) => {
         if (item.module === "waiterOrders") {
           return showSellingPointInMenu({ role: currentUser?.role, permissions, modules, waiterOrdersEnabled: tenant?.waiterOrdersEnabled });
+        }
+        if (item.module === "cashier") {
+          return !superAdmin && !sellingStaff && permissions.includes("waiterOrders.manage") && tenant?.waiterOrdersEnabled === true && (!modules || modules.includes("waiterOrders"));
         }
         if (sellingStaff && item.module === "dashboard") return false;
         if (superAdmin) return true;

@@ -4,7 +4,8 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { tr, errorText } from "@/lib/i18n.ts";
-import WaiterDirectory from "./WaiterDirectory.tsx";
+import { brandingFromSettings } from "@/lib/receipt-branding.ts";
+import { Link } from "react-router-dom";
 import SellingPoint from "./SellingPoint.tsx";
 import StaffSettlement from "./StaffSettlement.tsx";
 import ErrorBoundary from "@/components/error-boundary.tsx";
@@ -23,15 +24,18 @@ export default function WaiterOrdersPage() {
   const markPrinted = useMutation(waiterApi.markPrinted);
   const cancelOrder = useMutation(waiterApi.cancel);
   const settings = useQuery(api.maintenance.getSettings, {});
+  const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
   const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
 
   const role = String(user?.role ?? "").toLowerCase();
   // Cashier = any non-waiter role that may manage waiter orders (custom role names such as "Kassa" included), plus the built-in names.
   const isWaiterRole = role === "waiter" || role === "waitress";
   const cashier = !isWaiterRole && (["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role) || business?.canManageWaiterOrders === true);
+  const superAdmin = ["super_admin", "superadmin"].includes(role.replace(/[\s-]+/g, "_"));
+  const cashier = !isWaiterRole && !superAdmin && (["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role) || business?.canManageWaiterOrders === true);
 
   // Waiter and Waitress each follow their own switch (Super Admin > Edit Business); other roles need at least one on.
-  const roleEnabled = role === "waitress" ? business?.waitressEnabled === true : role === "waiter" ? business?.waiterEnabled === true : business?.waiterOrdersEnabled === true;
+  const roleEnabled = superAdmin || role === "waitress" ? business?.waitressEnabled === true : role === "waiter" ? business?.waiterEnabled === true : business?.waiterOrdersEnabled === true;
 
   async function send(orderId: string) {
     try {
@@ -45,6 +49,7 @@ export default function WaiterOrdersPage() {
   async function printPlaced(order: Order) {
     if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
     const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth);
+    const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth, branding);
     if (!printed) return;
     try {
       await markPrinted({ orderId: order._id });
@@ -67,6 +72,7 @@ export default function WaiterOrdersPage() {
   async function receiveAndPrint(order: Order) {
     if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
     const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth);
+    const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth, branding);
     if (!printed) return;
     try {
       await markHandled({ orderId: order._id });
@@ -122,6 +128,7 @@ export default function WaiterOrdersPage() {
         <ErrorBoundary inline><StaffSettlement /></ErrorBoundary>
         <ErrorBoundary inline><WaiterDirectory /></ErrorBoundary>
       </>}
+      {cashier && <Link to="/cashier" className="inline-flex rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">{tr("Pokea fedha za wahudumu → Cashier")}</Link>}
     </div>
   );
 }

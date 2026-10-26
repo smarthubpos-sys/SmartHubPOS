@@ -223,7 +223,7 @@ export const billData = query({
     const savedAt = invoices.length ? new Date(Math.min(...invoices.map((x) => x._creationTime))).toISOString() : null;
     const sum = (k: "subtotal" | "discount" | "taxAmount" | "total" | "amountPaid" | "outstanding") => money(out.reduce((n, i) => n + i[k], 0));
     return {
-      company: { name: company?.companyName ?? "", address: company?.address ?? "", phone: company?.phone ?? "", email: company?.email ?? "", taxId: company?.taxId ?? "", currencySymbol: company?.currencySymbol ?? "TSh", decimalPlaces: company?.decimalPlaces ?? 0 },
+      company: { name: company?.companyName ?? "", address: company?.address ?? "", phone: company?.phone ?? "", email: company?.email ?? "", taxId: company?.taxId ?? "", logoUrl: company?.logoUrl ?? "", currencySymbol: company?.currencySymbol ?? "TSh", decimalPlaces: company?.decimalPlaces ?? 0 },
       receiptFooter,
       paymentInfo,
       department,

@@ -3,7 +3,7 @@ import type { QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import { hashStaffPin } from "./pinCrypto";
+import { hashStaffPin, PIN_PATTERN, pinLookupKey } from "./pinCrypto";
 import { surfaceError } from "./surfaceError";
 import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
 import {
@@ -68,6 +68,13 @@ export const getSettings = query({
     if (scope.tenantId && scope.branchId && app.hardware === undefined) {
       const shared = await readSettingsMap(ctx, { tenantId: scope.tenantId });
       if (shared.hardware !== undefined) app.hardware = shared.hardware;
+    // Printer setup belongs to the till, not to one department. If this user's own scope has none (saved by the Super Admin under
+    // another department, or business-wide), fall back to the business-wide one, then to the newest one saved anywhere in the business.
+    if (scope.tenantId && app.hardware === undefined) {
+      const tenantId = scope.tenantId;
+      const rows = (await ctx.db.query("appSettings").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect()).filter((r) => r.key === "hardware");
+      const pick = rows.find((r) => r.branchId === undefined) ?? rows.sort((a, b) => b._creationTime - a._creationTime)[0];
+      if (pick) { try { app.hardware = JSON.parse(pick.value); } catch { /* ignore corrupt value */ } }
     }
     const canEdit: Record<string, boolean> = {};
     for (const key of [...Object.values(SETTING_KEYS), "maintenance.company"]) canEdit[key] = await roleHasPermission(ctx, user, key);
@@ -324,27 +331,81 @@ export const listUsers = query({
   },
 });
 
-export const staffPinRecord = internalQuery({
-  args: { username: v.string() },
+/** PIN-only sign-in. The PIN itself identifies the person; failures are counted for the whole system (not per user). */
+const PIN_GUARD_KEY = "pin-login";
+const PIN_WINDOW_MS = 10 * 60 * 1000; // failures are counted inside this window
+const PIN_MAX_FAILURES = 30; // this many wrong PINs in the window pause PIN sign-in for everybody
+const PIN_PAUSE_MS = 5 * 60 * 1000; // password sign-in is never paused
+
+export const pinLoginState = internalQuery({
+  args: { now: v.number() },
   handler: async (ctx, a) => {
-    const user = await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", a.username)).first();
-    if (!user || user.tokenIdentifier !== undefined) return null;
-    return { userId: user._id, pinHash: user.pinHash, pinLoginEnabled: user.pinLoginEnabled === true, isActive: user.isActive !== false, pinFailedAttempts: user.pinFailedAttempts ?? 0, pinLockedUntil: user.pinLockedUntil };
+    const guard = await ctx.db.query("pinLoginGuard").withIndex("by_key", (q) => q.eq("key", PIN_GUARD_KEY)).first();
+    return { locked: (guard?.lockedUntil ?? 0) > a.now };
   },
 });
 
-export const recordStaffPinAttempt = internalMutation({
-  args: { userId: v.id("users"), expectedPinHash: v.string(), success: v.boolean(), now: v.number() },
+/** Everybody (active) who owns this PIN fingerprint. More than one = ambiguous = nobody signs in with it. */
+export const findPinOwners = internalQuery({
+  args: { lookup: v.string() },
   handler: async (ctx, a) => {
-    const user = await ctx.db.get("users", a.userId);
-    if (!user || user.tokenIdentifier !== undefined || user.isActive === false || user.pinLoginEnabled !== true || user.pinHash !== a.expectedPinHash || (user.pinLockedUntil ?? 0) > a.now) return false;
-    if (a.success) {
-      await ctx.db.patch("users", user._id, { pinFailedAttempts: 0, pinLockedUntil: undefined, lastLogin: new Date(a.now).toISOString() });
+    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", a.lookup)).take(5);
+    return rows
+      .filter((u) => u.tokenIdentifier === undefined && u.isActive !== false && u.pinLoginEnabled === true)
+      .map((u) => ({ userId: u._id, pinHash: u.pinHash }));
+  },
+});
+
+/** PINs saved before PIN-only sign-in existed have no fingerprint yet; they are matched once and then upgraded. Skipped for good when none are left. */
+export const legacyPinUsers = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const done = await ctx.db.query("pinLoginGuard").withIndex("by_key", (q) => q.eq("key", "legacy-done")).first();
+    if (done) return { done: true as const, users: [] as Array<{ userId: Id<"users">; pinHash: string }> };
+    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", undefined)).take(3000);
+    const legacy = rows.filter((u) => u.tokenIdentifier === undefined && !!u.pinHash && u.pinLoginEnabled === true && u.isActive !== false);
+    return { done: legacy.length === 0, users: legacy.slice(0, 12).map((u) => ({ userId: u._id, pinHash: u.pinHash! })) };
+  },
+});
+
+export const markLegacyPinsDone = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const done = await ctx.db.query("pinLoginGuard").withIndex("by_key", (q) => q.eq("key", "legacy-done")).first();
+    if (!done) await ctx.db.insert("pinLoginGuard", { key: "legacy-done", failures: 0, windowStart: 0 });
+  },
+});
+
+export const recordPinLogin = internalMutation({
+  args: { userId: v.optional(v.id("users")), success: v.boolean(), now: v.number(), upgradeLookup: v.optional(v.string()) },
+  handler: async (ctx, a) => {
+    const guard = await ctx.db.query("pinLoginGuard").withIndex("by_key", (q) => q.eq("key", PIN_GUARD_KEY)).first();
+    if (a.success && a.userId) {
+      const user = await ctx.db.get("users", a.userId);
+      if (!user || user.tokenIdentifier !== undefined || user.isActive === false || user.pinLoginEnabled !== true) return false;
+      await ctx.db.patch("users", user._id, { lastLogin: new Date(a.now).toISOString(), ...(a.upgradeLookup && !user.pinLookup ? { pinLookup: a.upgradeLookup } : {}) });
+      if (guard && guard.failures > 0) await ctx.db.patch("pinLoginGuard", guard._id, { failures: 0, windowStart: a.now });
       return true;
     }
-    const attempts = (user.pinFailedAttempts ?? 0) + 1;
-    await ctx.db.patch("users", user._id, { pinFailedAttempts: attempts, pinLockedUntil: attempts >= 5 ? a.now + 10 * 60 * 1000 : undefined });
+    if (!guard) { await ctx.db.insert("pinLoginGuard", { key: PIN_GUARD_KEY, failures: 1, windowStart: a.now }); return false; }
+    const fresh = a.now - guard.windowStart > PIN_WINDOW_MS;
+    const failures = (fresh ? 0 : guard.failures) + 1;
+    await ctx.db.patch("pinLoginGuard", guard._id, failures >= PIN_MAX_FAILURES
+      ? { failures: 0, windowStart: a.now, lockedUntil: a.now + PIN_PAUSE_MS }
+      : { failures, windowStart: fresh ? a.now : guard.windowStart });
     return false;
+  },
+});
+
+/** Used before a PIN is saved: is it already somebody else's? (never says whose) */
+export const assertPinFree = internalQuery({
+  args: { lookup: v.string(), exceptUserId: v.optional(v.id("users")) },
+  handler: async (ctx, a) => {
+    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", a.lookup)).take(5);
+    if (rows.some((u) => u.tokenIdentifier === undefined && u.isActive !== false && (!a.exceptUserId || u._id !== a.exceptUserId))) {
+      throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye mfumo. Chagua PIN nyingine.");
+    }
+    return true;
   },
 });
 
@@ -501,6 +562,10 @@ export const updateUser = mutation({
     if (a.role !== undefined) patch.role = normalizeRole(a.role);
     if (a.tenantId !== undefined) patch.tenantId = a.tenantId;
     if (deptTouched) { patch.branchId = next.branchId; patch.branchIds = next.branchIds; patch.allDepartments = next.allDepartments; patch.branchPicked = next.branchPicked; }
+    if (a.isActive === true && target.isActive === false && target.pinLookup) {
+      const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", target.pinLookup)).take(5);
+      if (owners.some((u) => u._id !== target._id && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN ya mtumiaji huyu sasa inatumiwa na mtu mwingine. Mwekee PIN mpya kabla ya kumwasha.");
+    }
     if (a.isActive !== undefined) patch.isActive = a.isActive;
     if (a.requirePasswordChange !== undefined) patch.requirePasswordChange = a.requirePasswordChange;
     if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined || a.extraPermissions !== undefined) {
@@ -543,13 +608,20 @@ export const setStaffCode = mutation({
 });
 
 export const saveStaffPin = internalMutation({
-  args: { userId: v.id("users"), actorId: v.id("users"), pinHash: v.optional(v.string()), enabled: v.boolean() },
+  args: { userId: v.id("users"), actorId: v.id("users"), pinHash: v.optional(v.string()), pinLookup: v.optional(v.string()), enabled: v.boolean() },
   handler: async (ctx, a) => {
     const target = await ctx.db.get("users", a.userId);
     if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
-    if (a.enabled && !(a.pinHash ?? target.pinHash)) throw new Error("Weka PIN ya tarakimu 4 kabla ya kuwasha Staff PIN.");
+    if (a.enabled && !(a.pinHash ?? target.pinHash)) throw new Error("Weka PIN ya tarakimu 4 hadi 6 kabla ya kuwasha Staff PIN.");
+    // One PIN = one person, across the whole system (the PIN is the only thing typed at sign-in).
+    const lookup = a.pinLookup ?? target.pinLookup;
+    if (lookup) {
+      const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", lookup)).take(5);
+      if (owners.some((u) => u._id !== target._id && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye mfumo. Chagua PIN nyingine.");
+    }
     await ctx.db.patch("users", a.userId, {
       ...(a.pinHash ? { pinHash: a.pinHash } : {}),
+      ...(a.pinLookup ? { pinLookup: a.pinLookup } : {}),
       pinLoginEnabled: a.enabled,
       pinFailedAttempts: 0,
       pinLockedUntil: undefined,
@@ -563,10 +635,12 @@ export const saveStaffPin = internalMutation({
 export const setStaffPin = action({
   args: { userId: v.id("users"), pin: v.optional(v.string()), enabled: v.boolean() },
   handler: async (ctx, a) => {
-    if (a.pin !== undefined && !/^\d{4}$/.test(a.pin)) throw new Error("PIN lazima iwe tarakimu 4.");
+    if (a.pin !== undefined && !PIN_PATTERN.test(a.pin)) throw new Error("PIN lazima iwe tarakimu 4 hadi 6.");
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { targetUserId: a.userId });
     const pinHash = a.pin === undefined ? undefined : await hashStaffPin(a.pin);
-    await ctx.runMutation(internal.maintenance.saveStaffPin, { userId: a.userId, actorId: auth.actorId, pinHash, enabled: a.enabled });
+    const pinLookup = a.pin === undefined ? undefined : await pinLookupKey(a.pin);
+    if (pinLookup) await ctx.runQuery(internal.maintenance.assertPinFree, { lookup: pinLookup, exceptUserId: a.userId });
+    await ctx.runMutation(internal.maintenance.saveStaffPin, { userId: a.userId, actorId: auth.actorId, pinHash, pinLookup, enabled: a.enabled });
     return true;
   },
 });
@@ -635,16 +709,26 @@ export const logUserEvent = internalMutation({
 
 export const createUser = action({
   args: {
-    name: v.string(), username: v.string(), password: v.string(), role: v.string(),
+    name: v.string(), username: v.string(), password: v.optional(v.string()), role: v.string(),
     tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
     branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()),
     menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())),
+    // Staff who sign in with a PIN only (waiter / waitress): the PIN is saved together with the account, after the system checked nobody else has it.
+    pin: v.optional(v.string()), pinLoginEnabled: v.optional(v.boolean()),
   },
   handler: async (ctx, a): Promise<string> => {
     const username = a.username.trim().toLowerCase();
     if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3–32, bila nafasi.");
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { role: a.role, tenantId: a.tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, extraPermissions: a.extraPermissions });
-    if (a.password.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
+    const pinOnlyRole = ["waiter", "waitress"].includes(normalizeRole(a.role));
+    if (a.pin !== undefined && a.pin !== "" && !PIN_PATTERN.test(a.pin)) throw new Error("PIN lazima iwe tarakimu 4 hadi 6.");
+    if (pinOnlyRole && !a.pin) throw new Error("Mhudumu husajiliwa kwa PIN: weka PIN ya tarakimu 4 hadi 6.");
+    const newPin = a.pin ? a.pin : undefined;
+    const newPinLookup = newPin ? await pinLookupKey(newPin) : undefined;
+    if (newPinLookup) await ctx.runQuery(internal.maintenance.assertPinFree, { lookup: newPinLookup }); // refuse BEFORE any account is created
+    // A PIN-only person has no password to remember: the account gets a long random one nobody knows (an administrator can still reset it).
+    const password = pinOnlyRole && !a.password ? `${crypto.randomUUID()}${crypto.randomUUID()}` : (a.password ?? "");
+    if (!pinOnlyRole && password.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
     const tenantId = a.tenantId ?? auth.actorTenantId;
     if (!["super_admin", "superadmin"].includes(normalizeRole(a.role)) && !tenantId) throw new Error("Chagua ofisi kwa mtumiaji huyu.");
     const email = `${username}@${LOGIN_DOMAIN}`;
@@ -657,13 +741,13 @@ export const createUser = action({
     let userId: Id<"users">;
     if (status.orphanId) {
       // An earlier attempt created the login but never finished: complete it with the new password instead of failing forever.
-      try { await modifyAccountCredentials(ctx, { provider: "password", account: { id: email, secret: a.password } }); }
+      try { await modifyAccountCredentials(ctx, { provider: "password", account: { id: email, secret: password } }); }
       catch (e) { const err = new Error(`Username "${username}" imeshatumika bila kukamilika. Tumia jina lingine. Sababu: ${String((e as Error)?.message ?? e)}`) as Error & { cause?: unknown }; err.cause = e; throw err; }
       userId = status.orphanId;
     } else {
       try {
         const { user } = await createAccount(ctx, {
-          provider: "password", account: { id: email, secret: a.password },
+          provider: "password", account: { id: email, secret: password },
           profile: { email, name: a.name.trim() || username, username },
         });
         userId = user._id;
@@ -674,8 +758,11 @@ export const createUser = action({
     }
     await ctx.runMutation(internal.maintenance.finishUserSetup, {
       userId, actorId: auth.actorId, name: a.name.trim() || username, username, role: a.role,
-      tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, requirePasswordChange: auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly, extraPermissions: a.extraPermissions,
+      tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, requirePasswordChange: pinOnlyRole ? false : auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly, extraPermissions: a.extraPermissions,
     });
+    if (newPin && newPinLookup) {
+      await ctx.runMutation(internal.maintenance.saveStaffPin, { userId, actorId: auth.actorId, pinHash: await hashStaffPin(newPin), pinLookup: newPinLookup, enabled: a.pinLoginEnabled ?? true });
+    }
     return String(userId);
   },
 });

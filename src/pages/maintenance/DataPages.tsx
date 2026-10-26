@@ -98,8 +98,10 @@ export function DatabasePage() {
   const health = useQuery(api.maintenance.healthCheck, {});
   const assign = useMutation(api.maintenance.assignUnscoped);
   const purge = useMutation(api.maintenance.purgeAuditLogs);
+  const bookWaiterJournals = useMutation(api.waiterCollections.bookMissingJournals);
   const { busy, run } = useRun();
   const [days, setDays] = useState("365");
+  const [booked, setBooked] = useState<{ booked: number; skipped: number } | null>(null);
   const issues = health ? [
     health.superAdmins === 0 && tr("Hakuna Super Admin aliye active."),
     health.usersWithoutRole > 0 && tr("Watumiaji {0} hawana role.", [health.usersWithoutRole]),
@@ -120,6 +122,11 @@ export function DatabasePage() {
         {health && health.unscoped.length > 0 && (
           <Button disabled={busy} onClick={() => void run(async () => { const r = await assign({}); if (r.more) throw new Error(tr("Zimeunganishwa {0}; bado zipo — bonyeza tena.", [r.updated])); }, tr("Rekodi zimeunganishwa na ofisi/branch ya kwanza."))}>{tr("Unganisha rekodi zisizo na ofisi na ofisi ya kwanza")}</Button>
         )}
+      </Card>
+      <Card title={tr("Hesabu za mauzo ya Selling Point (za zamani)")}>
+        <p className="text-sm">{tr("Malipo ya wahudumu yaliyopokelewa kabla ya marekebisho haya hayakuingia kwenye hesabu (Profit & Loss, Cash flow, Balance sheet). Kitufe hiki kinaingiza ambayo hayajaingizwa; ukibonyeza mara mbili hakirudii. Chagua biashara kwanza.")}</p>
+        <Button variant="outline" disabled={busy} onClick={() => void run(async () => { setBooked(await bookWaiterJournals({})); }, tr("Imekamilika."))}>{tr("Ingiza hesabu zilizokosekana")}</Button>
+        {booked && <p className="text-sm">{tr("Zimeingizwa: {0}. Zimerukwa (kipindi kimefungwa): {1}.", [booked.booked, booked.skipped])}</p>}
       </Card>
       <Card title={tr("Idadi ya rekodi kwa table")}>
         {!health ? <Loading /> : (

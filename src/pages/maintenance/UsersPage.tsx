@@ -40,7 +40,8 @@ export default function UsersPage() {
   // A user tied to ONE department can only create/manage users of that same department.
   // A user tied to one department, or given a few, can only give those same departments to others. null = no limit.
   const myLimit: string[] | null = isSuper ? null : me?.branchIds && me.branchIds.length > 1 ? me.branchIds.map(String) : me?.branchId && !me?.branchPicked ? [String(me.branchId)] : null;
-  const departmentRoles = ["cashier", "accountant", "viewer"]; // these must always belong to one department when the business has departments
+  const departmentRoles = ["cashier", "accountant", "viewer"];
+  const pinOnlyRole = !!f && ["waiter", "waitress"].includes(f.role.trim().toLowerCase()); // waiters / waitresses are registered with a PIN, not a password // these must always belong to one department when the business has departments
   const needsBranch = !!f && !editingSelf && f.role !== "super_admin" && branches.length > 0 && departmentRoles.includes(f.role) && !f.allDepartments && f.branchIds.length === 0;
   const branchChoices = myLimit ? branches.filter((b) => myLimit.includes(b._id)) : branches;
 
@@ -52,16 +53,20 @@ export default function UsersPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <TextField label={tr("Jina kamili")} value={f.name} onChange={(v) => set("name", v)} />
             <TextField label={tr("Username")} value={f.username} onChange={(v) => set("username", v.toLowerCase())} disabled={editing && editingSelf} hint={tr("Herufi ndogo/namba, 3–32, bila nafasi. Jina ni la kipekee kwa biashara zote (mfano asha.duka1). Biashara moja inaweza kuwa na admin na watumiaji wengi wa role moja, kila mmoja akiwa na username yake.")} />
-            {!editing && <TextField label={tr("Password ya kuanzia")} type="password" value={f.password} onChange={(v) => set("password", v)} />}
+            {!editing && !pinOnlyRole && <TextField label={tr("Password ya kuanzia")} type="password" value={f.password} onChange={(v) => set("password", v)} />}
             <SelectField label={tr("Role")} value={f.role} onChange={(v) => set("role", v)} options={roleOptions} />
             <TextField label={tr("Staff code (kwa cashier kutafuta mauzo)")} value={f.staffCode} onChange={(v) => set("staffCode", v.toUpperCase())} hint={tr("Herufi/namba 2-20, ya kipekee kwa biashara. Cashier huiandika kuona mauzo na kupokea malipo ya mhudumu huyu.")} />
             <div className="space-y-2 rounded-xl border p-3 md:col-span-2">
-                <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
-                  <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.pinLoginEnabled} onChange={(e) => setF((p) => (p ? { ...p, pinLoginEnabled: e.target.checked } : p))} />
-                  {tr("Ruhusu kuingia kwa Staff PIN")}
-                </label>
-                <TextField label={tr("PIN mpya ya tarakimu 4 (hiari ikiwa tayari ipo)")} type="password" value={f.pin} onChange={(v) => setF((p) => (p ? { ...p, pin: v.replace(/\D/g, "").slice(0, 4) } : p))} hint={f.hasPin ? tr("Acha wazi ili kubakiza PIN iliyopo. Weka PIN mpya ili kuibadilisha.") : tr("PIN haitahifadhiwa kama maandishi ya kawaida.")} />
-                <p className="text-xs text-muted-foreground">{tr("Baada ya majaribio 5 yasiyo sahihi, PIN itafungwa kwa dakika 10.")}</p>
+                {pinOnlyRole ? (
+                  <p className="text-sm font-medium">{tr("Mhudumu huingia kwa PIN tu (hana password).")}</p>
+                ) : (
+                  <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+                    <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.pinLoginEnabled} onChange={(e) => setF((p) => (p ? { ...p, pinLoginEnabled: e.target.checked } : p))} />
+                    {tr("Ruhusu kuingia kwa Staff PIN")}
+                  </label>
+                )}
+                <TextField label={pinOnlyRole && !f.hasPin ? tr("PIN ya tarakimu 4 hadi 6") : tr("PIN mpya ya tarakimu 4 hadi 6 (hiari ikiwa tayari ipo)")} type="password" value={f.pin} onChange={(v) => setF((p) => (p ? { ...p, pin: v.replace(/\D/g, "").slice(0, 6) } : p))} hint={f.hasPin ? tr("Acha wazi ili kubakiza PIN iliyopo. Weka PIN mpya ili kuibadilisha.") : tr("PIN haitahifadhiwa kama maandishi ya kawaida.")} />
+                <p className="text-xs text-muted-foreground">{tr("PIN ni ya kipekee kwenye mfumo mzima: mfumo unamtambua mtu kwa PIN yake peke yake, kwa hiyo hairuhusiwi PIN ile ile kwa watu wawili.")}</p>
               </div>
             {isSuper && f.role !== "super_admin" && (
               <SelectField label={tr("Ofisi")} value={f.tenantId} onChange={(v) => setF((p) => (p ? { ...p, tenantId: v, branchIds: [], allDepartments: false } : p))} options={[["", tr("— chagua ofisi —")], ...(offices?.tenants ?? []).map((t) => [t._id, t.name] as [string, string])]} />
@@ -117,8 +122,10 @@ export default function UsersPage() {
             <Button disabled={busy} onClick={() => void run(async () => {
               if (!f.name.trim() || (!editing && !f.username)) throw new Error(tr("Jina na username vinahitajika."));
               if (needsBranch) throw new Error(tr("Chagua idara za mtumiaji huyu (tiki moja au zaidi) au washa 'Idara zote'."));
-              if (f.pin && !/^\d{4}$/.test(f.pin)) throw new Error(tr("PIN lazima iwe tarakimu 4."));
-              if (f.pinLoginEnabled && !f.pin && !f.hasPin) throw new Error(tr("Weka PIN ya tarakimu 4 kabla ya kuruhusu Staff PIN."));
+              if (f.pin && !/^\d{4,6}$/.test(f.pin)) throw new Error(tr("PIN lazima iwe tarakimu 4 hadi 6."));
+              if (pinOnlyRole && !f.pin && !f.hasPin) throw new Error(tr("Mhudumu husajiliwa kwa PIN: weka PIN ya tarakimu 4 hadi 6."));
+              if (f.pinLoginEnabled && !f.pin && !f.hasPin) throw new Error(tr("Weka PIN ya tarakimu 4 hadi 6 kabla ya kuruhusu Staff PIN."));
+              const pinLogin = pinOnlyRole ? true : f.pinLoginEnabled;
               const tenantId = (f.tenantId || undefined) as Id<"tenants"> | undefined;
               // Department access: ticked departments (1 = tied to it, 2+ = switches between them) or all departments.
               const dept = editingSelf || branches.length === 0 ? {} : { branchIds: (f.allDepartments ? [] : f.branchIds) as Id<"branches">[], allDepartments: f.allDepartments };
@@ -135,12 +142,12 @@ export default function UsersPage() {
                 await update({ userId: f.id!, name: f.name, role: f.role, tenantId, ...dept, ...(editingSelf ? {} : { ...access, ...(f.menuAll ? { clearMenuAccess: true } : menu) }) });
                 savedUserId = f.id!;
               } else {
-                const createdId = await create({ name: f.name, username: f.username, password: f.password, role: f.role, tenantId, ...dept, ...access, ...menu });
+                const createdId = await create({ name: f.name, username: f.username, ...(pinOnlyRole ? {} : { password: f.password }), role: f.role, tenantId, ...dept, ...access, ...menu, ...(f.pin ? { pin: f.pin, pinLoginEnabled: pinLogin } : {}) });
                 savedUserId = createdId as Id<"users">;
               }
-              if (editing || f.pin || f.pinLoginEnabled) {
-                try { await setStaffPin({ userId: savedUserId, ...(f.pin ? { pin: f.pin } : {}), enabled: f.pinLoginEnabled }); }
-                catch (e) { throw new Error(`${editing ? "" : tr("Mtumiaji ameundwa, lakini PIN haikuhifadhiwa. Fungua Modify kuweka PIN tena. ")}${e instanceof Error ? e.message : ""}`.trim(), { cause: e }); }
+              if (editing) { // a new user's PIN was already saved (and checked for duplicates) together with the account
+                try { await setStaffPin({ userId: savedUserId, ...(f.pin ? { pin: f.pin } : {}), enabled: pinLogin }); }
+                catch (e) { throw new Error(errorText(e), { cause: e }); }
               }
               if (f.staffCode.trim() || editing) {
                 try { await setStaffCode({ userId: savedUserId, staffCode: f.staffCode }); }

@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Stat } from "@/pages/shared/report.tsx";
 import { fmt, num, round2, today } from "@/pages/shared/report-utils.ts";
 import { tr, errorText } from "@/lib/i18n.ts";
+import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 import BillSheet from "@/components/BillSheet.tsx";
 import ReturnPanel from "@/pages/sales/ReturnPanel.tsx";
 import type { Paper } from "@/lib/print-area.ts";
@@ -47,6 +48,7 @@ export default function InvoiceEntry() {
   const [servicePoint, setServicePoint] = useState<ServicePoint>(emptyServicePoint());
   const tableNo = formatServicePoint(servicePoint, serviceWords());
   const settings = useQuery(api.maintenance.getSettings, {});
+  const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
   const allowNegative = !!settings?.company?.allowNegativeStock; // same switch the server uses (Maintenance > Company)
 
   const [pickedClient, setClientId] = useState("");
@@ -170,7 +172,8 @@ export default function InvoiceEntry() {
   };
   const printPlaced = async () => {
     if (!placedId || !placedOrder) return;
-    const printed = await printWaiterOrder(placedOrder, qzPrinterFrom(hardware), hardware.paperWidth);
+    const printed = await printWaiterOrder(placedOrder, qzPrinterFrom(hardware), hardware.paperWidth, branding);
+    const printed = await printWaiterOrder(placedOrder, qzPrinterFrom(hardware), hardware.paperWidth, branding);
     if (!printed) return;
     try {
       await markPrinted({ orderId: placedId });

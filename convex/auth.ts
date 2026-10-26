@@ -2,7 +2,8 @@ import { convexAuth } from "@convex-dev/auth/server";
 import { Password } from "@convex-dev/auth/providers/Password";
 import { ConvexCredentials } from "@convex-dev/auth/providers/ConvexCredentials";
 import { internal } from "./_generated/api";
-import { verifyStaffPin } from "./pinCrypto";
+import type { Id } from "./_generated/dataModel";
+import { PIN_PATTERN, pinLookupKey, verifyStaffPin } from "./pinCrypto";
 
 /**
  * Username/password sign-in implemented on Convex Auth.
@@ -30,19 +31,29 @@ export const {
   providers: [
     ConvexCredentials({
       id: "staffPin",
+      // PIN only: the PIN is the whole credential and it identifies the person. A PIN belongs to exactly one person system-wide;
+      // if a PIN ever matched two people (old data) nobody signs in with it until an administrator gives one of them a new PIN.
       authorize: async (credentials, ctx) => {
-        const username = String(credentials.username ?? "").trim().toLowerCase();
         const pin = String(credentials.pin ?? "");
-        if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username) || !/^\d{4}$/.test(pin)) return null;
-        const record = await ctx.runQuery(internal.maintenance.staffPinRecord, { username });
-        if (!record || record.isActive !== true || record.pinLoginEnabled !== true || !record.pinHash) return null;
+        if (!PIN_PATTERN.test(pin)) return null;
         const now = Date.now();
-        if ((record.pinLockedUntil ?? 0) > now) return null;
-        const valid = await verifyStaffPin(pin, record.pinHash);
-        const accepted = await ctx.runMutation(internal.maintenance.recordStaffPinAttempt, {
-          userId: record.userId, expectedPinHash: record.pinHash, success: valid, now,
-        });
-        return accepted ? { userId: record.userId } : null;
+        const state = await ctx.runQuery(internal.maintenance.pinLoginState, { now });
+        if (state.locked) return null; // too many wrong PINs system-wide: PIN sign-in is paused for a few minutes (password sign-in still works)
+        const lookup = await pinLookupKey(pin);
+        let matched: Id<"users"> | null = null;
+        const owners = await ctx.runQuery(internal.maintenance.findPinOwners, { lookup });
+        if (owners.length === 1) {
+          const [owner] = owners;
+          if (!owner.pinHash || await verifyStaffPin(pin, owner.pinHash)) matched = owner.userId;
+        } else if (owners.length === 0) {
+          const legacy = await ctx.runQuery(internal.maintenance.legacyPinUsers, {});
+          const hits: Id<"users">[] = [];
+          for (const candidate of legacy.users) if (await verifyStaffPin(pin, candidate.pinHash)) hits.push(candidate.userId);
+          if (hits.length === 1) matched = hits[0];
+          else if (legacy.done) await ctx.runMutation(internal.maintenance.markLegacyPinsDone, {});
+        }
+        const accepted = await ctx.runMutation(internal.maintenance.recordPinLogin, { userId: matched ?? undefined, success: matched !== null, now, upgradeLookup: matched ? lookup : undefined });
+        return accepted && matched ? { userId: matched } : null;
       },
     }),
     Password({

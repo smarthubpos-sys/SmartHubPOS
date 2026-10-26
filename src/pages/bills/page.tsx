@@ -25,6 +25,7 @@ export default function BillsPage() {
   const [search, setSearch] = useState("");
   const [clientId, setClientId] = useState("");
   const [onlyOpen, setOnlyOpen] = useState(false);
+  const [showBilled, setShowBilled] = useState(false); // invoices already put on a bill leave the list; tick to see them again
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [showBill, setShowBill] = useState(false);
   const [billInvoiceIds, setBillInvoiceIds] = useState<Id<"invoices">[]>([]);
@@ -47,7 +48,7 @@ export default function BillsPage() {
     [clients, needle],
   );
 
-  const list = (invoices ?? []).filter((i) => !combine || !deptFilter || i.department === deptFilter);
+  const list = (invoices ?? []).filter((i) => (!combine || !deptFilter || i.department === deptFilter) && (showBilled || !i.alreadyBilled));
   const eligible = list.filter((i) => i.eligible);
   const chosen = eligible.filter((i) => picked.has(String(i._id)));
   const sum = (k: "total" | "amountPaid" | "outstanding") => chosen.reduce((n, i) => n + i[k], 0);
@@ -100,6 +101,7 @@ export default function BillsPage() {
               </SelectBox>
             </FormField>
             <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={onlyOpen} onChange={(e) => { setOnlyOpen(e.target.checked); resetSelection(); }} />{tr("Zenye deni tu")}</label>
+            <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={showBilled} onChange={(e) => { setShowBilled(e.target.checked); resetSelection(); }} />{tr("Onyesha invoice zilizokwisha kwenye bili")}</label>
             {access?.allDepartments && (
               <>
                 <label className="flex items-end gap-2 pb-2 text-sm md:col-span-2"><input type="checkbox" checked={allDepts} onChange={(e) => { setAllDepts(e.target.checked); setDeptFilter(""); resetSelection(); }} />{tr("Unganisha invoice za idara zote (Jikoni, Bar, Lounge…)")}</label>
@@ -162,7 +164,7 @@ export default function BillsPage() {
         </div>
       </Panel>}
 
-      {showBill && billInvoiceIds.length > 0 && <BillSheet invoiceIds={billInvoiceIds} printToken={printToken} paper={paper} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={(value) => { setWhatsappEnabled(value); localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); }} />}
+      {showBill && billInvoiceIds.length > 0 && <BillSheet invoiceIds={billInvoiceIds} printToken={printToken} paper={paper} onPrinted={() => { setShowBill(false); setBillInvoiceIds([]); setPicked(new Set()); toast.success(tr("Bili imechapishwa na kuondolewa kwenye orodha. Fungua tena kupitia \"Bili zilizopita\".")); }} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={(value) => { setWhatsappEnabled(value); localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); }} />}
     </div>
   );
 }

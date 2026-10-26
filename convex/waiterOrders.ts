@@ -8,6 +8,8 @@ import { waiterOrdersAllowedFor } from "./waiterSettings";
 
 // Normalised like everywhere else (case / spaces / hyphens): a role label such as "Waitress " must still be limited to its OWN orders.
 const isWaiter = (role?: string) => ["waiter", "waitress"].includes(normalizeRole(role));
+/** Super Admin administers businesses; he is NOT a cashier. Orders sent by waiters must never land in his queue, and he cannot receive them. */
+const isSuper = (role?: string) => ["super_admin", "superadmin"].includes(String(role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_"));
 
 /**
  * Deducts the stock of an order EXACTLY ONCE. The guard is the order's own `stockDeducted` flag, read and written inside the same
@@ -63,12 +65,26 @@ async function deductStockOnce(
   return true;
 }
 
+/**
+ * Who sees which orders. A waiter is tied to his own department. A cashier / manager who works in one department sees that
+ * department's orders; one who has not picked a department (or works across all) sees the orders of every department of the
+ * business. Business isolation is never relaxed. Before this, a cashier on another department than the waiter saw nothing
+ * while the Super Admin (on the waiter's department) received every order.
+ */
+type ScopeLike = { tenantId?: Id<"tenants">; branchId?: Id<"branches"> };
+async function viewScope(ctx: Parameters<typeof resolveWriteScope>[0], user: Parameters<typeof resolveWriteScope>[1]): Promise<ScopeLike> {
+  return isWaiter(user.role) ? await resolveWriteScope(ctx, user) : await resolveWriteScope(ctx, user, { tenantWide: true });
+}
+const orderInScope = (user: { role?: string }, scope: ScopeLike, o: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }) =>
+  o.tenantId === scope.tenantId && (isWaiter(user.role) || !scope.branchId || o.branchId === scope.branchId);
+
 export const list = query({
   args: {},
   handler: async (ctx) => {
     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
     // No department chosen: say so in plain words (an empty queue would look like 'orders never arrive').
     const scope = await resolveWriteScope(ctx, user).catch((e) => { throw surfaceError(e); });
+    const scope = await viewScope(ctx, user).catch((e) => { throw surfaceError(e); });
     if (!scope.tenantId) return [];
     const tenantId = scope.tenantId;
     const settings = await ctx.db.query("tenantSettings")
@@ -76,13 +92,13 @@ export const list = query({
       .first();
     if (!waiterOrdersAllowedFor(user.role, settings)) return [];
     const rows = await ctx.db.query("waiterOrders")
-      .withIndex("by_scope_status", q =>
-        q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)
-      ).collect();
+      .withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId))
+      .collect();
+    const inScope = rows.filter(r => orderInScope(user, scope, r) && (isWaiter(user.role) ? r.branchId === scope.branchId : true));
     const isWaiterRole = isWaiter(user.role);
     // A waiter sees only his own orders (placed, sent or received). Everyone else (cashier / manager) sees only orders that were SENT.
     // Cashier queue is strictly pending work. Accepted/printed orders remain in the database for history.
-    const visible = rows.filter(r => isWaiterRole ? r.waiterId === user._id : r.status === "pending");
+    const visible = inScope.filter(r => (isWaiterRole || isSuper(user.role)) ? r.waiterId === user._id : r.status === "pending"); // Super Admin sees only orders he made himself, never the cashier queue
     return visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200);
   },
 });
@@ -227,11 +243,10 @@ export const markHandled = mutation({
   handler: async (ctx, args) => {
     try {
     const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
-    if (isWaiter(user.role)) throw new Error("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
-    const scope = await resolveWriteScope(ctx, user);
+    if (isWaiter(user.role) || isSuper(user.role)) throw new Error("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
+    const scope = await viewScope(ctx, user);
     const order = await ctx.db.get("waiterOrders", args.orderId);
-    if (!order || order.tenantId !== scope.tenantId ||
-        order.branchId !== scope.branchId) {
+    if (!order || !orderInScope(user, scope, order)) {
       throw new Error("Oda haipo kwenye biashara au tawi lako.");
     }
     if (order.status === "accepted") return order._id; // printing again is harmless
@@ -263,12 +278,13 @@ export const cancel = mutation({
     try {
     const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
     if (!(await roleHasPermission(ctx, user, "sales.void"))) throw new Error("Huna ruhusa ya kufuta oda.");
-    const scope = await resolveWriteScope(ctx, user);
+    const scope = await viewScope(ctx, user);
     const order = await ctx.db.get("waiterOrders", args.orderId);
-    if (!order || order.tenantId !== scope.tenantId || order.branchId !== scope.branchId) {
+    if (!order || !orderInScope(user, scope, order)) {
       throw new Error("Oda haipo kwenye biashara au tawi lako.");
     }
     if (order.status === "cancelled") return order._id;
+    if (order.settledAt) throw new Error("Oda hii tayari imelipwa kwa cashier; haiwezi kufutwa (mauzo na fedha vimeshahesabiwa).");
     const now = new Date().toISOString();
     if (order.stockDeducted) {
       for (const line of order.lines) {
@@ -365,11 +381,13 @@ export const listForBills = query({
   handler: async (ctx, args) => {
     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
     const scope = await resolveWriteScope(ctx, user).catch((e) => { throw surfaceError(e); });
+    const scope = await viewScope(ctx, user).catch((e) => { throw surfaceError(e); });
     if (!scope.tenantId) return [];
-    const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)).collect();
+    const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId)).collect();
     const needle = (args.table ?? "").trim().toLowerCase();
     return rows
       .filter(r => r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || r.waiterId === user._id))
+      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || r.waiterId === user._id))
       .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
   },
@@ -380,13 +398,13 @@ export const billSummary = query({
   args: { orderIds: v.array(v.id("waiterOrders")) },
   handler: async (ctx, args) => {
     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
-    const scope = await resolveWriteScope(ctx, user);
+    const scope = await viewScope(ctx, user);
     const merged = new Map<string, { productName: string; unitPrice: number; qty: number; lineTotal: number }>();
     const tables = new Set<string>();
     let total = 0;
     for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
       const o = await ctx.db.get("waiterOrders", id);
-      if (!o || o.tenantId !== scope.tenantId || o.branchId !== scope.branchId || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
+      if (!o || !orderInScope(user, scope, o) || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
       if (isWaiter(user.role) && o.waiterId !== user._id) throw new Error("Hii si oda yako.");
       if (o.tableNumber) tables.add(o.tableNumber);
       for (const l of o.lines) {
@@ -410,6 +428,11 @@ export const markBillPrinted = mutation({
       for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
         const o = await ctx.db.get("waiterOrders", id);
         if (!o || o.tenantId !== scope.tenantId || o.branchId !== scope.branchId || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
+      const scope = await viewScope(ctx, user);
+      const now = new Date().toISOString();
+      for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
+        const o = await ctx.db.get("waiterOrders", id);
+        if (!o || !orderInScope(user, scope, o) || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
         if (isWaiter(user.role) && o.waiterId !== user._id) throw new Error("Hii si oda yako.");
         if (!o.billPrintedAt) await ctx.db.patch("waiterOrders", o._id, { billPrintedAt: now, updatedAt: now });
       }

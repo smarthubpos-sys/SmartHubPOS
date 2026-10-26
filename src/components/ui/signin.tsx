@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/input.tsx";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { PICK_BUSINESS_FLAG } from "@/lib/business-session.ts";
 
-const PIN_USER_KEY = "smarthub.pinUsername"; // last staff username used with PIN on this device, so the waiter only taps the PIN next time
 
 export function SignInButton() {
   const { isAuthenticated, isLoading } = useConvexAuth();
@@ -29,20 +28,19 @@ export function SignInButton() {
     setError("");
     try {
       const formData = new FormData();
-      const normalizedUsername = username.trim().toLowerCase();
-      formData.set("username", normalizedUsername);
       if (loginMode === "pin") {
-        formData.set("pin", pin);
+        formData.set("pin", pin); // PIN only: the system recognises the person by the PIN itself
         await signIn("staffPin", formData);
       } else {
+        const normalizedUsername = username.trim().toLowerCase();
+        formData.set("username", normalizedUsername);
         formData.set("flow", firstSetup ? "signUp" : "signIn");
         formData.set("email", `${normalizedUsername}@login.smarthub.invalid`);
         formData.set("password", password);
         await signIn("password", formData);
       }
-      if (loginMode === "pin") { try { window.localStorage.setItem(PIN_USER_KEY, normalizedUsername); } catch { /* ignore */ } }
       try { window.sessionStorage.setItem(PICK_BUSINESS_FLAG, "1"); } catch { /* ignore */ }
-      if (loginMode !== "pin") setUsername("");
+      setUsername("");
       setPassword("");
       setPin("");
       navigate("/dashboard", { replace: true });
@@ -62,6 +60,32 @@ export function SignInButton() {
     );
   }
 
+  if (loginMode === "pin") {
+    const MAX_PIN = 6;
+    const press = (digit: string) => setPin((p) => (p.length < MAX_PIN ? p + digit : p));
+    const keyClass = "h-11 rounded-xl bg-white text-lg font-bold text-slate-900 shadow-sm transition hover:bg-slate-200 active:scale-95 disabled:opacity-60";
+    return (
+      <form onSubmit={submit} className="mx-auto grid w-full max-w-[17rem] gap-3">
+        <div className="flex h-11 items-center justify-center gap-2 rounded-xl bg-white/10 px-3" aria-label={tr("PIN ya wafanyakazi")} role="img">
+          {pin.length === 0
+            ? <span className="text-sm text-blue-100/80">{tr("Weka PIN yako")}</span>
+            : Array.from({ length: pin.length }).map((_, i) => <span key={i} className="h-3 w-3 rounded-full bg-white" />)}
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {(["1", "2", "3", "4", "5", "6", "7", "8", "9"] as const).map((digit) => (
+            <button key={digit} type="button" className={keyClass} disabled={busy || pin.length >= MAX_PIN} onClick={() => press(digit)}>{digit}</button>
+          ))}
+          <button type="button" className="h-11 rounded-xl bg-amber-300 text-sm font-bold text-slate-900 transition hover:bg-amber-200 active:scale-95 disabled:opacity-60" disabled={busy || !pin} onClick={() => setPin("")}>{tr("Futa")}</button>
+          <button type="button" className={keyClass} disabled={busy || pin.length >= MAX_PIN} onClick={() => press("0")}>0</button>
+          <button type="button" className="h-11 rounded-xl bg-sky-300 text-lg font-bold text-slate-900 transition hover:bg-sky-200 active:scale-95 disabled:opacity-60" disabled={busy || !pin} onClick={() => setPin((p) => p.slice(0, -1))} aria-label={tr("Futa tarakimu ya mwisho")}>⌫</button>
+        </div>
+        {error && <p role="alert" className="rounded-lg bg-red-900/40 p-2 text-center text-sm text-red-100">{error}</p>}
+        <Button type="submit" disabled={isLoading || busy || pin.length < 4} className="h-11 w-full">{tr("Ingia")}</Button>
+        <button type="button" className="text-center text-xs text-blue-100 underline-offset-2 hover:underline" disabled={busy} onClick={() => { setLoginMode("password"); setPin(""); setError(""); }}>{tr("Ingia kwa username na password")}</button>
+      </form>
+    );
+  }
+
   return (
     <form onSubmit={submit} className="grid gap-3">
       <label className="grid gap-1 text-sm text-blue-100">
@@ -69,35 +93,21 @@ export function SignInButton() {
         {tr("Jina la mtumiaji")}
         <Input autoComplete="username" required minLength={3} maxLength={32} value={username} onChange={(e) => setUsername(e.target.value)} placeholder={tr("Jina la mtumiaji")} />
       </label>
-      {loginMode === "password" ? (
-        <label className="grid gap-1 text-sm text-blue-100">
-          {tr("Nenosiri")}
-          <span className="relative block">
-            <Input className="pr-16" type={showPassword ? "text" : "password"} autoComplete={firstSetup ? "new-password" : "current-password"} required minLength={firstSetup ? 10 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={tr("Nenosiri")} />
-            <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute inset-y-0 right-2 flex w-9 items-center justify-center rounded-md text-blue-100 transition hover:bg-white/10" aria-label={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")} title={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")}>
-              {showPassword ? <EyeOff size={19} strokeWidth={1.8} /> : <Eye size={19} strokeWidth={1.8} />}
-            </button>
-          </span>
-        </label>
-      ) : (
-        <div className="grid gap-2 text-sm text-blue-100">
-          <label className="grid gap-1">{tr("PIN ya wafanyakazi")}
-            <Input inputMode="numeric" autoComplete="one-time-code" type="password" required minLength={4} maxLength={4} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="PIN" />
-          </label>
-          <div className="grid grid-cols-3 gap-2">
-            {(["1", "2", "3", "4", "5", "6", "7", "8", "9"] as const).map((digit) => <Button key={digit} type="button" variant="secondary" className="min-h-12 bg-white text-slate-900 text-lg font-bold hover:bg-slate-200 disabled:opacity-100 disabled:bg-slate-200 disabled:text-slate-500" disabled={busy || pin.length >= 4} onClick={() => setPin((p) => (p.length < 4 ? p + digit : p))}>{digit}</Button>)}
-            <Button type="button" variant="secondary" className="min-h-12 bg-amber-300 text-slate-900 font-bold hover:bg-amber-200 disabled:opacity-100 disabled:bg-amber-100 disabled:text-slate-500" disabled={busy || !pin} onClick={() => setPin("")}>{tr("Futa")}</Button>
-            <Button type="button" variant="secondary" className="min-h-12 bg-white text-slate-900 text-lg font-bold hover:bg-slate-200 disabled:opacity-100 disabled:bg-slate-200 disabled:text-slate-500" disabled={busy || pin.length >= 4} onClick={() => setPin((p) => (p.length < 4 ? p + "0" : p))}>0</Button>
-            <Button type="button" variant="secondary" className="min-h-12 bg-sky-300 text-slate-900 font-bold hover:bg-sky-200 disabled:opacity-100 disabled:bg-sky-100 disabled:text-slate-500" disabled={busy || !pin} onClick={() => setPin((p) => p.slice(0, -1))}>⌫</Button>
-          </div>
-        </div>
-      )}
-      <Button type="button" variant="outline" className="w-full" disabled={busy || firstSetup} onClick={() => { const next = loginMode === "password" ? "pin" : "password"; setLoginMode(next); setPassword(""); setPin(""); setError(""); if (next === "pin" && !username) { try { setUsername(window.localStorage.getItem(PIN_USER_KEY) ?? ""); } catch { /* ignore */ } } }}>
-        {loginMode === "password" ? tr("Staff PIN") : tr("Ingia kwa username na password")}
+      <label className="grid gap-1 text-sm text-blue-100">
+        {tr("Nenosiri")}
+        <span className="relative block">
+          <Input className="pr-16" type={showPassword ? "text" : "password"} autoComplete={firstSetup ? "new-password" : "current-password"} required minLength={firstSetup ? 10 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={tr("Nenosiri")} />
+          <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute inset-y-0 right-2 flex w-9 items-center justify-center rounded-md text-blue-100 transition hover:bg-white/10" aria-label={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")} title={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")}>
+            {showPassword ? <EyeOff size={19} strokeWidth={1.8} /> : <Eye size={19} strokeWidth={1.8} />}
+          </button>
+        </span>
+      </label>
+      <Button type="button" variant="outline" className="w-full" disabled={busy || firstSetup} onClick={() => { setLoginMode("pin"); setPassword(""); setPin(""); setError(""); }}>
+        {tr("Staff PIN")}
       </Button>
       {error && <p role="alert" className="rounded-lg bg-red-900/40 p-3 text-sm text-red-100">{error}</p>}
-      <Button type="submit" disabled={isLoading || busy || (loginMode === "pin" && pin.length !== 4)} className="w-full">
-        {firstSetup && loginMode === "password" ? tr("Fungua akaunti ya msimamizi") : tr("Ingia")}
+      <Button type="submit" disabled={isLoading || busy} className="w-full">
+        {firstSetup ? tr("Fungua akaunti ya msimamizi") : tr("Ingia")}
       </Button>
     </form>
   );

@@ -40,7 +40,7 @@ export const getMetrics = query({
   handler: async (ctx, args) => {
     const user = await requireActiveUser(ctx, "dashboard");
     await forbidPersonalOnly(ctx, user);
-    const empty = { ready: false, todaySales: 0, todayCash: 0, todayPurchaseTotal: 0, totalOutstandingCustomer: 0, totalOutstandingSupplier: 0, lowStockItems: 0, outOfStockItems: 0, inventoryValue: 0, recentInvoices: [] as Doc<"invoices">[], recentPurchases: [] as Doc<"purchases">[], totalProducts: 0 };
+    const empty = { ready: false, todaySales: 0, todayCash: 0, todayPurchaseTotal: 0, totalOutstandingCustomer: 0, totalOutstandingSupplier: 0, lowStockItems: 0, outOfStockItems: 0, inventoryValue: 0, waiterOwing: 0, waiterOwingOrders: 0, recentInvoices: [] as Doc<"invoices">[], recentPurchases: [] as Doc<"purchases">[], totalProducts: 0 };
     const tenantId = user.tenantId;
     if (!tenantId) return empty;
 
@@ -55,6 +55,9 @@ export const getMetrics = query({
       ? await ctx.db.query("purchases").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(25)
       : await ctx.db.query("purchases").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(25);
 
+    // Selling Point orders sent/printed but not yet paid to the cashier: not sales yet, shown separately so nothing looks missing.
+    const open = (await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId)).collect())
+      .filter((o) => (!user.branchId || o.branchId === user.branchId) && !o.settledAt && (o.status === "pending" || o.status === "accepted" || o.status === "printed"));
     const posted = <T extends { status?: string }>(rows: T[]) => rows.filter((r) => r.status === undefined || r.status === "posted").slice(0, 5);
     return {
       ready: totals.length > 0,
@@ -69,6 +72,8 @@ export const getMetrics = query({
       recentInvoices: posted(recentInvoices),
       recentPurchases: posted(recentPurchases),
       totalProducts: sum(totals, "productCount"),
+      waiterOwing: round2(open.reduce((s, o) => s + o.total, 0)),
+      waiterOwingOrders: open.length,
     };
   },
 });

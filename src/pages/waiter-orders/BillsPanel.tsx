@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { tr, errorText } from "@/lib/i18n.ts";
+import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 
 const money = (n: number) => Number(n).toLocaleString();
@@ -20,6 +21,7 @@ export default function BillsPanel() {
   const markBillPrinted = useMutation(api.waiterOrders.markBillPrinted);
   const user = useQuery(api.users.getCurrentUser);
   const settings = useQuery(api.maintenance.getSettings, {});
+  const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
   const hw = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
 
   const groups = new Map<string, NonNullable<typeof orders>>();
@@ -30,6 +32,7 @@ export default function BillsPanel() {
     if (!summary) return;
     if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
     const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: summary.tables.join(", ") || undefined, total: summary.total, lines: summary.lines.map((l) => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })) }, qzPrinterFrom(hw), hw.paperWidth);
+    const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: summary.tables.join(", ") || undefined, total: summary.total, lines: summary.lines.map((l) => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })) }, qzPrinterFrom(hw), hw.paperWidth, { ...branding, title: tr("BILI YA MTEJA") });
     if (!ok) return; // print failed: the bills stay in the list so they can be printed again
     try {
       await markBillPrinted({ orderIds: picked as Id<"waiterOrders">[] });

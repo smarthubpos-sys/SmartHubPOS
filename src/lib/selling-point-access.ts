@@ -50,7 +50,9 @@ export function routeAccess({ pathname, role, permissions, modules, moduleKey }:
   const sellingPoint = pathname === "/selling-point" || pathname.startsWith("/selling-point/");
   if (sellingPoint && isSuperAdminRole(role)) return "allowed";
   if (moduleKey && modules && !modules.includes(moduleKey)) return "blocked";
-  const needed = sellingPoint ? "waiterOrders.view" : pathname === "/sales" || pathname.startsWith("/sales/") ? "sales.view" : null;
+  const cashierDesk = pathname === "/cashier" || pathname.startsWith("/cashier/");
+  if (cashierDesk && isSuperAdminRole(role)) return "blocked"; // orders and waiter money belong to the cashier, not the Super Admin
+  const needed = cashierDesk ? "waiterOrders.manage" : sellingPoint ? "waiterOrders.view" : pathname === "/sales" || pathname.startsWith("/sales/") ? "sales.view" : null;
   if (!needed) return "allowed";
   if (!permissions) return "loading";
   return permissions.includes(needed) ? "allowed" : "blocked";

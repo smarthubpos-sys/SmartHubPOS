@@ -10,6 +10,7 @@ const Dashboard = lazy(() => import("./pages/dashboard/page.tsx"));
 const SuperAdminPage = lazy(() => import("./pages/super-admin/page.tsx"));
 const SalesPage = lazy(() => import("./pages/sales/page.tsx"));
 const WaiterOrdersPage = lazy(() => import("./pages/waiter-orders/page.tsx"));
+const CashierPage = lazy(() => import("./pages/cashier/page.tsx"));
 const StockPage = lazy(() => import("./pages/stock/page.tsx"));
 const PurchasingPage = lazy(() => import("./pages/purchasing/page.tsx"));
 const PayrollPage = lazy(() => import("./pages/payroll/page.tsx"));
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="/super-admin" element={<SuperAdminPage />} />
             <Route path="/sales/*" element={<SalesPage />} />
             <Route path="/selling-point" element={<WaiterOrdersPage />} />
+            <Route path="/cashier" element={<CashierPage />} />
             <Route path="/waiter-orders" element={<Navigate to="/selling-point" replace />} />
             <Route path="/stock/*" element={<StockPage />} />
             <Route path="/purchasing/*" element={<PurchasingPage />} />

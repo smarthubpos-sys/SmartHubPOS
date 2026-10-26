@@ -56,12 +56,17 @@ export default defineSchema({
     pinHash: v.optional(v.string()),
     pinFailedAttempts: v.optional(v.number()),
     pinLockedUntil: v.optional(v.number()),
+    pinLookup: v.optional(v.string()), // keyed one-way fingerprint of the PIN: lets the system find WHO owns a PIN, and keeps every PIN unique across the system
     staffCode: v.optional(v.string()), // unique (per business) code the cashier types to find this staff member's sales
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("email", ["email"])
     .index("phone", ["phone"])
     .index("by_token", ["tokenIdentifier"])
-    .index("by_username", ["username"]),
+    .index("by_username", ["username"])
+    .index("by_pin_lookup", ["pinLookup"]),
+
+  // Global throttle for PIN-only sign-in (a PIN identifies the person, so failures cannot be counted per user).
+  pinLoginGuard: defineTable({ key: v.string(), failures: v.number(), windowStart: v.number(), lockedUntil: v.optional(v.number()) }).index("by_key", ["key"]),
 
   roles: defineTable({
     name: v.string(), // admin | manager | cashier | accountant | viewer
@@ -539,7 +544,8 @@ export default defineSchema({
     .index("by_product", ["productId"])
     .index("by_tenant_date", ["tenantId", "movementDate"])
     .index("by_date", ["movementDate"])
-    .index("by_product_date", ["productId", "movementDate"]),
+    .index("by_product_date", ["productId", "movementDate"])
+    .index("by_reference", ["referenceType", "referenceId"]),
 
   // ── STOCK ADJUSTMENTS ────────────────────────────────────────
   stockAdjustments: defineTable({
@@ -876,6 +882,8 @@ export default defineSchema({
     clientKey: v.optional(v.string()), // one random key per cart: a repeated tap / retry returns the SAME order instead of a second one
     sentAt: v.optional(v.string()),
     printedAt: v.optional(v.string()),
+    settledAt: v.optional(v.string()), // cashier received the money for this order from the waiter
+    collectionId: v.optional(v.id("waiterCollections")),
     billPrintedAt: v.optional(v.string()), // set only after a Bills-screen print succeeded; the order itself is never deleted
     cancelledAt: v.optional(v.string()),
     cancelledBy: v.optional(v.id("users")),
@@ -897,6 +905,22 @@ export default defineSchema({
     .index("by_waiter", ["waiterId"])
     .index("by_client_key", ["waiterId", "clientKey"])
     .index("by_created", ["createdAt"]),
+
+  // Money a cashier received from a waiter for sent / printed Selling Point orders. Orders are kept; they are only marked settled.
+  waiterCollections: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    branchId: v.optional(v.id("branches")),
+    staffId: v.id("users"),
+    staffName: v.string(),
+    cashierId: v.id("users"),
+    cashierName: v.string(),
+    date: v.string(), // business day YYYY-MM-DD (East Africa Time)
+    total: v.number(),
+    splits: v.array(v.object({ method: v.string(), methodId: v.optional(v.id("paymentMethods")), amount: v.number(), reference: v.optional(v.string()) })),
+    orderIds: v.array(v.id("waiterOrders")),
+    createdAt: v.string(),
+  }).index("by_tenant_date", ["tenantId", "date"])
+    .index("by_staff", ["staffId"]),
 
   supportTickets: defineTable({
     tenantId: v.optional(v.id("tenants")),

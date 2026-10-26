@@ -197,7 +197,19 @@ export const rebuild = internalMutation({
         const d = (acc.daily[k] ??= { bk, date: p.paymentDate, sales: 0, purchases: 0, collected: 0, invoices: 0 });
         d.collected = round2(d.collected + p.amount);
       }
-      return await (page.isDone ? go("purchases", null) : go("payments", page.continueCursor));
+      return await (page.isDone ? go("waiter", null) : go("payments", page.continueCursor));
+    }
+
+    // Selling Point money received by cashiers from waiters (not invoices): counted on the day it was received, so a rebuild keeps it.
+    if (a.phase === "waiter") {
+      const page = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", windowStart)).paginate({ numItems: PAGE, cursor: a.cursor });
+      for (const c of page.page) {
+        const bk = bkey(c.branchId);
+        const k = `${bk}|${c.date}`;
+        const d = (acc.daily[k] ??= { bk, date: c.date, sales: 0, purchases: 0, collected: 0, invoices: 0 });
+        d.sales = round2(d.sales + c.total); d.collected = round2(d.collected + c.total); d.invoices += c.orderIds.length;
+      }
+      return await (page.isDone ? go("purchases", null) : go("waiter", page.continueCursor));
     }
 
     if (a.phase === "purchases") {
@@ -254,6 +266,21 @@ export const rebuild = internalMutation({
           if (inv.invoiceDate >= since7) r.d7.set(id, (r.d7.get(id) ?? 0) + l.lineTotal);
         }
       }
+      // Selling Point orders whose money the cashier received count as sales of their products too (same day rule as the daily totals).
+      const collections = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", since90)).order("desc").take(400);
+      for (const c of collections) {
+        const r = (rev[bkey(c.branchId)] ??= { d7: new Map(), d30: new Map(), d90: new Map() });
+        for (const oid of c.orderIds) {
+          const o = await ctx.db.get("waiterOrders", oid);
+          if (!o) continue;
+          for (const l of o.lines) {
+            const id = String(l.productId);
+            r.d90.set(id, (r.d90.get(id) ?? 0) + l.lineTotal);
+            if (c.date >= since30) r.d30.set(id, (r.d30.get(id) ?? 0) + l.lineTotal);
+            if (c.date >= since7) r.d7.set(id, (r.d7.get(id) ?? 0) + l.lineTotal);
+          }
+        }
+      }
       const names = new Map<string, string>();
       const nameOf = async (id: string) => {
         if (!names.has(id)) names.set(id, (await ctx.db.get("products", id as Id<"products">))?.name ?? "-");
@@ -291,7 +318,9 @@ export const rebuild = internalMutation({
       }
     }
     if (full) {
-      for (const d of await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).take(4000)) await ctx.db.delete("statsDaily", d._id);
+      // Delete exactly the rows that are re-inserted below (the rebuilt window). The old code removed the OLDEST 4000 rows, so a business with
+      // many departments kept its newest rows and got every recent day counted twice.
+      for (const d of await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", windowStart)).take(8000)) await ctx.db.delete("statsDaily", d._id);
       for (const d of Object.values(acc.daily)) {
         await ctx.db.insert("statsDaily", { tenantId, branchId: unkey(d.bk), date: d.date, sales: d.sales, purchases: d.purchases, collected: d.collected, invoices: d.invoices });
       }

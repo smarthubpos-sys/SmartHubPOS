@@ -24,7 +24,7 @@ const CAPITAL_SOURCES = new Set(["capital", "owner_capital", "director_capital",
 /** Groups the many journal source types into the few cash-flow headings printed on the report. */
 export function cashSource(sourceType?: string): string {
   const s = sourceType ?? "manual";
-  if (s === "sale" || s === "payment") return "customer_receipts";
+  if (s === "sale" || s === "waiter_sale" || s === "payment") return "customer_receipts";
   if (s === "sale_void" || s === "sale_return") return "customer_refunds";
   if (s === "purchase" || s === "supplier_payment" || s === "purchase_return") return "suppliers";
   if (s === "bill" || s === "bill_payment" || s === "bill_void") return "bills";
@@ -47,7 +47,7 @@ export const accRows = (acc: Acc): Row[] => [...acc.values()].filter((r) => r.a 
 export function entryRows(e: JEntry, acc: Acc = new Map()): Acc {
   const row = (g: string, k: string, label: string, a = 0, b = 0, c = 0) => addRow(acc, { g, k, label, a, b, c });
   row("stat", "entries", "", 1);
-  if (e.sourceType === "sale") row("stat", "invoices", "", 1);
+  if (e.sourceType === "sale" || e.sourceType === "waiter_sale") row("stat", "invoices", "", 1);
   if (e.sourceType === "sale_void") row("stat", "voids", "", 1);
   if (e.sourceType === "sale_return") row("stat", "returns", "", 1);
   let daySales = 0, dayOpex = 0, dayCogs = 0, moneyIn = 0, moneyOut = 0;

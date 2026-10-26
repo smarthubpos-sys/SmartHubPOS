@@ -35,6 +35,16 @@ describe("waiter order QZ printing", () => {
     expect(html).toContain("58mm");
   });
 
+  it("prints logo, title, company, info rows, QTY/ITEM/AMOUNT, total, payment info and footer in the receipt layout", async () => {
+    vi.mocked(printHtmlViaQz).mockResolvedValue(undefined);
+    await printWaiterOrder(order, "Receipt Printer", "80mm", { title: "CUSTOMER'S BILL", companyName: "Rudy's Farm", phone: "0656403636", logoUrl: "data:image/png;base64,AAAA", footer: "The Barbecue Place", paymentInfo: ["Voda: 51068098"], billId: "261022006", openTime: "2026-10-22 13:17:05" });
+    const html = vi.mocked(printHtmlViaQz).mock.calls[0][1] as string;
+    for (const part of ["data:image/png;base64,AAAA", "CUSTOMER&#39;S BILL", "RUDY&#39;S FARM", "TEL : 0656403636", "261022006", "2026-10-22 13:17:05", "IDADI", "BIDHAA", "KIASI", "JUMLA INAYODAIWA", "12,000/=", "Voda: 51068098", "The Barbecue Place"]) expect(html, part).toContain(part);
+    expect(html.indexOf("data:image/png")).toBeLessThan(html.indexOf("CUSTOMER"));
+    expect(html.indexOf("JUMLA INAYODAIWA")).toBeLessThan(html.indexOf("Voda: 51068098"));
+    expect(html.indexOf("Voda: 51068098")).toBeLessThan(html.indexOf("The Barbecue Place"));
+  });
+
   it("reports QZ Tray failures and never reports the order as printed", async () => {
     vi.mocked(printHtmlViaQz).mockRejectedValue(new Error("QZ disconnected"));
     await expect(printWaiterOrder(order, "Receipt Printer")).resolves.toBe(false);

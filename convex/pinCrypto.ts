@@ -37,3 +37,21 @@ export async function verifyStaffPin(pin: string, encoded: string): Promise<bool
     return false;
   }
 }
+
+/** Staff PINs are 4 to 6 digits. */
+export const PIN_PATTERN = /^\d{4,6}$/;
+
+/**
+ * Keyed one-way fingerprint of a PIN (HMAC-SHA-256). Same PIN -> same fingerprint, so the system can find the owner of a PIN
+ * and refuse a PIN that somebody else already uses. The key is PIN_LOOKUP_SECRET, or (when not set) the Convex Auth signing key
+ * that every deployment already has; the fingerprint is never shown to anyone. Changing that key means every PIN must be set again.
+ */
+export async function pinLookupKey(pin: string): Promise<string> {
+  const secret = process.env.PIN_LOOKUP_SECRET || process.env.JWT_PRIVATE_KEY;
+  if (!secret) throw new Error("Seva haina PIN_LOOKUP_SECRET wala JWT_PRIVATE_KEY; wasiliana na msimamizi wa mfumo.");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(`smarthub-staff-pin:${secret}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(pin)));
+  let hex = "";
+  for (const b of sig) hex += b.toString(16).padStart(2, "0");
+  return hex;
+}

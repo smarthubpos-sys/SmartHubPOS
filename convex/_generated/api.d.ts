@@ -47,6 +47,7 @@ import type * as support from "../support.js";
 import type * as surfaceError from "../surfaceError.js";
 import type * as tenants from "../tenants.js";
 import type * as users from "../users.js";
+import type * as waiterCollections from "../waiterCollections.js";
 import type * as waiterDirectory from "../waiterDirectory.js";
 import type * as waiterOrders from "../waiterOrders.js";
 import type * as waiterSettings from "../waiterSettings.js";
@@ -98,6 +99,7 @@ declare const fullApi: ApiFromModules<{
   surfaceError: typeof surfaceError;
   tenants: typeof tenants;
   users: typeof users;
+  waiterCollections: typeof waiterCollections;
   waiterDirectory: typeof waiterDirectory;
   waiterOrders: typeof waiterOrders;
   waiterSettings: typeof waiterSettings;

@@ -606,6 +606,45 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
       }
     }
 
+    // Selling Point (waiter) sales: the cashier received this money from waiters and the stock left the shelf when the order was sent / printed.
+    // They are not invoices, so they are added here to the report rows and the headline totals (never to client balances or receivables).
+    const SP_CLIENT = "selling-point" as unknown as Id<"clients">;
+    let spSales = 0, spCount = 0, spTruncated = false;
+    if (tenantId) {
+      const cols = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => {
+        const b = q.eq("tenantId", tenantId);
+        if (a.startDate && a.endDate) return b.gte("date", a.startDate).lte("date", a.endDate);
+        if (a.startDate) return b.gte("date", a.startDate);
+        if (a.endDate) return b.lte("date", a.endDate);
+        return b;
+      }).take(REG_CAP + 1);
+      spTruncated = cols.length > REG_CAP;
+      for (const c of cols.slice(0, REG_CAP)) {
+        for (const orderId of c.orderIds) {
+          const o = await ctx.db.get("waiterOrders", orderId);
+          if (!o || o.tenantId !== tenantId) continue;
+          if (branchId && o.branchId !== branchId) continue;
+          if (isOwnDataOnly(user) && o.waiterId !== user._id) continue;
+          spSales = money(spSales + o.total); spCount++;
+          if (basic) continue;
+          const no = `SP-${String(o._id).slice(-6).toUpperCase()}`;
+          const who = o.customerName || "Selling Point";
+          invoiceRows.push({ _id: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, subtotal: o.total, discount: 0, taxAmount: 0, total: o.total, amountPaid: o.total, outstanding: 0, paymentStatus: "paid", staff: o.waiterName, source: "Selling Point", notes: o.tableNumber ? `Meza ${o.tableNumber}` : "" });
+          if (!wantLines) continue;
+          const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
+          for (const l of o.lines) {
+            let mq = 0, mc = 0;
+            for (const m of moves) if (m.productId === l.productId) { mq += m.qtyOut - m.qtyIn; mc += (m.qtyOut - m.qtyIn) * (m.unitCost ?? 0); }
+            const p = await getProduct(l.productId);
+            const unitCost = mq > 1e-8 ? mc / mq : (p?.weightedAvgCost ?? p?.lastPurchaseCost ?? 0);
+            const group = await getGroup(p?.groupId); const unit = await getUnit(p?.unitId); const supplier = await getSupplier(p?.lastSupplierId);
+            const net = money(l.lineTotal); const cost = money(l.qty * unitCost);
+            lines.push({ invoiceId: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, staff: o.waiterName, source: "Selling Point", productId: l.productId, itemCode: p?.itemCode ?? "—", productName: p?.name ?? l.productName, groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: l.qty, unitPrice: l.unitPrice, discount: 0, net, cost, profit: money(net - cost) });
+          }
+        }
+      }
+    }
+
     const invNoCache = new Map<string, string>();
     for (const i of [...invoices, ...openInvoicesRaw]) invNoCache.set(String(i._id), i.invoiceNo);
     const payments = [] as Array<{ _id: Id<"customerPayments">; date: string; clientId: Id<"clients">; clientName: string; invoiceNo: string; amount: number; method: string; reference: string; notes: string }>;
@@ -637,8 +676,8 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
       clients: clients.map(c => ({ _id: c._id, code: c.code, name: c.name, phone: c.phone ?? "", email: c.email ?? "", address: c.address ?? "", contactPerson: c.contactPerson ?? "", openingBalance: c.openingBalance, creditLimit: c.creditLimit ?? null, creditPolicy: c.creditPolicy, isActive: c.isActive })),
       invoices: invoiceRows, lines, payments, balances,
       openInvoices: openInvoicesRaw.sort((x, y) => x.invoiceDate.localeCompare(y.invoiceDate)).map(i => ({ _id: i._id, invoiceNo: i.invoiceNo, clientId: i.clientId, clientName: clientName.get(String(i.clientId)) ?? "Mteja", total: i.total, outstanding: i.outstanding, date: i.invoiceDate })),
-      truncated,
-      totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0)), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0)), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), invoices: invoices.length },
+      truncated: truncated || spTruncated,
+      totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0) + spSales), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0) + spSales), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), invoices: invoices.length + spCount },
     };
 }
 
