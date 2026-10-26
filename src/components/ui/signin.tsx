@@ -1,4 +1,4 @@
-﻿import { useState, type FormEvent } from "react";
+﻿import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useConvexAuth } from "convex/react";
 import { useNavigate } from "react-router-dom";
@@ -7,6 +7,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { Input } from "@/components/ui/input.tsx";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { PICK_BUSINESS_FLAG } from "@/lib/business-session.ts";
+import { markActivity, supportsTextMask } from "@/lib/session-security.ts";
 
 
 export function SignInButton() {
@@ -21,6 +22,15 @@ export function SignInButton() {
   const [busy, setBusy] = useState(false);
   const [firstSetup, setFirstSetup] = useState(false); // one-time creation of the initial Super Admin (only the SUPER_ADMIN_USERNAME is accepted by the server)
   const [error, setError] = useState("");
+  // The browser may fill the saved password into the form (autofill, or when the page is restored from the back/forward cache): always start empty.
+  const maskInText = supportsTextMask();
+  useEffect(() => {
+    const wipe = () => { setUsername(""); setPassword(""); setPin(""); };
+    const onShow = (e: PageTransitionEvent) => { if (e.persisted) wipe(); };
+    window.addEventListener("pageshow", onShow);
+    const t = window.setTimeout(wipe, 300); // late autofill by the browser
+    return () => { window.removeEventListener("pageshow", onShow); window.clearTimeout(t); };
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,6 +49,7 @@ export function SignInButton() {
         formData.set("password", password);
         await signIn("password", formData);
       }
+      markActivity(); // starts the idle clock of this session
       try { window.sessionStorage.setItem(PICK_BUSINESS_FLAG, "1"); } catch { /* ignore */ }
       setUsername("");
       setPassword("");
@@ -87,16 +98,26 @@ export function SignInButton() {
   }
 
   return (
-    <form onSubmit={submit} className="grid gap-3">
+    <form onSubmit={submit} autoComplete="off" className="grid gap-3">
       <label className="grid gap-1 text-sm text-blue-100">
         
         {tr("Jina la mtumiaji")}
-        <Input autoComplete="username" required minLength={3} maxLength={32} value={username} onChange={(e) => setUsername(e.target.value)} placeholder={tr("Jina la mtumiaji")} />
+        <Input name="sh-login-id" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" required minLength={3} maxLength={32} value={username} onChange={(e) => setUsername(e.target.value)} placeholder={tr("Jina la mtumiaji")} />
       </label>
       <label className="grid gap-1 text-sm text-blue-100">
         {tr("Nenosiri")}
         <span className="relative block">
-          <Input className="pr-16" type={showPassword ? "text" : "password"} autoComplete={firstSetup ? "new-password" : "current-password"} required minLength={firstSetup ? 10 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={tr("Nenosiri")} />
+          <Input
+            className="pr-16"
+            name="sh-login-secret"
+            // Chrome/Edge/Safari keep passwords only for type="password" fields. A masked text field is never filled or saved by the browser,
+            // so nobody can sign in as the previous user from a remembered password. (Browsers without the mask keep type="password" + new-password.)
+            type={maskInText ? "text" : showPassword ? "text" : "password"}
+            style={maskInText ? ({ WebkitTextSecurity: showPassword ? "none" : "disc" } as CSSProperties) : undefined}
+            autoComplete={maskInText ? "off" : "new-password"}
+            autoCapitalize="none" autoCorrect="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true"
+            required minLength={firstSetup ? 10 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={tr("Nenosiri")}
+          />
           <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute inset-y-0 right-2 flex w-9 items-center justify-center rounded-md text-blue-100 transition hover:bg-white/10" aria-label={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")} title={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")}>
             {showPassword ? <EyeOff size={19} strokeWidth={1.8} /> : <Eye size={19} strokeWidth={1.8} />}
           </button>

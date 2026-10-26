@@ -47,8 +47,11 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     @page{size:${width} auto;margin:3mm}*{box-sizing:border-box}
     body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:100%;overflow-wrap:anywhere;color:#000}
-    .c{text-align:center}p{margin:0 0 3px}.title{font-size:15px;font-weight:800;margin:6px 0 2px}
-    .logo{display:block;margin:0 auto 4px;max-width:60%;max-height:70px;object-fit:contain;filter:grayscale(1)}
+    .c{text-align:center}p{margin:0 0 3px}
+    .title{font-size:15px;font-weight:800;margin:6px 0 2px;padding:3px 0;border-top:1px solid #000;border-bottom:1px solid #000}
+    .head{display:flex;justify-content:space-between;align-items:flex-start;gap:4px}
+    .co{flex:1;min-width:0;text-align:left}.cname{font-size:13px;font-weight:800;line-height:1.2}
+    .logo{flex:none;max-width:${paperWidth === "58mm" ? "28%" : "30%"};max-height:${paperWidth === "58mm" ? "11mm" : paperWidth === "A4" ? "26mm" : "16mm"};object-fit:contain;filter:grayscale(1)}
     hr{border:0;border-top:1px dashed #000;margin:6px 0}
     .row{display:flex;gap:2px}.lab{display:inline-block;min-width:22mm}
     table{width:100%;border-collapse:collapse;table-layout:fixed}
@@ -58,11 +61,15 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
     .total{display:flex;justify-content:space-between;font-weight:800;font-size:14px;margin:2px 0}
     .sign{display:flex;gap:2px;margin:10px 0 2px}.line{flex:1;border-bottom:1px solid #000}
   </style></head><body>
-    ${branding.logoUrl ? `<img class="logo" alt="" src="${escapeHtml(branding.logoUrl)}">` : ""}
+    <div class="head">
+      <div class="co">
+        ${company ? `<p class="cname">${escapeHtml(company.toUpperCase())}</p>` : ""}
+        ${branding.address ? `<p>${escapeHtml(branding.address)}</p>` : ""}
+        ${branding.phone ? `<p>TEL : ${escapeHtml(branding.phone)}</p>` : ""}
+      </div>
+      ${branding.logoUrl ? `<img class="logo" alt="" src="${escapeHtml(branding.logoUrl)}">` : ""}
+    </div>
     <p class="c title">${escapeHtml(branding.title || tr("ODA"))}</p>
-    ${company ? `<p class="c">${escapeHtml(company.toUpperCase())}</p>` : ""}
-    ${branding.address ? `<p class="c">${escapeHtml(branding.address)}</p>` : ""}
-    ${branding.phone ? `<p class="c">TEL : ${escapeHtml(branding.phone)}</p>` : ""}
     <hr>
     ${info(tr("Muda wa kufungua"), branding.openTime)}
     ${info(tr("Muda wa kuchapa"), stamp(new Date()))}

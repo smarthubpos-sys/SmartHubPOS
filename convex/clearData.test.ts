@@ -5,6 +5,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import type { TestConvex } from "convex-test";
 import { modules } from "./tes.setup";
+import { CLEAR_CATEGORIES } from "./maintenance";
 
 async function setup() {
   const t = convexTest(schema, modules);
@@ -39,7 +40,7 @@ async function runCategory(t: TestConvex<typeof schema>, actorId: Id<"users">, t
 describe("Maintenance > Clear Data File", () => {
   it("clears sales invoices (with lines and payments) of the chosen business only", async () => {
     const { t, tenantA, tenantB, superId } = await setup();
-    await runCategory(t, superId, tenantA, "invoices", 3);
+    await runCategory(t, superId, tenantA, "invoices", CLEAR_CATEGORIES.invoices.steps.length);
     const left = await t.run(async (ctx) => ({
       invoices: await ctx.db.query("invoices").collect(),
       lines: await ctx.db.query("invoiceLines").collect(),
@@ -73,5 +74,42 @@ describe("Maintenance > Clear Data File", () => {
     const mg = await t.withIdentity({ subject: mgrId, tokenIdentifier: "x|2" }).query(api.maintenance.clearDataOverview, {});
     expect(sa.isSuperAdmin && sa.categories.map((c) => c.key)).toEqual(expect.arrayContaining(["invoices", "purchases", "suppliers", "stock", "transactions"]));
     expect(mg.isSuperAdmin).toBe(false);
+  });
+});
+
+describe("Clear Data File > Sales Invoices also clears Selling Point sales and the dashboard numbers", () => {
+  it("removes waiter orders, waiter collections and customer bills of the chosen business only, and empties its dashboard roll-ups", async () => {
+    const { t, tenantA, tenantB, superId, a, b } = await setup();
+    const seeded = await t.run(async (ctx) => {
+      const now = new Date().toISOString();
+      const mk = async (tenantId: typeof tenantA, productId: typeof a.productId, clientId: typeof a.clientId, invoiceId: typeof a.invoiceId) => {
+        const orderId = await ctx.db.insert("waiterOrders", { tenantId, customerName: "Walk-in", waiterId: superId, waiterName: "Super", status: "pending", lines: [{ productId, productName: "P", qty: 1, unitPrice: 100, lineTotal: 100 }], total: 100, createdAt: now, updatedAt: now });
+        await ctx.db.insert("waiterCollections", { tenantId, staffId: superId, staffName: "Super", cashierId: superId, cashierName: "Super", date: "2026-10-26", total: 100, splits: [{ method: "cash", amount: 100 }], orderIds: [orderId], createdAt: now });
+        await ctx.db.insert("customerBills", { tenantId, clientId, invoiceIds: [invoiceId], status: "issued", createdBy: superId, createdAt: now });
+        await ctx.db.insert("statsDaily", { tenantId, date: "2026-10-26", sales: 200, purchases: 0, collected: 110, invoices: 2 });
+        await ctx.db.insert("statsDaily", { tenantId, date: "2020-01-01", sales: 999, purchases: 0, collected: 0, invoices: 1 }); // older than the rebuilt window
+        await ctx.db.insert("statsTotals", { tenantId, receivable: 90, payable: 5, productCount: 1, lowStock: 0, outOfStock: 0, inventoryValue: 0, billsDue: 3, topD7: [{ name: "P", total: 100 }], topD30: [], topD90: [], refreshedAt: Date.now() });
+      };
+      await mk(tenantA, a.productId, a.clientId, a.invoiceId);
+      await mk(tenantB, b.productId, b.clientId, b.invoiceId);
+    });
+    void seeded;
+    await runCategory(t, superId, tenantA, "invoices", CLEAR_CATEGORIES.invoices.steps.length);
+    await t.mutation(internal.maintenance.finishClear, { actorId: superId, tenantId: tenantA, categories: ["invoices"], counts: "test" });
+    const left = await t.run(async (ctx) => ({
+      orders: await ctx.db.query("waiterOrders").collect(),
+      collections: await ctx.db.query("waiterCollections").collect(),
+      bills: await ctx.db.query("customerBills").collect(),
+      daily: await ctx.db.query("statsDaily").collect(),
+      totals: await ctx.db.query("statsTotals").collect(),
+    }));
+    expect(left.orders.map((o) => o.tenantId)).toEqual([tenantB]);
+    expect(left.collections.map((o) => o.tenantId)).toEqual([tenantB]);
+    expect(left.bills.map((o) => o.tenantId)).toEqual([tenantB]);
+    expect(left.daily.filter((d) => d.tenantId === tenantA)).toHaveLength(0); // every day, including those outside the rebuilt window
+    expect(left.daily.filter((d) => d.tenantId === tenantB)).toHaveLength(2);
+    const totalsA = left.totals.find((x) => x.tenantId === tenantA);
+    expect(totalsA && [totalsA.receivable, totalsA.payable, totalsA.billsDue, totalsA.topD7.length]).toEqual([0, 0, 0, 0]);
+    expect(left.totals.find((x) => x.tenantId === tenantB)?.receivable).toBe(90);
   });
 });

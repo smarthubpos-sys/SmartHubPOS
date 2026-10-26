@@ -43,7 +43,7 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
 export function TextField(p: { label: string; value: string | number | undefined; onChange: (v: string) => void; type?: string; hint?: string; placeholder?: string; disabled?: boolean }) {
   return (
     <Field label={p.label} hint={p.hint}>
-      <Input type={p.type ?? "text"} step={p.type === "number" ? "any" : undefined} value={p.value ?? ""} placeholder={p.placeholder} disabled={p.disabled} onChange={(e) => p.onChange(e.target.value)} />
+      <Input type={p.type ?? "text"} autoComplete={p.type === "password" ? "new-password" : undefined} step={p.type === "number" ? "any" : undefined} value={p.value ?? ""} placeholder={p.placeholder} disabled={p.disabled} onChange={(e) => p.onChange(e.target.value)} />
     </Field>
   );
 }

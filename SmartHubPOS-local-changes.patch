@@ -1,0 +1,1989 @@
+diff --git a/convex/_generated/api.d.ts b/convex/_generated/api.d.ts
+index 41f9c4d..5fad632 100644
+--- a/convex/_generated/api.d.ts
++++ b/convex/_generated/api.d.ts
+@@ -47,6 +47,7 @@ import type * as support from "../support.js";
+ import type * as surfaceError from "../surfaceError.js";
+ import type * as tenants from "../tenants.js";
+ import type * as users from "../users.js";
++import type * as waiterCollections from "../waiterCollections.js";
+ import type * as waiterDirectory from "../waiterDirectory.js";
+ import type * as waiterOrders from "../waiterOrders.js";
+ import type * as waiterSettings from "../waiterSettings.js";
+@@ -98,6 +99,7 @@ declare const fullApi: ApiFromModules<{
+   surfaceError: typeof surfaceError;
+   tenants: typeof tenants;
+   users: typeof users;
++  waiterCollections: typeof waiterCollections;
+   waiterDirectory: typeof waiterDirectory;
+   waiterOrders: typeof waiterOrders;
+   waiterSettings: typeof waiterSettings;
+diff --git a/convex/auth.ts b/convex/auth.ts
+index 3367520..3d63c9d 100644
+--- a/convex/auth.ts
++++ b/convex/auth.ts
+@@ -2,7 +2,8 @@ import { convexAuth } from "@convex-dev/auth/server";
+ import { Password } from "@convex-dev/auth/providers/Password";
+ import { ConvexCredentials } from "@convex-dev/auth/providers/ConvexCredentials";
+ import { internal } from "./_generated/api";
+-import { verifyStaffPin } from "./pinCrypto";
++import type { Id } from "./_generated/dataModel";
++import { PIN_PATTERN, pinLookupKey, verifyStaffPin } from "./pinCrypto";
+ 
+ /**
+  * Username/password sign-in implemented on Convex Auth.
+@@ -30,19 +31,29 @@ export const {
+   providers: [
+     ConvexCredentials({
+       id: "staffPin",
++      // PIN only: the PIN is the whole credential and it identifies the person. A PIN belongs to exactly one person system-wide;
++      // if a PIN ever matched two people (old data) nobody signs in with it until an administrator gives one of them a new PIN.
+       authorize: async (credentials, ctx) => {
+-        const username = String(credentials.username ?? "").trim().toLowerCase();
+         const pin = String(credentials.pin ?? "");
+-        if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username) || !/^\d{4}$/.test(pin)) return null;
+-        const record = await ctx.runQuery(internal.maintenance.staffPinRecord, { username });
+-        if (!record || record.isActive !== true || record.pinLoginEnabled !== true || !record.pinHash) return null;
++        if (!PIN_PATTERN.test(pin)) return null;
+         const now = Date.now();
+-        if ((record.pinLockedUntil ?? 0) > now) return null;
+-        const valid = await verifyStaffPin(pin, record.pinHash);
+-        const accepted = await ctx.runMutation(internal.maintenance.recordStaffPinAttempt, {
+-          userId: record.userId, expectedPinHash: record.pinHash, success: valid, now,
+-        });
+-        return accepted ? { userId: record.userId } : null;
++        const state = await ctx.runQuery(internal.maintenance.pinLoginState, { now });
++        if (state.locked) return null; // too many wrong PINs system-wide: PIN sign-in is paused for a few minutes (password sign-in still works)
++        const lookup = await pinLookupKey(pin);
++        let matched: Id<"users"> | null = null;
++        const owners = await ctx.runQuery(internal.maintenance.findPinOwners, { lookup });
++        if (owners.length === 1) {
++          const [owner] = owners;
++          if (!owner.pinHash || await verifyStaffPin(pin, owner.pinHash)) matched = owner.userId;
++        } else if (owners.length === 0) {
++          const legacy = await ctx.runQuery(internal.maintenance.legacyPinUsers, {});
++          const hits: Id<"users">[] = [];
++          for (const candidate of legacy.users) if (await verifyStaffPin(pin, candidate.pinHash)) hits.push(candidate.userId);
++          if (hits.length === 1) matched = hits[0];
++          else if (legacy.done) await ctx.runMutation(internal.maintenance.markLegacyPinsDone, {});
++        }
++        const accepted = await ctx.runMutation(internal.maintenance.recordPinLogin, { userId: matched ?? undefined, success: matched !== null, now, upgradeLookup: matched ? lookup : undefined });
++        return accepted && matched ? { userId: matched } : null;
+       },
+     }),
+     Password({
+diff --git a/convex/customerBills.ts b/convex/customerBills.ts
+index 7e728f0..f1aa248 100644
+--- a/convex/customerBills.ts
++++ b/convex/customerBills.ts
+@@ -223,7 +223,7 @@ export const billData = query({
+     const savedAt = invoices.length ? new Date(Math.min(...invoices.map((x) => x._creationTime))).toISOString() : null;
+     const sum = (k: "subtotal" | "discount" | "taxAmount" | "total" | "amountPaid" | "outstanding") => money(out.reduce((n, i) => n + i[k], 0));
+     return {
+-      company: { name: company?.companyName ?? "", address: company?.address ?? "", phone: company?.phone ?? "", email: company?.email ?? "", taxId: company?.taxId ?? "", currencySymbol: company?.currencySymbol ?? "TSh", decimalPlaces: company?.decimalPlaces ?? 0 },
++      company: { name: company?.companyName ?? "", address: company?.address ?? "", phone: company?.phone ?? "", email: company?.email ?? "", taxId: company?.taxId ?? "", logoUrl: company?.logoUrl ?? "", currencySymbol: company?.currencySymbol ?? "TSh", decimalPlaces: company?.decimalPlaces ?? 0 },
+       receiptFooter,
+       paymentInfo,
+       department,
+diff --git a/convex/dashboard.ts b/convex/dashboard.ts
+index 36c0578..21429e7 100644
+--- a/convex/dashboard.ts
++++ b/convex/dashboard.ts
+@@ -40,7 +40,7 @@ export const getMetrics = query({
+   handler: async (ctx, args) => {
+     const user = await requireActiveUser(ctx, "dashboard");
+     await forbidPersonalOnly(ctx, user);
+-    const empty = { ready: false, todaySales: 0, todayCash: 0, todayPurchaseTotal: 0, totalOutstandingCustomer: 0, totalOutstandingSupplier: 0, lowStockItems: 0, outOfStockItems: 0, inventoryValue: 0, recentInvoices: [] as Doc<"invoices">[], recentPurchases: [] as Doc<"purchases">[], totalProducts: 0 };
++    const empty = { ready: false, todaySales: 0, todayCash: 0, todayPurchaseTotal: 0, totalOutstandingCustomer: 0, totalOutstandingSupplier: 0, lowStockItems: 0, outOfStockItems: 0, inventoryValue: 0, waiterOwing: 0, waiterOwingOrders: 0, recentInvoices: [] as Doc<"invoices">[], recentPurchases: [] as Doc<"purchases">[], totalProducts: 0 };
+     const tenantId = user.tenantId;
+     if (!tenantId) return empty;
+ 
+@@ -49,12 +49,16 @@ export const getMetrics = query({
+       .filter((d) => !user.branchId || d.branchId === user.branchId);
+ 
+     const recentInvoices = user.branchId
+-      ? await ctx.db.query("invoices").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(5)
+-      : await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(5);
++      ? await ctx.db.query("invoices").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(25)
++      : await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(25);
+     const recentPurchases = user.branchId
+-      ? await ctx.db.query("purchases").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(5)
+-      : await ctx.db.query("purchases").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(5);
++      ? await ctx.db.query("purchases").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(25)
++      : await ctx.db.query("purchases").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(25);
+ 
++    // Selling Point orders sent/printed but not yet paid to the cashier: not sales yet, shown separately so nothing looks missing.
++    const open = (await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId)).collect())
++      .filter((o) => (!user.branchId || o.branchId === user.branchId) && !o.settledAt && (o.status === "pending" || o.status === "accepted" || o.status === "printed"));
++    const posted = <T extends { status?: string }>(rows: T[]) => rows.filter((r) => r.status === undefined || r.status === "posted").slice(0, 5);
+     return {
+       ready: totals.length > 0,
+       todaySales: sum(days, "sales"),
+@@ -65,9 +69,11 @@ export const getMetrics = query({
+       lowStockItems: sum(totals, "lowStock"),
+       outOfStockItems: sum(totals, "outOfStock"),
+       inventoryValue: sum(totals, "inventoryValue"),
+-      recentInvoices,
+-      recentPurchases,
++      recentInvoices: posted(recentInvoices),
++      recentPurchases: posted(recentPurchases),
+       totalProducts: sum(totals, "productCount"),
++      waiterOwing: round2(open.reduce((s, o) => s + o.total, 0)),
++      waiterOwingOrders: open.length,
+     };
+   },
+ });
+diff --git a/convex/inventory.ts b/convex/inventory.ts
+index 6d35e1f..8f30cf3 100644
+--- a/convex/inventory.ts
++++ b/convex/inventory.ts
+@@ -73,6 +73,7 @@ export const stockRegisters = query({
+         else if (m.referenceType === "purchase") { const id = ctx.db.normalizeId("purchases", m.referenceId ?? ""); const d = id ? await ctx.db.get("purchases", id) : null; label = d?.invoiceNo ? `Purchase #${d.invoiceNo}` : d?.internalRef ?? label; }
+         else if (m.referenceType === "goodsReceivedNote" || m.referenceType === "purchaseReturn") label = m.notes ?? label;
+         else if (m.referenceType === "stockAdjustment") label = m.notes ?? "Adjustment";
++        else if (m.referenceType === "waiterOrder") { const id = ctx.db.normalizeId("waiterOrders", m.referenceId ?? ""); const d = id ? await ctx.db.get("waiterOrders", id) : null; label = d ? `Selling Point${d.tableNumber ? ` meza ${d.tableNumber}` : ""} - ${d.waiterName}` : label || "Selling Point"; }
+       } catch { /* keep fallback label */ }
+       refCache.set(key, label); return label;
+     };
+@@ -112,6 +113,33 @@ export const stockRegisters = query({
+         earn.set(String(l.productId), e);
+       }
+     }
++    // Selling Point (waiter) sales: their stock left the shelf when the waiter sent / printed the order; the sale counts on the day the cashier received the money.
++    if (user.tenantId) {
++      const tenantId = user.tenantId;
++      const collections = filterScoped(user, await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => {
++        const b = q.eq("tenantId", tenantId);
++        if (a.startDate && a.endDate) return b.gte("date", a.startDate).lte("date", a.endDate);
++        if (a.startDate) return b.gte("date", a.startDate);
++        if (a.endDate) return b.lte("date", a.endDate);
++        return b;
++      }).collect());
++      for (const c of collections) {
++        for (const orderId of c.orderIds) {
++          const o = await ctx.db.get("waiterOrders", orderId); if (!o) continue;
++          const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
++          const unitCostOf = (productId: string) => {
++            let qty = 0, cost = 0;
++            for (const m of moves) if (String(m.productId) === productId) { qty += m.qtyOut - m.qtyIn; cost += (m.qtyOut - m.qtyIn) * (m.unitCost ?? 0); }
++            return qty > 1e-8 ? cost / qty : costOf(pById.get(productId));
++          };
++          for (const l of o.lines) {
++            const e = earn.get(String(l.productId)) ?? { qty: 0, sales: 0, cost: 0, invoices: new Set<string>() };
++            e.qty += l.qty; e.sales += l.lineTotal; e.cost += l.qty * unitCostOf(String(l.productId)); e.invoices.add(String(o._id));
++            earn.set(String(l.productId), e);
++          }
++        }
++      }
++    }
+     const earnings = [...earn.entries()].map(([id, e]) => {
+       const p = pById.get(id); const profit = e.sales - e.cost;
+       return { productId: id, itemCode: p?.itemCode ?? "—", productName: p?.name ?? "Bidhaa iliyofutwa", qtySold: round8(e.qty), invoices: e.invoices.size, sales: round2(e.sales), cost: round2(e.cost), profit: round2(profit), marginPct: e.sales > 0 ? round2((profit / e.sales) * 100) : 0 };
+diff --git a/convex/maintenance.ts b/convex/maintenance.ts
+index a7c4093..f4d1504 100644
+--- a/convex/maintenance.ts
++++ b/convex/maintenance.ts
+@@ -3,7 +3,7 @@ import type { QueryCtx } from "./_generated/server";
+ import type { Id } from "./_generated/dataModel";
+ import { internal } from "./_generated/api";
+ import { v } from "convex/values";
+-import { hashStaffPin } from "./pinCrypto";
++import { hashStaffPin, PIN_PATTERN, pinLookupKey } from "./pinCrypto";
+ import { surfaceError } from "./surfaceError";
+ import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
+ import {
+@@ -63,6 +63,14 @@ export const getSettings = query({
+     const scope = await resolveWriteScope(ctx, user, { tenantWide: true }).catch(() => ({} as Awaited<ReturnType<typeof resolveWriteScope>>));
+     const company = (await scopedRows(ctx, user, "companySettings"))[0] ?? null;
+     const app = await readSettingsMap(ctx, scope);
++    // Printer setup belongs to the till, not to one department. If this user's own scope has none (saved by the Super Admin under
++    // another department, or business-wide), fall back to the business-wide one, then to the newest one saved anywhere in the business.
++    if (scope.tenantId && app.hardware === undefined) {
++      const tenantId = scope.tenantId;
++      const rows = (await ctx.db.query("appSettings").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect()).filter((r) => r.key === "hardware");
++      const pick = rows.find((r) => r.branchId === undefined) ?? rows.sort((a, b) => b._creationTime - a._creationTime)[0];
++      if (pick) { try { app.hardware = JSON.parse(pick.value); } catch { /* ignore corrupt value */ } }
++    }
+     const canEdit: Record<string, boolean> = {};
+     for (const key of [...Object.values(SETTING_KEYS), "maintenance.company"]) canEdit[key] = await roleHasPermission(ctx, user, key);
+     return { company, app, canEdit, hasOffice: !!scope.tenantId };
+@@ -318,30 +326,84 @@ export const listUsers = query({
+   },
+ });
+ 
+-export const staffPinRecord = internalQuery({
+-  args: { username: v.string() },
++/** PIN-only sign-in. The PIN itself identifies the person; failures are counted for the whole system (not per user). */
++const PIN_GUARD_KEY = "pin-login";
++const PIN_WINDOW_MS = 10 * 60 * 1000; // failures are counted inside this window
++const PIN_MAX_FAILURES = 30; // this many wrong PINs in the window pause PIN sign-in for everybody
++const PIN_PAUSE_MS = 5 * 60 * 1000; // password sign-in is never paused
++
++export const pinLoginState = internalQuery({
++  args: { now: v.number() },
+   handler: async (ctx, a) => {
+-    const user = await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", a.username)).first();
+-    if (!user || user.tokenIdentifier !== undefined) return null;
+-    return { userId: user._id, pinHash: user.pinHash, pinLoginEnabled: user.pinLoginEnabled === true, isActive: user.isActive !== false, pinFailedAttempts: user.pinFailedAttempts ?? 0, pinLockedUntil: user.pinLockedUntil };
++    const guard = await ctx.db.query("pinLoginGuard").withIndex("by_key", (q) => q.eq("key", PIN_GUARD_KEY)).first();
++    return { locked: (guard?.lockedUntil ?? 0) > a.now };
+   },
+ });
+ 
+-export const recordStaffPinAttempt = internalMutation({
+-  args: { userId: v.id("users"), expectedPinHash: v.string(), success: v.boolean(), now: v.number() },
++/** Everybody (active) who owns this PIN fingerprint. More than one = ambiguous = nobody signs in with it. */
++export const findPinOwners = internalQuery({
++  args: { lookup: v.string() },
+   handler: async (ctx, a) => {
+-    const user = await ctx.db.get("users", a.userId);
+-    if (!user || user.tokenIdentifier !== undefined || user.isActive === false || user.pinLoginEnabled !== true || user.pinHash !== a.expectedPinHash || (user.pinLockedUntil ?? 0) > a.now) return false;
+-    if (a.success) {
+-      await ctx.db.patch("users", user._id, { pinFailedAttempts: 0, pinLockedUntil: undefined, lastLogin: new Date(a.now).toISOString() });
++    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", a.lookup)).take(5);
++    return rows
++      .filter((u) => u.tokenIdentifier === undefined && u.isActive !== false && u.pinLoginEnabled === true)
++      .map((u) => ({ userId: u._id, pinHash: u.pinHash }));
++  },
++});
++
++/** PINs saved before PIN-only sign-in existed have no fingerprint yet; they are matched once and then upgraded. Skipped for good when none are left. */
++export const legacyPinUsers = internalQuery({
++  args: {},
++  handler: async (ctx) => {
++    const done = await ctx.db.query("pinLoginGuard").withIndex("by_key", (q) => q.eq("key", "legacy-done")).first();
++    if (done) return { done: true as const, users: [] as Array<{ userId: Id<"users">; pinHash: string }> };
++    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", undefined)).take(3000);
++    const legacy = rows.filter((u) => u.tokenIdentifier === undefined && !!u.pinHash && u.pinLoginEnabled === true && u.isActive !== false);
++    return { done: legacy.length === 0, users: legacy.slice(0, 12).map((u) => ({ userId: u._id, pinHash: u.pinHash! })) };
++  },
++});
++
++export const markLegacyPinsDone = internalMutation({
++  args: {},
++  handler: async (ctx) => {
++    const done = await ctx.db.query("pinLoginGuard").withIndex("by_key", (q) => q.eq("key", "legacy-done")).first();
++    if (!done) await ctx.db.insert("pinLoginGuard", { key: "legacy-done", failures: 0, windowStart: 0 });
++  },
++});
++
++export const recordPinLogin = internalMutation({
++  args: { userId: v.optional(v.id("users")), success: v.boolean(), now: v.number(), upgradeLookup: v.optional(v.string()) },
++  handler: async (ctx, a) => {
++    const guard = await ctx.db.query("pinLoginGuard").withIndex("by_key", (q) => q.eq("key", PIN_GUARD_KEY)).first();
++    if (a.success && a.userId) {
++      const user = await ctx.db.get("users", a.userId);
++      if (!user || user.tokenIdentifier !== undefined || user.isActive === false || user.pinLoginEnabled !== true) return false;
++      await ctx.db.patch("users", user._id, { lastLogin: new Date(a.now).toISOString(), ...(a.upgradeLookup && !user.pinLookup ? { pinLookup: a.upgradeLookup } : {}) });
++      if (guard && guard.failures > 0) await ctx.db.patch("pinLoginGuard", guard._id, { failures: 0, windowStart: a.now });
+       return true;
+     }
+-    const attempts = (user.pinFailedAttempts ?? 0) + 1;
+-    await ctx.db.patch("users", user._id, { pinFailedAttempts: attempts, pinLockedUntil: attempts >= 5 ? a.now + 10 * 60 * 1000 : undefined });
++    if (!guard) { await ctx.db.insert("pinLoginGuard", { key: PIN_GUARD_KEY, failures: 1, windowStart: a.now }); return false; }
++    const fresh = a.now - guard.windowStart > PIN_WINDOW_MS;
++    const failures = (fresh ? 0 : guard.failures) + 1;
++    await ctx.db.patch("pinLoginGuard", guard._id, failures >= PIN_MAX_FAILURES
++      ? { failures: 0, windowStart: a.now, lockedUntil: a.now + PIN_PAUSE_MS }
++      : { failures, windowStart: fresh ? a.now : guard.windowStart });
+     return false;
+   },
+ });
+ 
++/** Used before a PIN is saved: is it already somebody else's? (never says whose) */
++export const assertPinFree = internalQuery({
++  args: { lookup: v.string(), exceptUserId: v.optional(v.id("users")) },
++  handler: async (ctx, a) => {
++    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", a.lookup)).take(5);
++    if (rows.some((u) => u.tokenIdentifier === undefined && u.isActive !== false && (!a.exceptUserId || u._id !== a.exceptUserId))) {
++      throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye mfumo. Chagua PIN nyingine.");
++    }
++    return true;
++  },
++});
++
+ export const listOffices = query({
+   args: {},
+   handler: async (ctx) => {
+@@ -495,6 +557,10 @@ export const updateUser = mutation({
+     if (a.role !== undefined) patch.role = normalizeRole(a.role);
+     if (a.tenantId !== undefined) patch.tenantId = a.tenantId;
+     if (deptTouched) { patch.branchId = next.branchId; patch.branchIds = next.branchIds; patch.allDepartments = next.allDepartments; patch.branchPicked = next.branchPicked; }
++    if (a.isActive === true && target.isActive === false && target.pinLookup) {
++      const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", target.pinLookup)).take(5);
++      if (owners.some((u) => u._id !== target._id && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN ya mtumiaji huyu sasa inatumiwa na mtu mwingine. Mwekee PIN mpya kabla ya kumwasha.");
++    }
+     if (a.isActive !== undefined) patch.isActive = a.isActive;
+     if (a.requirePasswordChange !== undefined) patch.requirePasswordChange = a.requirePasswordChange;
+     if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined || a.extraPermissions !== undefined) {
+@@ -537,13 +603,20 @@ export const setStaffCode = mutation({
+ });
+ 
+ export const saveStaffPin = internalMutation({
+-  args: { userId: v.id("users"), actorId: v.id("users"), pinHash: v.optional(v.string()), enabled: v.boolean() },
++  args: { userId: v.id("users"), actorId: v.id("users"), pinHash: v.optional(v.string()), pinLookup: v.optional(v.string()), enabled: v.boolean() },
+   handler: async (ctx, a) => {
+     const target = await ctx.db.get("users", a.userId);
+     if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
+-    if (a.enabled && !(a.pinHash ?? target.pinHash)) throw new Error("Weka PIN ya tarakimu 4 kabla ya kuwasha Staff PIN.");
++    if (a.enabled && !(a.pinHash ?? target.pinHash)) throw new Error("Weka PIN ya tarakimu 4 hadi 6 kabla ya kuwasha Staff PIN.");
++    // One PIN = one person, across the whole system (the PIN is the only thing typed at sign-in).
++    const lookup = a.pinLookup ?? target.pinLookup;
++    if (lookup) {
++      const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", lookup)).take(5);
++      if (owners.some((u) => u._id !== target._id && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye mfumo. Chagua PIN nyingine.");
++    }
+     await ctx.db.patch("users", a.userId, {
+       ...(a.pinHash ? { pinHash: a.pinHash } : {}),
++      ...(a.pinLookup ? { pinLookup: a.pinLookup } : {}),
+       pinLoginEnabled: a.enabled,
+       pinFailedAttempts: 0,
+       pinLockedUntil: undefined,
+@@ -557,10 +630,12 @@ export const saveStaffPin = internalMutation({
+ export const setStaffPin = action({
+   args: { userId: v.id("users"), pin: v.optional(v.string()), enabled: v.boolean() },
+   handler: async (ctx, a) => {
+-    if (a.pin !== undefined && !/^\d{4}$/.test(a.pin)) throw new Error("PIN lazima iwe tarakimu 4.");
++    if (a.pin !== undefined && !PIN_PATTERN.test(a.pin)) throw new Error("PIN lazima iwe tarakimu 4 hadi 6.");
+     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { targetUserId: a.userId });
+     const pinHash = a.pin === undefined ? undefined : await hashStaffPin(a.pin);
+-    await ctx.runMutation(internal.maintenance.saveStaffPin, { userId: a.userId, actorId: auth.actorId, pinHash, enabled: a.enabled });
++    const pinLookup = a.pin === undefined ? undefined : await pinLookupKey(a.pin);
++    if (pinLookup) await ctx.runQuery(internal.maintenance.assertPinFree, { lookup: pinLookup, exceptUserId: a.userId });
++    await ctx.runMutation(internal.maintenance.saveStaffPin, { userId: a.userId, actorId: auth.actorId, pinHash, pinLookup, enabled: a.enabled });
+     return true;
+   },
+ });
+@@ -629,16 +704,26 @@ export const logUserEvent = internalMutation({
+ 
+ export const createUser = action({
+   args: {
+-    name: v.string(), username: v.string(), password: v.string(), role: v.string(),
++    name: v.string(), username: v.string(), password: v.optional(v.string()), role: v.string(),
+     tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
+     branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()),
+     menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())),
++    // Staff who sign in with a PIN only (waiter / waitress): the PIN is saved together with the account, after the system checked nobody else has it.
++    pin: v.optional(v.string()), pinLoginEnabled: v.optional(v.boolean()),
+   },
+   handler: async (ctx, a): Promise<string> => {
+     const username = a.username.trim().toLowerCase();
+     if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3–32, bila nafasi.");
+     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { role: a.role, tenantId: a.tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, extraPermissions: a.extraPermissions });
+-    if (a.password.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
++    const pinOnlyRole = ["waiter", "waitress"].includes(normalizeRole(a.role));
++    if (a.pin !== undefined && a.pin !== "" && !PIN_PATTERN.test(a.pin)) throw new Error("PIN lazima iwe tarakimu 4 hadi 6.");
++    if (pinOnlyRole && !a.pin) throw new Error("Mhudumu husajiliwa kwa PIN: weka PIN ya tarakimu 4 hadi 6.");
++    const newPin = a.pin ? a.pin : undefined;
++    const newPinLookup = newPin ? await pinLookupKey(newPin) : undefined;
++    if (newPinLookup) await ctx.runQuery(internal.maintenance.assertPinFree, { lookup: newPinLookup }); // refuse BEFORE any account is created
++    // A PIN-only person has no password to remember: the account gets a long random one nobody knows (an administrator can still reset it).
++    const password = pinOnlyRole && !a.password ? `${crypto.randomUUID()}${crypto.randomUUID()}` : (a.password ?? "");
++    if (!pinOnlyRole && password.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
+     const tenantId = a.tenantId ?? auth.actorTenantId;
+     if (!["super_admin", "superadmin"].includes(normalizeRole(a.role)) && !tenantId) throw new Error("Chagua ofisi kwa mtumiaji huyu.");
+     const email = `${username}@${LOGIN_DOMAIN}`;
+@@ -651,13 +736,13 @@ export const createUser = action({
+     let userId: Id<"users">;
+     if (status.orphanId) {
+       // An earlier attempt created the login but never finished: complete it with the new password instead of failing forever.
+-      try { await modifyAccountCredentials(ctx, { provider: "password", account: { id: email, secret: a.password } }); }
++      try { await modifyAccountCredentials(ctx, { provider: "password", account: { id: email, secret: password } }); }
+       catch (e) { const err = new Error(`Username "${username}" imeshatumika bila kukamilika. Tumia jina lingine. Sababu: ${String((e as Error)?.message ?? e)}`) as Error & { cause?: unknown }; err.cause = e; throw err; }
+       userId = status.orphanId;
+     } else {
+       try {
+         const { user } = await createAccount(ctx, {
+-          provider: "password", account: { id: email, secret: a.password },
++          provider: "password", account: { id: email, secret: password },
+           profile: { email, name: a.name.trim() || username, username },
+         });
+         userId = user._id;
+@@ -668,8 +753,11 @@ export const createUser = action({
+     }
+     await ctx.runMutation(internal.maintenance.finishUserSetup, {
+       userId, actorId: auth.actorId, name: a.name.trim() || username, username, role: a.role,
+-      tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, requirePasswordChange: auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly, extraPermissions: a.extraPermissions,
++      tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, requirePasswordChange: pinOnlyRole ? false : auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly, extraPermissions: a.extraPermissions,
+     });
++    if (newPin && newPinLookup) {
++      await ctx.runMutation(internal.maintenance.saveStaffPin, { userId, actorId: auth.actorId, pinHash: await hashStaffPin(newPin), pinLookup: newPinLookup, enabled: a.pinLoginEnabled ?? true });
++    }
+     return String(userId);
+   },
+ });
+diff --git a/convex/pinCrypto.ts b/convex/pinCrypto.ts
+index 3a99855..fdcfbc4 100644
+--- a/convex/pinCrypto.ts
++++ b/convex/pinCrypto.ts
+@@ -37,3 +37,21 @@ export async function verifyStaffPin(pin: string, encoded: string): Promise<bool
+     return false;
+   }
+ }
++
++/** Staff PINs are 4 to 6 digits. */
++export const PIN_PATTERN = /^\d{4,6}$/;
++
++/**
++ * Keyed one-way fingerprint of a PIN (HMAC-SHA-256). Same PIN -> same fingerprint, so the system can find the owner of a PIN
++ * and refuse a PIN that somebody else already uses. The key is PIN_LOOKUP_SECRET, or (when not set) the Convex Auth signing key
++ * that every deployment already has; the fingerprint is never shown to anyone. Changing that key means every PIN must be set again.
++ */
++export async function pinLookupKey(pin: string): Promise<string> {
++  const secret = process.env.PIN_LOOKUP_SECRET || process.env.JWT_PRIVATE_KEY;
++  if (!secret) throw new Error("Seva haina PIN_LOOKUP_SECRET wala JWT_PRIVATE_KEY; wasiliana na msimamizi wa mfumo.");
++  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(`smarthub-staff-pin:${secret}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
++  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(pin)));
++  let hex = "";
++  for (const b of sig) hex += b.toString(16).padStart(2, "0");
++  return hex;
++}
+diff --git a/convex/reportCore.ts b/convex/reportCore.ts
+index 8394a4e..59b8c7d 100644
+--- a/convex/reportCore.ts
++++ b/convex/reportCore.ts
+@@ -24,7 +24,7 @@ const CAPITAL_SOURCES = new Set(["capital", "owner_capital", "director_capital",
+ /** Groups the many journal source types into the few cash-flow headings printed on the report. */
+ export function cashSource(sourceType?: string): string {
+   const s = sourceType ?? "manual";
+-  if (s === "sale" || s === "payment") return "customer_receipts";
++  if (s === "sale" || s === "waiter_sale" || s === "payment") return "customer_receipts";
+   if (s === "sale_void" || s === "sale_return") return "customer_refunds";
+   if (s === "purchase" || s === "supplier_payment" || s === "purchase_return") return "suppliers";
+   if (s === "bill" || s === "bill_payment" || s === "bill_void") return "bills";
+@@ -47,7 +47,7 @@ export const accRows = (acc: Acc): Row[] => [...acc.values()].filter((r) => r.a
+ export function entryRows(e: JEntry, acc: Acc = new Map()): Acc {
+   const row = (g: string, k: string, label: string, a = 0, b = 0, c = 0) => addRow(acc, { g, k, label, a, b, c });
+   row("stat", "entries", "", 1);
+-  if (e.sourceType === "sale") row("stat", "invoices", "", 1);
++  if (e.sourceType === "sale" || e.sourceType === "waiter_sale") row("stat", "invoices", "", 1);
+   if (e.sourceType === "sale_void") row("stat", "voids", "", 1);
+   if (e.sourceType === "sale_return") row("stat", "returns", "", 1);
+   let daySales = 0, dayOpex = 0, dayCogs = 0, moneyIn = 0, moneyOut = 0;
+diff --git a/convex/sales.ts b/convex/sales.ts
+index 3973dd4..46c147a 100644
+--- a/convex/sales.ts
++++ b/convex/sales.ts
+@@ -606,6 +606,45 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
+       }
+     }
+ 
++    // Selling Point (waiter) sales: the cashier received this money from waiters and the stock left the shelf when the order was sent / printed.
++    // They are not invoices, so they are added here to the report rows and the headline totals (never to client balances or receivables).
++    const SP_CLIENT = "selling-point" as unknown as Id<"clients">;
++    let spSales = 0, spCount = 0, spTruncated = false;
++    if (tenantId) {
++      const cols = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => {
++        const b = q.eq("tenantId", tenantId);
++        if (a.startDate && a.endDate) return b.gte("date", a.startDate).lte("date", a.endDate);
++        if (a.startDate) return b.gte("date", a.startDate);
++        if (a.endDate) return b.lte("date", a.endDate);
++        return b;
++      }).take(REG_CAP + 1);
++      spTruncated = cols.length > REG_CAP;
++      for (const c of cols.slice(0, REG_CAP)) {
++        for (const orderId of c.orderIds) {
++          const o = await ctx.db.get("waiterOrders", orderId);
++          if (!o || o.tenantId !== tenantId) continue;
++          if (branchId && o.branchId !== branchId) continue;
++          if (isOwnDataOnly(user) && o.waiterId !== user._id) continue;
++          spSales = money(spSales + o.total); spCount++;
++          if (basic) continue;
++          const no = `SP-${String(o._id).slice(-6).toUpperCase()}`;
++          const who = o.customerName || "Selling Point";
++          invoiceRows.push({ _id: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, subtotal: o.total, discount: 0, taxAmount: 0, total: o.total, amountPaid: o.total, outstanding: 0, paymentStatus: "paid", staff: o.waiterName, source: "Selling Point", notes: o.tableNumber ? `Meza ${o.tableNumber}` : "" });
++          if (!wantLines) continue;
++          const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
++          for (const l of o.lines) {
++            let mq = 0, mc = 0;
++            for (const m of moves) if (m.productId === l.productId) { mq += m.qtyOut - m.qtyIn; mc += (m.qtyOut - m.qtyIn) * (m.unitCost ?? 0); }
++            const p = await getProduct(l.productId);
++            const unitCost = mq > 1e-8 ? mc / mq : (p?.weightedAvgCost ?? p?.lastPurchaseCost ?? 0);
++            const group = await getGroup(p?.groupId); const unit = await getUnit(p?.unitId); const supplier = await getSupplier(p?.lastSupplierId);
++            const net = money(l.lineTotal); const cost = money(l.qty * unitCost);
++            lines.push({ invoiceId: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, staff: o.waiterName, source: "Selling Point", productId: l.productId, itemCode: p?.itemCode ?? "—", productName: p?.name ?? l.productName, groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: l.qty, unitPrice: l.unitPrice, discount: 0, net, cost, profit: money(net - cost) });
++          }
++        }
++      }
++    }
++
+     const invNoCache = new Map<string, string>();
+     for (const i of [...invoices, ...openInvoicesRaw]) invNoCache.set(String(i._id), i.invoiceNo);
+     const payments = [] as Array<{ _id: Id<"customerPayments">; date: string; clientId: Id<"clients">; clientName: string; invoiceNo: string; amount: number; method: string; reference: string; notes: string }>;
+@@ -637,8 +676,8 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
+       clients: clients.map(c => ({ _id: c._id, code: c.code, name: c.name, phone: c.phone ?? "", email: c.email ?? "", address: c.address ?? "", contactPerson: c.contactPerson ?? "", openingBalance: c.openingBalance, creditLimit: c.creditLimit ?? null, creditPolicy: c.creditPolicy, isActive: c.isActive })),
+       invoices: invoiceRows, lines, payments, balances,
+       openInvoices: openInvoicesRaw.sort((x, y) => x.invoiceDate.localeCompare(y.invoiceDate)).map(i => ({ _id: i._id, invoiceNo: i.invoiceNo, clientId: i.clientId, clientName: clientName.get(String(i.clientId)) ?? "Mteja", total: i.total, outstanding: i.outstanding, date: i.invoiceDate })),
+-      truncated,
+-      totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0)), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0)), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), invoices: invoices.length },
++      truncated: truncated || spTruncated,
++      totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0) + spSales), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0) + spSales), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), invoices: invoices.length + spCount },
+     };
+ }
+ 
+diff --git a/convex/schema.ts b/convex/schema.ts
+index 4fa7329..be122db 100644
+--- a/convex/schema.ts
++++ b/convex/schema.ts
+@@ -56,12 +56,17 @@ export default defineSchema({
+     pinHash: v.optional(v.string()),
+     pinFailedAttempts: v.optional(v.number()),
+     pinLockedUntil: v.optional(v.number()),
++    pinLookup: v.optional(v.string()), // keyed one-way fingerprint of the PIN: lets the system find WHO owns a PIN, and keeps every PIN unique across the system
+     staffCode: v.optional(v.string()), // unique (per business) code the cashier types to find this staff member's sales
+   }) .index("by_scope", ["tenantId", "branchId"])
+     .index("email", ["email"])
+     .index("phone", ["phone"])
+     .index("by_token", ["tokenIdentifier"])
+-    .index("by_username", ["username"]),
++    .index("by_username", ["username"])
++    .index("by_pin_lookup", ["pinLookup"]),
++
++  // Global throttle for PIN-only sign-in (a PIN identifies the person, so failures cannot be counted per user).
++  pinLoginGuard: defineTable({ key: v.string(), failures: v.number(), windowStart: v.number(), lockedUntil: v.optional(v.number()) }).index("by_key", ["key"]),
+ 
+   roles: defineTable({
+     name: v.string(), // admin | manager | cashier | accountant | viewer
+@@ -539,7 +544,8 @@ export default defineSchema({
+     .index("by_product", ["productId"])
+     .index("by_tenant_date", ["tenantId", "movementDate"])
+     .index("by_date", ["movementDate"])
+-    .index("by_product_date", ["productId", "movementDate"]),
++    .index("by_product_date", ["productId", "movementDate"])
++    .index("by_reference", ["referenceType", "referenceId"]),
+ 
+   // ── STOCK ADJUSTMENTS ────────────────────────────────────────
+   stockAdjustments: defineTable({
+@@ -876,6 +882,9 @@ export default defineSchema({
+     clientKey: v.optional(v.string()), // one random key per cart: a repeated tap / retry returns the SAME order instead of a second one
+     sentAt: v.optional(v.string()),
+     printedAt: v.optional(v.string()),
++    settledAt: v.optional(v.string()), // cashier received the money for this order from the waiter
++    collectionId: v.optional(v.id("waiterCollections")),
++    billPrintedAt: v.optional(v.string()), // set only after a Bills-screen print succeeded; the order itself is never deleted
+     cancelledAt: v.optional(v.string()),
+     cancelledBy: v.optional(v.id("users")),
+     lines: v.array(v.object({
+@@ -897,6 +906,22 @@ export default defineSchema({
+     .index("by_client_key", ["waiterId", "clientKey"])
+     .index("by_created", ["createdAt"]),
+ 
++  // Money a cashier received from a waiter for sent / printed Selling Point orders. Orders are kept; they are only marked settled.
++  waiterCollections: defineTable({
++    tenantId: v.optional(v.id("tenants")),
++    branchId: v.optional(v.id("branches")),
++    staffId: v.id("users"),
++    staffName: v.string(),
++    cashierId: v.id("users"),
++    cashierName: v.string(),
++    date: v.string(), // business day YYYY-MM-DD (East Africa Time)
++    total: v.number(),
++    splits: v.array(v.object({ method: v.string(), methodId: v.optional(v.id("paymentMethods")), amount: v.number(), reference: v.optional(v.string()) })),
++    orderIds: v.array(v.id("waiterOrders")),
++    createdAt: v.string(),
++  }).index("by_tenant_date", ["tenantId", "date"])
++    .index("by_staff", ["staffId"]),
++
+   supportTickets: defineTable({
+     tenantId: v.optional(v.id("tenants")),
+     branchId: v.optional(v.id("branches")),
+diff --git a/convex/stats.ts b/convex/stats.ts
+index 5f4b633..7d6a77c 100644
+--- a/convex/stats.ts
++++ b/convex/stats.ts
+@@ -197,7 +197,19 @@ export const rebuild = internalMutation({
+         const d = (acc.daily[k] ??= { bk, date: p.paymentDate, sales: 0, purchases: 0, collected: 0, invoices: 0 });
+         d.collected = round2(d.collected + p.amount);
+       }
+-      return await (page.isDone ? go("purchases", null) : go("payments", page.continueCursor));
++      return await (page.isDone ? go("waiter", null) : go("payments", page.continueCursor));
++    }
++
++    // Selling Point money received by cashiers from waiters (not invoices): counted on the day it was received, so a rebuild keeps it.
++    if (a.phase === "waiter") {
++      const page = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", windowStart)).paginate({ numItems: PAGE, cursor: a.cursor });
++      for (const c of page.page) {
++        const bk = bkey(c.branchId);
++        const k = `${bk}|${c.date}`;
++        const d = (acc.daily[k] ??= { bk, date: c.date, sales: 0, purchases: 0, collected: 0, invoices: 0 });
++        d.sales = round2(d.sales + c.total); d.collected = round2(d.collected + c.total); d.invoices += c.orderIds.length;
++      }
++      return await (page.isDone ? go("purchases", null) : go("waiter", page.continueCursor));
+     }
+ 
+     if (a.phase === "purchases") {
+@@ -254,6 +266,21 @@ export const rebuild = internalMutation({
+           if (inv.invoiceDate >= since7) r.d7.set(id, (r.d7.get(id) ?? 0) + l.lineTotal);
+         }
+       }
++      // Selling Point orders whose money the cashier received count as sales of their products too (same day rule as the daily totals).
++      const collections = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", since90)).order("desc").take(400);
++      for (const c of collections) {
++        const r = (rev[bkey(c.branchId)] ??= { d7: new Map(), d30: new Map(), d90: new Map() });
++        for (const oid of c.orderIds) {
++          const o = await ctx.db.get("waiterOrders", oid);
++          if (!o) continue;
++          for (const l of o.lines) {
++            const id = String(l.productId);
++            r.d90.set(id, (r.d90.get(id) ?? 0) + l.lineTotal);
++            if (c.date >= since30) r.d30.set(id, (r.d30.get(id) ?? 0) + l.lineTotal);
++            if (c.date >= since7) r.d7.set(id, (r.d7.get(id) ?? 0) + l.lineTotal);
++          }
++        }
++      }
+       const names = new Map<string, string>();
+       const nameOf = async (id: string) => {
+         if (!names.has(id)) names.set(id, (await ctx.db.get("products", id as Id<"products">))?.name ?? "-");
+@@ -291,7 +318,9 @@ export const rebuild = internalMutation({
+       }
+     }
+     if (full) {
+-      for (const d of await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).take(4000)) await ctx.db.delete("statsDaily", d._id);
++      // Delete exactly the rows that are re-inserted below (the rebuilt window). The old code removed the OLDEST 4000 rows, so a business with
++      // many departments kept its newest rows and got every recent day counted twice.
++      for (const d of await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", windowStart)).take(8000)) await ctx.db.delete("statsDaily", d._id);
+       for (const d of Object.values(acc.daily)) {
+         await ctx.db.insert("statsDaily", { tenantId, branchId: unkey(d.bk), date: d.date, sales: d.sales, purchases: d.purchases, collected: d.collected, invoices: d.invoices });
+       }
+diff --git a/convex/tenants.ts b/convex/tenants.ts
+index 662bd9d..d71339c 100644
+--- a/convex/tenants.ts
++++ b/convex/tenants.ts
+@@ -17,8 +17,8 @@ const now=new Date().toISOString();const tenantId=await ctx.db.insert("tenants",
+ export const addBranch=mutation({args:{tenantId:v.id("tenants"),name:v.string(),code:v.string()},handler:async(ctx,args)=>{await requireSuperAdmin(ctx);const tenant=await ctx.db.get("tenants", args.tenantId);if(!tenant)throw new Error("Office haipo");const code=args.code.trim().toUpperCase();const duplicate=await ctx.db.query("branches").withIndex("by_tenant_code",q=>q.eq("tenantId",args.tenantId).eq("code",code)).unique();if(duplicate)throw new Error("Branch code tayari ipo");return await ctx.db.insert("branches",{tenantId:args.tenantId,name:args.name.trim(),code,isActive:true,createdAt:new Date().toISOString()});}});
+ export const updateSettings=mutation({args:{tenantId:v.id("tenants"),traIntegrationEnabled:v.boolean(),stockControlEnabled:v.boolean(),traEnvironment:v.optional(v.string()),traTaxpayerId:v.optional(v.string()),defaultCurrency:v.string()},handler:async(ctx,args)=>{await requireSuperAdmin(ctx);const existing=await ctx.db.query("tenantSettings").withIndex("by_tenant",q=>q.eq("tenantId",args.tenantId)).unique();if(existing){await ctx.db.patch("tenantSettings", existing._id,args);return existing._id;}return await ctx.db.insert("tenantSettings",args);}});
+ /* ───────── Business picker (Super Admin chooses which business to work in after login) ───────── */
+-export const current=query({args:{},handler:async(ctx)=>{const identity=await ctx.auth.getUserIdentity();if(!identity)return null;const user=await getCurrentProfile(ctx);if(!user)return null;const superAdmin=isSuperAdmin(user);const tenant:Doc<"tenants">|null=user.tenantId?await ctx.db.get("tenants", user.tenantId as Id<"tenants">):null;const suspended=!superAdmin&&!!tenant&&tenant.isActive===false;const departments=tenant&&!suspended?(await activeDepartments(ctx,tenant._id)).filter((b)=>{const allowedIds=allowedBranchIds(user);return !allowedIds||allowedIds.includes(b._id);}).map((b)=>({_id:b._id,name:b.name})):[];const canSwitch=superAdmin||!user.branchId||!!user.branchPicked;const subscription=tenant?planStatus(tenant,tzToday()):null;const expired=!superAdmin&&!!subscription?.expired;const isManager=await isManagerRole(ctx,user);const canVoidInvoice=await roleHasPermission(ctx,user,"sales.void");const canEditPurchase=await roleHasPermission(ctx,user,"purchasing.edit");const canDeletePurchase=await roleHasPermission(ctx,user,"purchasing.delete");const canAdjustStock=await roleHasPermission(ctx,user,"stock.adjust");// Sidebar modules this user may open (null = all). Super Admin is never limited.
+-const modules=superAdmin?null:effectiveModules(tenant?.modules,user.menuAccess);const waiterSettings=tenant?await ctx.db.query("tenantSettings").withIndex("by_tenant",q=>q.eq("tenantId",tenant._id)).first():null;const waiterCfg=resolveWaiterSettings(waiterSettings);return {waiterOrdersEnabled:waiterCfg.waiterOrdersEnabled,waiterEnabled:waiterCfg.waiterEnabled,waitressEnabled:waiterCfg.waitressEnabled,waiterOrderMode:waiterCfg.waiterOrderMode,isSuperAdmin:superAdmin,isManager,canVoidInvoice,canEditPurchase,canDeletePurchase,canAdjustStock,modules,ownDataOnly:isOwnDataOnly(user),personalDashboard:!(await canSeeBusinessDashboard(ctx,user)),subscription,expired,needsPicker:superAdmin&&!user.tenantId,suspended,tenant:tenant?{_id:tenant._id,name:tenant.name,code:tenant.code,isActive:tenant.isActive}:null,departments,activeBranchId:user.branchId??null,canSwitch,canPickAll:!allowedBranchIds(user)};}});
++export const current=query({args:{},handler:async(ctx)=>{const identity=await ctx.auth.getUserIdentity();if(!identity)return null;const user=await getCurrentProfile(ctx);if(!user)return null;const superAdmin=isSuperAdmin(user);const tenant:Doc<"tenants">|null=user.tenantId?await ctx.db.get("tenants", user.tenantId as Id<"tenants">):null;const suspended=!superAdmin&&!!tenant&&tenant.isActive===false;const departments=tenant&&!suspended?(await activeDepartments(ctx,tenant._id)).filter((b)=>{const allowedIds=allowedBranchIds(user);return !allowedIds||allowedIds.includes(b._id);}).map((b)=>({_id:b._id,name:b.name})):[];const canSwitch=superAdmin||!user.branchId||!!user.branchPicked;const subscription=tenant?planStatus(tenant,tzToday()):null;const expired=!superAdmin&&!!subscription?.expired;const isManager=await isManagerRole(ctx,user);const canVoidInvoice=await roleHasPermission(ctx,user,"sales.void");const canViewSales=await roleHasPermission(ctx,user,"sales.view");const canManageWaiterOrders=await roleHasPermission(ctx,user,"waiterOrders.manage");const canEditPurchase=await roleHasPermission(ctx,user,"purchasing.edit");const canDeletePurchase=await roleHasPermission(ctx,user,"purchasing.delete");const canAdjustStock=await roleHasPermission(ctx,user,"stock.adjust");// Sidebar modules this user may open (null = all). Super Admin is never limited.
++const modules=superAdmin?null:effectiveModules(tenant?.modules,user.menuAccess);const waiterSettings=tenant?await ctx.db.query("tenantSettings").withIndex("by_tenant",q=>q.eq("tenantId",tenant._id)).first():null;const waiterCfg=resolveWaiterSettings(waiterSettings);return {waiterOrdersEnabled:waiterCfg.waiterOrdersEnabled,waiterEnabled:waiterCfg.waiterEnabled,waitressEnabled:waiterCfg.waitressEnabled,waiterOrderMode:waiterCfg.waiterOrderMode,isSuperAdmin:superAdmin,isManager,canVoidInvoice,canViewSales,canManageWaiterOrders,canEditPurchase,canDeletePurchase,canAdjustStock,modules,ownDataOnly:isOwnDataOnly(user),personalDashboard:!(await canSeeBusinessDashboard(ctx,user)),subscription,expired,needsPicker:superAdmin&&!user.tenantId,suspended,tenant:tenant?{_id:tenant._id,name:tenant.name,code:tenant.code,isActive:tenant.isActive}:null,departments,activeBranchId:user.branchId??null,canSwitch,canPickAll:!allowedBranchIds(user)};}});
+ export const listForPicker=query({args:{},handler:async(ctx)=>{await requireSuperAdmin(ctx);const tenants=await ctx.db.query("tenants").collect();const out=[];for(const t of tenants){const branches=await ctx.db.query("branches").withIndex("by_tenant",q=>q.eq("tenantId",t._id)).collect();out.push({...t,branchCount:branches.filter(b=>b.isActive).length,subscription:planStatus(t,tzToday())});}return out.sort((a,b)=>Number(b.isActive)-Number(a.isActive)||a.name.localeCompare(b.name));}});
+ export const selectBusiness=mutation({args:{tenantId:v.id("tenants")},handler:async(ctx,args)=>{await requireSuperAdmin(ctx);const user=await getCurrentProfile(ctx);const tenant=await ctx.db.get("tenants", args.tenantId);if(!user||!tenant)throw new Error("Biashara haipo");if(tenant.isActive===false)throw new Error("Biashara hii imesimamishwa. Iwashe kwanza ili uiingie.");await ctx.db.patch("users", user._id,{tenantId:args.tenantId,branchId:undefined});await logAudit(ctx,user,{action:"select_business",module:"super-admin",referenceId:String(args.tenantId),details:tenant.name});return args.tenantId;}});
+ export const exitBusiness=mutation({args:{},handler:async(ctx)=>{const identity=await ctx.auth.getUserIdentity();if(!identity)return null;const user=await getCurrentProfile(ctx);if(!user||!isSuperAdmin(user))return null;if(user.tenantId||user.branchId)await ctx.db.patch("users", user._id,{tenantId:undefined,branchId:undefined});return true;}});
+diff --git a/convex/waiterOrders.ts b/convex/waiterOrders.ts
+index 935126a..696d59f 100644
+--- a/convex/waiterOrders.ts
++++ b/convex/waiterOrders.ts
+@@ -8,6 +8,8 @@ import { waiterOrdersAllowedFor } from "./waiterSettings";
+ 
+ // Normalised like everywhere else (case / spaces / hyphens): a role label such as "Waitress " must still be limited to its OWN orders.
+ const isWaiter = (role?: string) => ["waiter", "waitress"].includes(normalizeRole(role));
++/** Super Admin administers businesses; he is NOT a cashier. Orders sent by waiters must never land in his queue, and he cannot receive them. */
++const isSuper = (role?: string) => ["super_admin", "superadmin"].includes(String(role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_"));
+ 
+ /**
+  * Deducts the stock of an order EXACTLY ONCE. The guard is the order's own `stockDeducted` flag, read and written inside the same
+@@ -63,11 +65,25 @@ async function deductStockOnce(
+   return true;
+ }
+ 
++/**
++ * Who sees which orders. A waiter is tied to his own department. A cashier / manager who works in one department sees that
++ * department's orders; one who has not picked a department (or works across all) sees the orders of every department of the
++ * business. Business isolation is never relaxed. Before this, a cashier on another department than the waiter saw nothing
++ * while the Super Admin (on the waiter's department) received every order.
++ */
++type ScopeLike = { tenantId?: Id<"tenants">; branchId?: Id<"branches"> };
++async function viewScope(ctx: Parameters<typeof resolveWriteScope>[0], user: Parameters<typeof resolveWriteScope>[1]): Promise<ScopeLike> {
++  return isWaiter(user.role) ? await resolveWriteScope(ctx, user) : await resolveWriteScope(ctx, user, { tenantWide: true });
++}
++const orderInScope = (user: { role?: string }, scope: ScopeLike, o: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }) =>
++  o.tenantId === scope.tenantId && (isWaiter(user.role) || !scope.branchId || o.branchId === scope.branchId);
++
+ export const list = query({
+   args: {},
+   handler: async (ctx) => {
+     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
+-    const scope = await resolveWriteScope(ctx, user);
++    // No department chosen: say so in plain words (an empty queue would look like 'orders never arrive').
++    const scope = await viewScope(ctx, user).catch((e) => { throw surfaceError(e); });
+     if (!scope.tenantId) return [];
+     const tenantId = scope.tenantId;
+     const settings = await ctx.db.query("tenantSettings")
+@@ -75,13 +91,13 @@ export const list = query({
+       .first();
+     if (!waiterOrdersAllowedFor(user.role, settings)) return [];
+     const rows = await ctx.db.query("waiterOrders")
+-      .withIndex("by_scope_status", q =>
+-        q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)
+-      ).collect();
++      .withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId))
++      .collect();
++    const inScope = rows.filter(r => orderInScope(user, scope, r) && (isWaiter(user.role) ? r.branchId === scope.branchId : true));
+     const isWaiterRole = isWaiter(user.role);
+     // A waiter sees only his own orders (placed, sent or received). Everyone else (cashier / manager) sees only orders that were SENT.
+     // Cashier queue is strictly pending work. Accepted/printed orders remain in the database for history.
+-    const visible = rows.filter(r => isWaiterRole ? r.waiterId === user._id : r.status === "pending");
++    const visible = inScope.filter(r => (isWaiterRole || isSuper(user.role)) ? r.waiterId === user._id : r.status === "pending"); // Super Admin sees only orders he made himself, never the cashier queue
+     return visible.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200);
+   },
+ });
+@@ -226,11 +242,10 @@ export const markHandled = mutation({
+   handler: async (ctx, args) => {
+     try {
+     const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
+-    if (isWaiter(user.role)) throw new Error("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
+-    const scope = await resolveWriteScope(ctx, user);
++    if (isWaiter(user.role) || isSuper(user.role)) throw new Error("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
++    const scope = await viewScope(ctx, user);
+     const order = await ctx.db.get("waiterOrders", args.orderId);
+-    if (!order || order.tenantId !== scope.tenantId ||
+-        order.branchId !== scope.branchId) {
++    if (!order || !orderInScope(user, scope, order)) {
+       throw new Error("Oda haipo kwenye biashara au tawi lako.");
+     }
+     if (order.status === "accepted") return order._id; // printing again is harmless
+@@ -262,12 +277,13 @@ export const cancel = mutation({
+     try {
+     const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
+     if (!(await roleHasPermission(ctx, user, "sales.void"))) throw new Error("Huna ruhusa ya kufuta oda.");
+-    const scope = await resolveWriteScope(ctx, user);
++    const scope = await viewScope(ctx, user);
+     const order = await ctx.db.get("waiterOrders", args.orderId);
+-    if (!order || order.tenantId !== scope.tenantId || order.branchId !== scope.branchId) {
++    if (!order || !orderInScope(user, scope, order)) {
+       throw new Error("Oda haipo kwenye biashara au tawi lako.");
+     }
+     if (order.status === "cancelled") return order._id;
++    if (order.settledAt) throw new Error("Oda hii tayari imelipwa kwa cashier; haiwezi kufutwa (mauzo na fedha vimeshahesabiwa).");
+     const now = new Date().toISOString();
+     if (order.stockDeducted) {
+       for (const line of order.lines) {
+@@ -360,15 +376,15 @@ export const submit = mutation({
+ 
+ /** Orders for the Bills screen: a waiter sees his own, cashier/manager see the whole department. Optional table filter. Read-only. */
+ export const listForBills = query({
+-  args: { table: v.optional(v.string()) },
++  args: { table: v.optional(v.string()), includePrinted: v.optional(v.boolean()) },
+   handler: async (ctx, args) => {
+     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
+-    const scope = await resolveWriteScope(ctx, user);
++    const scope = await viewScope(ctx, user).catch((e) => { throw surfaceError(e); });
+     if (!scope.tenantId) return [];
+-    const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId)).collect();
++    const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId)).collect();
+     const needle = (args.table ?? "").trim().toLowerCase();
+     return rows
+-      .filter(r => r.status !== "cancelled" && r.status !== "placed" && (!isWaiter(user.role) || r.waiterId === user._id))
++      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || r.waiterId === user._id))
+       .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
+       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
+   },
+@@ -379,13 +395,13 @@ export const billSummary = query({
+   args: { orderIds: v.array(v.id("waiterOrders")) },
+   handler: async (ctx, args) => {
+     const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
+-    const scope = await resolveWriteScope(ctx, user);
++    const scope = await viewScope(ctx, user);
+     const merged = new Map<string, { productName: string; unitPrice: number; qty: number; lineTotal: number }>();
+     const tables = new Set<string>();
+     let total = 0;
+     for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
+       const o = await ctx.db.get("waiterOrders", id);
+-      if (!o || o.tenantId !== scope.tenantId || o.branchId !== scope.branchId || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
++      if (!o || !orderInScope(user, scope, o) || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
+       if (isWaiter(user.role) && o.waiterId !== user._id) throw new Error("Hii si oda yako.");
+       if (o.tableNumber) tables.add(o.tableNumber);
+       for (const l of o.lines) {
+@@ -397,3 +413,22 @@ export const billSummary = query({
+     return { total: Math.round(total * 100) / 100, tables: [...tables], lines: [...merged.values()] };
+   },
+ });
++
++/** Called by the Bills screen ONLY after QZ Tray accepted the print job. Records the print; never changes stock, payments or sales. */
++export const markBillPrinted = mutation({
++  args: { orderIds: v.array(v.id("waiterOrders")) },
++  handler: async (ctx, args) => {
++    try {
++      const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
++      const scope = await viewScope(ctx, user);
++      const now = new Date().toISOString();
++      for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
++        const o = await ctx.db.get("waiterOrders", id);
++        if (!o || !orderInScope(user, scope, o) || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
++        if (isWaiter(user.role) && o.waiterId !== user._id) throw new Error("Hii si oda yako.");
++        if (!o.billPrintedAt) await ctx.db.patch("waiterOrders", o._id, { billPrintedAt: now, updatedAt: now });
++      }
++      return true;
++    } catch (e) { throw surfaceError(e); }
++  },
++});
+diff --git a/src/app.tsx b/src/app.tsx
+index 5d947f7..7f499a1 100644
+--- a/src/app.tsx
++++ b/src/app.tsx
+@@ -10,6 +10,7 @@ const Dashboard = lazy(() => import("./pages/dashboard/page.tsx"));
+ const SuperAdminPage = lazy(() => import("./pages/super-admin/page.tsx"));
+ const SalesPage = lazy(() => import("./pages/sales/page.tsx"));
+ const WaiterOrdersPage = lazy(() => import("./pages/waiter-orders/page.tsx"));
++const CashierPage = lazy(() => import("./pages/cashier/page.tsx"));
+ const StockPage = lazy(() => import("./pages/stock/page.tsx"));
+ const PurchasingPage = lazy(() => import("./pages/purchasing/page.tsx"));
+ const PayrollPage = lazy(() => import("./pages/payroll/page.tsx"));
+@@ -33,6 +34,7 @@ export default function App() {
+             <Route path="/super-admin" element={<SuperAdminPage />} />
+             <Route path="/sales/*" element={<SalesPage />} />
+             <Route path="/selling-point" element={<WaiterOrdersPage />} />
++            <Route path="/cashier" element={<CashierPage />} />
+             <Route path="/waiter-orders" element={<Navigate to="/selling-point" replace />} />
+             <Route path="/stock/*" element={<StockPage />} />
+             <Route path="/purchasing/*" element={<PurchasingPage />} />
+diff --git a/src/components/BillSheet.tsx b/src/components/BillSheet.tsx
+index 5f0addd..e162465 100644
+--- a/src/components/BillSheet.tsx
++++ b/src/components/BillSheet.tsx
+@@ -1,4 +1,5 @@
+-import { useCallback, useEffect, useRef } from "react";
++import { qzPrinterFrom } from "@/lib/print-waiter-order.ts";
++import { useCallback, useEffect, useRef, useState } from "react";
+ import { useQuery } from "convex/react";
+ import { MessageCircle, Printer } from "lucide-react";
+ import { toast } from "sonner";
+@@ -14,6 +15,18 @@ import {
+ import { printHtmlViaQz } from "@/lib/printers.ts";
+ import { shouldSchedulePrint } from "@/lib/print-policy.ts";
+ import { tr } from "@/lib/i18n.ts";
++import { stamp } from "@/lib/receipt-branding.ts";
++
++/** One "Label : value" line of the receipt header. The print time is refreshed at the moment of printing. */
++function ReceiptRow({ label, value, printTime }: { label: string; value?: string; printTime?: boolean }) {
++  if (!value) return null;
++  return (
++    <div className="flex gap-1">
++      <span className="w-[6.5rem] shrink-0">{label}</span>
++      <span className="min-w-0 break-words" {...(printTime ? { "data-print-time": "true" } : {})}>: {value}</span>
++    </div>
++  );
++}
+ 
+ /**
+  * The bill itself. `printToken` > 0 sends the receipt to the configured QZ Tray printer once data is ready.
+@@ -26,6 +39,7 @@ export default function BillSheet({
+   whatsappEnabled,
+   setWhatsappEnabled,
+   kind = "bill",
++  onPrinted,
+ }: {
+   invoiceIds: Id<"invoices">[];
+   printToken: number;
+@@ -33,9 +47,14 @@ export default function BillSheet({
+   whatsappEnabled: boolean;
+   setWhatsappEnabled: (value: boolean) => void;
+   kind?: "bill" | "invoice";
++  /** Called once QZ Tray has accepted the print job (never when printing fails). */
++  onPrinted?: () => void;
+ }) {
+   const bill = useQuery(api.customerBills.billData, { invoiceIds });
+   const printed = useRef(0);
++  const [printedAt] = useState(() => new Date());
++  const onPrintedRef = useRef(onPrinted);
++  useEffect(() => { onPrintedRef.current = onPrinted; }, [onPrinted]);
+   const articleRef = useRef<HTMLElement>(null);
+   const settings = useQuery(api.maintenance.getSettings, {});
+   const hardware = (settings?.app?.hardware ?? {}) as {
+@@ -43,26 +62,32 @@ export default function BillSheet({
+     receiptPrinter?: string;
+   };
+ 
++  const printerName = qzPrinterFrom(hardware);
+   const myPerms = useQuery(api.maintenance.myPermissions, {});
+-  const canPrint = !!myPerms?.includes("sales.print");
++  // Cashiers who hold waiterOrders.manage may print even if an older custom role row lacks sales.print.
++  const canPrint = !!myPerms && (myPerms.includes("sales.print") || myPerms.includes("waiterOrders.manage"));
+ 
+   const printReceipt = useCallback(async () => {
+     const el = articleRef.current;
+     if (!el) return;
+ 
+-    if (hardware.printerSource !== "installed" || !hardware.receiptPrinter?.trim()) {
+-      toast.error(tr("QZ Tray direct printing haijasanidiwa. Chagua printer ya QZ Tray kwenye mipangilio ya vifaa."));
++    if (!printerName) {
++      toast.error(hardware.printerSource === "direct"
++        ? tr("Printer iliyochaguliwa ni ya \"direct\" (USB/Bluetooth) na haiwezi kutumika hapa. Chagua printer ya QZ Tray kwenye mipangilio ya vifaa.")
++        : tr("QZ Tray direct printing haijasanidiwa. Chagua printer ya QZ Tray kwenye mipangilio ya vifaa."));
+       return false;
+     }
+     try {
+-      await printHtmlViaQz(hardware.receiptPrinter, buildReceiptHtml(el, paper));
++      el.querySelectorAll("[data-print-time]").forEach((n) => { n.textContent = `: ${stamp(new Date())}`; });
++      await printHtmlViaQz(printerName, buildReceiptHtml(el, paper));
+       toast.success(tr("Ombi la kuchapa limetumwa kwa QZ Tray."));
++      onPrintedRef.current?.();
+       return true;
+     } catch (error) {
+       toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha programu imewashwa na printer iko tayari.")} ${error instanceof Error ? error.message : String(error ?? "")}`);
+       return false;
+     }
+-  }, [hardware.printerSource, hardware.receiptPrinter, paper]);
++  }, [printerName, paper, hardware.printerSource]);
+ 
+   useEffect(() => {
+     if (settings === undefined) return;
+@@ -88,8 +113,7 @@ export default function BillSheet({
+     printToken,
+     paper,
+     settings,
+-    hardware.printerSource,
+-    hardware.receiptPrinter,
++    printerName,
+     printReceipt,
+   ]);
+ 
+@@ -99,7 +123,9 @@ export default function BillSheet({
+     `${bill.company.currencySymbol} ${formatNumber(n, dp)}`;
+   const number = (n: number) => formatNumber(n, Number.isInteger(n) ? 0 : 2);
+   const isInvoice = kind === "invoice";
+-  const heading = isInvoice ? bill.department?.trim() || "Sales" : tr("BILI");
++  const heading = isInvoice ? bill.department?.trim() || "Sales" : tr("BILI YA MTEJA");
++  const openedAt = bill.savedAt ? stamp(new Date(bill.savedAt)) : "";
++  const billId = bill.invoices.map((inv) => inv.invoiceNo).join(", ");
+   const whatsappText = [
+     `${bill.company.name || "Biashara"} — ${heading}`,
+     `${tr("Mteja")}: ${bill.client.name}`,
+@@ -179,144 +205,77 @@ export default function BillSheet({
+       <article
+         ref={articleRef}
+         data-paper={paper}
+-        className={`print-area mx-auto space-y-4 rounded-2xl border bg-card p-6 text-sm print:rounded-none print:border-0 print:p-0 ${paper === "A4" ? "max-w-3xl print:max-w-none" : paper === "58mm" ? "max-w-[58mm]" : "max-w-[80mm]"}`}
++        className={`print-area mx-auto space-y-2 rounded-2xl border bg-white p-4 text-[12px] font-semibold leading-snug text-black print:rounded-none print:border-0 print:p-0 ${paper === "A4" ? "max-w-xl print:max-w-none" : paper === "58mm" ? "max-w-[58mm]" : "max-w-[80mm]"}`}
+       >
+-        <header className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+-          <div>
+-            <h2 className="text-lg font-bold">
+-              {bill.company.name || tr("Biashara")}
+-            </h2>
+-            {!isInvoice && bill.department && (
+-              <p className="text-xs text-muted-foreground">
+-                {tr("Idara")}: {bill.department}
+-              </p>
+-            )}
+-            {bill.company.address && (
+-              <p className="text-xs">{bill.company.address}</p>
+-            )}
+-            {(bill.company.phone || bill.company.email) && (
+-              <p className="text-xs">
+-                {[bill.company.phone, bill.company.email]
+-                  .filter(Boolean)
+-                  .join(" · ")}
+-              </p>
+-            )}
+-            {bill.company.taxId && (
+-              <p className="text-xs">TIN: {bill.company.taxId}</p>
+-            )}
+-          </div>
+-          <div className="text-right">
+-            <h3 className="text-xl font-bold tracking-wide">{heading}</h3>
+-            <p className="text-xs">
+-              {tr("Tarehe")}:{" "}
+-              {bill.savedAt
+-                ? `${formatDate(bill.savedAt.slice(0, 10))} ${new Date(bill.savedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`
+-                : formatDate(new Date().toISOString().slice(0, 10))}
+-            </p>
+-            {bill.cashier && (
+-              <p className="text-xs">
+-                {tr("Muuzaji")}: {bill.cashier}
+-              </p>
+-            )}
+-          </div>
+-        </header>
+-
+-        <section>
+-          <p className="text-xs uppercase text-muted-foreground">
+-            {tr("Mteja")}
+-          </p>
+-          <p className="font-semibold">{bill.client.name}</p>
+-          {bill.client.phone && <p className="text-xs">{bill.client.phone}</p>}
+-          {bill.client.address && (
+-            <p className="text-xs">{bill.client.address}</p>
+-          )}
+-        </section>
+-
+-        {bill.invoices.map((inv) => (
+-          <section key={inv._id} className="break-inside-avoid">
+-            <div className="mb-1 flex justify-between font-semibold">
+-              <span>
+-                {tr("Invoice")} {inv.invoiceNo}
+-                {inv.department && bill.department?.includes(" + ")
+-                  ? ` · ${inv.department}`
+-                  : ""}
+-              </span>
+-              <span>{formatDate(inv.date)}</span>
++        {bill.company.logoUrl && (
++          <img src={bill.company.logoUrl} alt="" className="mx-auto max-h-20 max-w-[60%] object-contain grayscale" />
++        )}
++        <h3 className="text-center text-base font-extrabold tracking-wide">{heading}</h3>
++        <div className="space-y-0.5 text-center">
++          <p className="uppercase">{bill.company.name || tr("Biashara")}</p>
++          {bill.company.address && <p>{bill.company.address}</p>}
++          {bill.company.phone && <p>TEL : {bill.company.phone}</p>}
++          {bill.company.taxId && <p>TIN : {bill.company.taxId}</p>}
++        </div>
++        <hr className="border-0 border-t border-dashed border-black" />
++        <div className="space-y-0.5">
++          <ReceiptRow label={tr("Muda wa kufungua")} value={openedAt} />
++          <ReceiptRow label={tr("Muda wa kuchapa")} value={stamp(printedAt)} printTime />
++          <ReceiptRow label={tr("Namba ya bili")} value={billId} />
++          <ReceiptRow label={tr("Mhudumu")} value={bill.cashier} />
++          <ReceiptRow label={tr("Mteja")} value={bill.client.name} />
++          {!isInvoice && <ReceiptRow label={tr("Idara")} value={bill.department ?? ""} />}
++        </div>
++        <hr className="border-0 border-t border-dashed border-black" />
++        <div className="grid grid-cols-[2.2rem_minmax(0,1fr)_auto] gap-x-1 font-extrabold">
++          <span>{tr("IDADI")}</span>
++          <span>{tr("BIDHAA")}</span>
++          <span className="text-right">{tr("KIASI")}</span>
++        </div>
++        <hr className="border-0 border-t border-dashed border-black" />
++        <div className="space-y-1">
++          {bill.invoices.flatMap((inv) => inv.lines.map((l, idx) => (
++            <div key={`${inv._id}-${idx}`} className="grid grid-cols-[2.2rem_minmax(0,1fr)_auto] gap-x-1 break-inside-avoid tabular-nums">
++              <span>{number(l.qty)}</span>
++              <span className="break-words [overflow-wrap:anywhere]">{l.name}</span>
++              <span className="text-right">{number(l.lineTotal)}/=</span>
+             </div>
+-            <table className="w-full table-fixed border-collapse text-left tabular-nums">
+-              <colgroup>
+-                <col style={{ width: paper === "58mm" ? "38%" : paper === "80mm" ? "44%" : "48%" }} />
+-                <col style={{ width: paper === "58mm" ? "12%" : "12%" }} />
+-                <col style={{ width: paper === "58mm" ? "23%" : "22%" }} />
+-                <col style={{ width: paper === "58mm" ? "27%" : paper === "80mm" ? "22%" : "18%" }} />
+-              </colgroup>
+-              <thead>
+-                <tr className="border-b text-xs text-muted-foreground">
+-                  <th className="py-1 pr-1 align-bottom break-words">{tr("Bidhaa")}</th>
+-                  <th className="py-1 px-0.5 text-right align-bottom break-words">{tr("Idadi")}</th>
+-                  <th className="py-1 pl-0.5 text-right align-bottom break-words">{tr("Bei")}</th>
+-                  <th className="py-1 pl-0.5 text-right align-bottom break-words">{tr("Jumla")}</th>
+-                </tr>
+-              </thead>
+-              <tbody>
+-                {inv.lines.map((l, idx) => (
+-                  <tr key={idx} className="border-b border-dashed">
+-                    <td className="py-1 pr-1 align-top break-words [overflow-wrap:anywhere]">{l.name}</td>
+-                    <td className="py-1 px-0.5 text-right align-top [overflow-wrap:anywhere]">{number(l.qty)}</td>
+-                    <td className="py-1 pl-0.5 text-right align-top [overflow-wrap:anywhere]">{m(l.unitPrice)}</td>
+-                    <td className="py-1 pl-0.5 text-right align-top [overflow-wrap:anywhere]">{m(l.lineTotal)}</td>
+-                  </tr>
+-                ))}
+-              </tbody>
+-            </table>
+-            <div className="mt-1 space-y-0.5 text-right text-xs">
+-              {inv.discount > 0 && (
+-                <p>
+-                  {tr("Punguzo")}: -{m(inv.discount)}
+-                </p>
+-              )}
+-              {inv.taxAmount > 0 && (
+-                <p>
+-                  {tr("Kodi")}: {m(inv.taxAmount)}
+-                </p>
+-              )}
+-              <p className="text-sm font-semibold">
+-                {tr("Jumla ya invoice")}: {m(inv.total)}
+-              </p>
++          )))}
++        </div>
++        <hr className="border-0 border-t border-dashed border-black" />
++        {Number(bill.totals.discount) > 0 && <div className="flex justify-between"><span>{tr("Punguzo")}</span><span>-{number(bill.totals.discount)}/=</span></div>}
++        {Number(bill.totals.tax) > 0 && <div className="flex justify-between"><span>{tr("Kodi")}</span><span>{number(bill.totals.tax)}/=</span></div>}
++        <div className="flex justify-between text-sm font-extrabold">
++          <span>{isInvoice ? tr("Jumla ya invoice") : tr("JUMLA INAYODAIWA")}</span>
++          <span>{number(bill.totals.total)}/=</span>
++        </div>
++        {bill.totals.paid > 0 && (
++          <>
++            <div className="flex justify-between">
++              <span>{tr("Imelipwa")}{bill.paymentMethods.length > 0 ? ` (${bill.paymentMethods.join(", ")})` : ""}</span>
++              <span>{number(bill.totals.paid)}/=</span>
+             </div>
+-          </section>
+-        ))}
+-
+-        <footer className="ml-auto max-w-xs space-y-1 border-t pt-3">
+-          <div className="flex justify-between">
+-            <span>
+-              {isInvoice ? tr("Jumla ya invoice") : tr("Jumla ya bili")}
+-            </span>
+-            <span className="font-bold">{m(bill.totals.total)}</span>
+-          </div>
+-          <div className="flex justify-between">
+-            <span>
+-              {tr("Imelipwa")}
+-              {bill.paymentMethods.length > 0
+-                ? ` (${bill.paymentMethods.join(", ")})`
+-                : ""}
+-            </span>
+-            <span>{m(bill.totals.paid)}</span>
+-          </div>
+-          <div className="flex justify-between border-t pt-1 text-base font-bold">
+-            <span>{tr("Deni lililobaki")}</span>
+-            <span>{m(bill.totals.outstanding)}</span>
++            <div className="flex justify-between font-extrabold">
++              <span>{tr("Deni lililobaki")}</span>
++              <span>{number(bill.totals.outstanding)}/=</span>
++            </div>
++          </>
++        )}
++        <hr className="border-0 border-t border-dashed border-black" />
++        {!isInvoice && (
++          <div className="space-y-3 pt-2">
++            <div className="flex items-end gap-1"><span>{tr("Mteja")}</span><span>:</span><span className="flex-1 border-b border-black" /></div>
++            <div className="flex items-end gap-1"><span>{tr("Maelezo")}</span><span>:</span><span className="flex-1 border-b border-black" /></div>
++            <hr className="border-0 border-t border-dashed border-black" />
+           </div>
+-        </footer>
++        )}
+         {bill.paymentInfo && bill.paymentInfo.length > 0 && (
+-          <div className="pt-2 text-center text-xs font-semibold whitespace-pre-wrap break-words">
+-            {bill.paymentInfo.map((line: string) => <div key={line}>{line}</div>)}
++          <div className="space-y-0.5 text-center">
++            {bill.paymentInfo.map((line: string) => <p key={line} className="break-words">{line}</p>)}
+           </div>
+         )}
+         {bill.receiptFooter?.trim() && (
+-          <p className="pt-2 text-center text-xs text-muted-foreground whitespace-pre-wrap break-words">
+-            {bill.receiptFooter}
+-          </p>
++          <p className="whitespace-pre-wrap break-words text-center font-extrabold">{bill.receiptFooter}</p>
+         )}
+       </article>
+     </div>
+diff --git a/src/components/ui/signin.tsx b/src/components/ui/signin.tsx
+index e2823f2..1f0349f 100644
+--- a/src/components/ui/signin.tsx
++++ b/src/components/ui/signin.tsx
+@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/input.tsx";
+ import { tr, errorText } from "@/lib/i18n.ts";
+ import { PICK_BUSINESS_FLAG } from "@/lib/business-session.ts";
+ 
+-const PIN_USER_KEY = "smarthub.pinUsername"; // last staff username used with PIN on this device, so the waiter only taps the PIN next time
+ 
+ export function SignInButton() {
+   const { isAuthenticated, isLoading } = useConvexAuth();
+@@ -29,20 +28,19 @@ export function SignInButton() {
+     setError("");
+     try {
+       const formData = new FormData();
+-      const normalizedUsername = username.trim().toLowerCase();
+-      formData.set("username", normalizedUsername);
+       if (loginMode === "pin") {
+-        formData.set("pin", pin);
++        formData.set("pin", pin); // PIN only: the system recognises the person by the PIN itself
+         await signIn("staffPin", formData);
+       } else {
++        const normalizedUsername = username.trim().toLowerCase();
++        formData.set("username", normalizedUsername);
+         formData.set("flow", firstSetup ? "signUp" : "signIn");
+         formData.set("email", `${normalizedUsername}@login.smarthub.invalid`);
+         formData.set("password", password);
+         await signIn("password", formData);
+       }
+-      if (loginMode === "pin") { try { window.localStorage.setItem(PIN_USER_KEY, normalizedUsername); } catch { /* ignore */ } }
+       try { window.sessionStorage.setItem(PICK_BUSINESS_FLAG, "1"); } catch { /* ignore */ }
+-      if (loginMode !== "pin") setUsername("");
++      setUsername("");
+       setPassword("");
+       setPin("");
+       navigate("/dashboard", { replace: true });
+@@ -62,6 +60,32 @@ export function SignInButton() {
+     );
+   }
+ 
++  if (loginMode === "pin") {
++    const MAX_PIN = 6;
++    const press = (digit: string) => setPin((p) => (p.length < MAX_PIN ? p + digit : p));
++    const keyClass = "h-11 rounded-xl bg-white text-lg font-bold text-slate-900 shadow-sm transition hover:bg-slate-200 active:scale-95 disabled:opacity-60";
++    return (
++      <form onSubmit={submit} className="mx-auto grid w-full max-w-[17rem] gap-3">
++        <div className="flex h-11 items-center justify-center gap-2 rounded-xl bg-white/10 px-3" aria-label={tr("PIN ya wafanyakazi")} role="img">
++          {pin.length === 0
++            ? <span className="text-sm text-blue-100/80">{tr("Weka PIN yako")}</span>
++            : Array.from({ length: pin.length }).map((_, i) => <span key={i} className="h-3 w-3 rounded-full bg-white" />)}
++        </div>
++        <div className="grid grid-cols-3 gap-2">
++          {(["1", "2", "3", "4", "5", "6", "7", "8", "9"] as const).map((digit) => (
++            <button key={digit} type="button" className={keyClass} disabled={busy || pin.length >= MAX_PIN} onClick={() => press(digit)}>{digit}</button>
++          ))}
++          <button type="button" className="h-11 rounded-xl bg-amber-300 text-sm font-bold text-slate-900 transition hover:bg-amber-200 active:scale-95 disabled:opacity-60" disabled={busy || !pin} onClick={() => setPin("")}>{tr("Futa")}</button>
++          <button type="button" className={keyClass} disabled={busy || pin.length >= MAX_PIN} onClick={() => press("0")}>0</button>
++          <button type="button" className="h-11 rounded-xl bg-sky-300 text-lg font-bold text-slate-900 transition hover:bg-sky-200 active:scale-95 disabled:opacity-60" disabled={busy || !pin} onClick={() => setPin((p) => p.slice(0, -1))} aria-label={tr("Futa tarakimu ya mwisho")}>⌫</button>
++        </div>
++        {error && <p role="alert" className="rounded-lg bg-red-900/40 p-2 text-center text-sm text-red-100">{error}</p>}
++        <Button type="submit" disabled={isLoading || busy || pin.length < 4} className="h-11 w-full">{tr("Ingia")}</Button>
++        <button type="button" className="text-center text-xs text-blue-100 underline-offset-2 hover:underline" disabled={busy} onClick={() => { setLoginMode("password"); setPin(""); setError(""); }}>{tr("Ingia kwa username na password")}</button>
++      </form>
++    );
++  }
++
+   return (
+     <form onSubmit={submit} className="grid gap-3">
+       <label className="grid gap-1 text-sm text-blue-100">
+@@ -69,35 +93,21 @@ export function SignInButton() {
+         {tr("Jina la mtumiaji")}
+         <Input autoComplete="username" required minLength={3} maxLength={32} value={username} onChange={(e) => setUsername(e.target.value)} placeholder={tr("Jina la mtumiaji")} />
+       </label>
+-      {loginMode === "password" ? (
+-        <label className="grid gap-1 text-sm text-blue-100">
+-          {tr("Nenosiri")}
+-          <span className="relative block">
+-            <Input className="pr-16" type={showPassword ? "text" : "password"} autoComplete={firstSetup ? "new-password" : "current-password"} required minLength={firstSetup ? 10 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={tr("Nenosiri")} />
+-            <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute inset-y-0 right-2 flex w-9 items-center justify-center rounded-md text-blue-100 transition hover:bg-white/10" aria-label={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")} title={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")}>
+-              {showPassword ? <EyeOff size={19} strokeWidth={1.8} /> : <Eye size={19} strokeWidth={1.8} />}
+-            </button>
+-          </span>
+-        </label>
+-      ) : (
+-        <div className="grid gap-2 text-sm text-blue-100">
+-          <label className="grid gap-1">{tr("PIN ya wafanyakazi")}
+-            <Input inputMode="numeric" autoComplete="one-time-code" type="password" required minLength={4} maxLength={4} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="PIN" />
+-          </label>
+-          <div className="grid grid-cols-3 gap-2">
+-            {(["1", "2", "3", "4", "5", "6", "7", "8", "9"] as const).map((digit) => <Button key={digit} type="button" variant="secondary" className="min-h-12 bg-white text-slate-900 text-lg font-bold hover:bg-slate-200 disabled:opacity-100 disabled:bg-slate-200 disabled:text-slate-500" disabled={busy || pin.length >= 4} onClick={() => setPin((p) => (p.length < 4 ? p + digit : p))}>{digit}</Button>)}
+-            <Button type="button" variant="secondary" className="min-h-12 bg-amber-300 text-slate-900 font-bold hover:bg-amber-200 disabled:opacity-100 disabled:bg-amber-100 disabled:text-slate-500" disabled={busy || !pin} onClick={() => setPin("")}>{tr("Futa")}</Button>
+-            <Button type="button" variant="secondary" className="min-h-12 bg-white text-slate-900 text-lg font-bold hover:bg-slate-200 disabled:opacity-100 disabled:bg-slate-200 disabled:text-slate-500" disabled={busy || pin.length >= 4} onClick={() => setPin((p) => (p.length < 4 ? p + "0" : p))}>0</Button>
+-            <Button type="button" variant="secondary" className="min-h-12 bg-sky-300 text-slate-900 font-bold hover:bg-sky-200 disabled:opacity-100 disabled:bg-sky-100 disabled:text-slate-500" disabled={busy || !pin} onClick={() => setPin((p) => p.slice(0, -1))}>⌫</Button>
+-          </div>
+-        </div>
+-      )}
+-      <Button type="button" variant="outline" className="w-full" disabled={busy || firstSetup} onClick={() => { const next = loginMode === "password" ? "pin" : "password"; setLoginMode(next); setPassword(""); setPin(""); setError(""); if (next === "pin" && !username) { try { setUsername(window.localStorage.getItem(PIN_USER_KEY) ?? ""); } catch { /* ignore */ } } }}>
+-        {loginMode === "password" ? tr("Staff PIN") : tr("Ingia kwa username na password")}
++      <label className="grid gap-1 text-sm text-blue-100">
++        {tr("Nenosiri")}
++        <span className="relative block">
++          <Input className="pr-16" type={showPassword ? "text" : "password"} autoComplete={firstSetup ? "new-password" : "current-password"} required minLength={firstSetup ? 10 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={tr("Nenosiri")} />
++          <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute inset-y-0 right-2 flex w-9 items-center justify-center rounded-md text-blue-100 transition hover:bg-white/10" aria-label={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")} title={showPassword ? tr("Ficha nenosiri") : tr("Onyesha nenosiri")}>
++            {showPassword ? <EyeOff size={19} strokeWidth={1.8} /> : <Eye size={19} strokeWidth={1.8} />}
++          </button>
++        </span>
++      </label>
++      <Button type="button" variant="outline" className="w-full" disabled={busy || firstSetup} onClick={() => { setLoginMode("pin"); setPassword(""); setPin(""); setError(""); }}>
++        {tr("Staff PIN")}
+       </Button>
+       {error && <p role="alert" className="rounded-lg bg-red-900/40 p-3 text-sm text-red-100">{error}</p>}
+-      <Button type="submit" disabled={isLoading || busy || (loginMode === "pin" && pin.length !== 4)} className="w-full">
+-        {firstSetup && loginMode === "password" ? tr("Fungua akaunti ya msimamizi") : tr("Ingia")}
++      <Button type="submit" disabled={isLoading || busy} className="w-full">
++        {firstSetup ? tr("Fungua akaunti ya msimamizi") : tr("Ingia")}
+       </Button>
+     </form>
+   );
+diff --git a/src/lib/i18n-dict-access.ts b/src/lib/i18n-dict-access.ts
+index 8dd3710..0a6c52d 100644
+--- a/src/lib/i18n-dict-access.ts
++++ b/src/lib/i18n-dict-access.ts
+@@ -44,4 +44,23 @@ export const ACCESS_DICT: Record<string, { sw: string; en: string }> = {
+   "Huna ruhusa ya kubadili / kufuta stock": { sw: "Huna ruhusa ya kubadili / kufuta stock", en: "You do not have permission to change / delete stock" },
+   "Huna ruhusa ya kubadili / kufuta stock. Muombe Super Admin akupe ruhusa hii.": { sw: "Huna ruhusa ya kubadili / kufuta stock. Muombe Super Admin akupe ruhusa hii.", en: "You do not have permission to change / delete stock. Ask the Super Admin to give you this permission." },
+   "Ruhusa ya kubadili / kufuta stock inatolewa na kuondolewa na Super Admin pekee.": { sw: "Ruhusa ya kubadili / kufuta stock inatolewa na kuondolewa na Super Admin pekee.", en: "Only the Super Admin can give or remove the permission to change / delete stock." },
++  "Weka PIN yako": { sw: "Weka PIN yako", en: "Enter your PIN" },
++  "Futa tarakimu ya mwisho": { sw: "Futa tarakimu ya mwisho", en: "Delete last digit" },
++  "PIN ya tarakimu 4 hadi 6": { sw: "PIN ya tarakimu 4 hadi 6", en: "PIN of 4 to 6 digits" },
++  "PIN mpya ya tarakimu 4 hadi 6 (hiari ikiwa tayari ipo)": { sw: "PIN mpya ya tarakimu 4 hadi 6 (hiari ikiwa tayari ipo)", en: "New PIN of 4 to 6 digits (optional if one already exists)" },
++  "PIN lazima iwe tarakimu 4 hadi 6.": { sw: "PIN lazima iwe tarakimu 4 hadi 6.", en: "The PIN must be 4 to 6 digits." },
++  "Weka PIN ya tarakimu 4 hadi 6 kabla ya kuruhusu Staff PIN.": { sw: "Weka PIN ya tarakimu 4 hadi 6 kabla ya kuruhusu Staff PIN.", en: "Enter a PIN of 4 to 6 digits before allowing Staff PIN." },
++  "Weka PIN ya tarakimu 4 hadi 6 kabla ya kuwasha Staff PIN.": { sw: "Weka PIN ya tarakimu 4 hadi 6 kabla ya kuwasha Staff PIN.", en: "Enter a PIN of 4 to 6 digits before turning on Staff PIN." },
++  "Mhudumu husajiliwa kwa PIN: weka PIN ya tarakimu 4 hadi 6.": { sw: "Mhudumu husajiliwa kwa PIN: weka PIN ya tarakimu 4 hadi 6.", en: "A waiter is registered with a PIN: enter a PIN of 4 to 6 digits." },
++  "Mhudumu huingia kwa PIN tu (hana password).": { sw: "Mhudumu huingia kwa PIN tu (hana password).", en: "The waiter signs in with a PIN only (no password)." },
++  "PIN ni ya kipekee kwenye mfumo mzima: mfumo unamtambua mtu kwa PIN yake peke yake, kwa hiyo hairuhusiwi PIN ile ile kwa watu wawili.": { sw: "PIN ni ya kipekee kwenye mfumo mzima: mfumo unamtambua mtu kwa PIN yake peke yake, kwa hiyo hairuhusiwi PIN ile ile kwa watu wawili.", en: "A PIN is unique across the whole system: the system recognises a person by the PIN alone, so the same PIN cannot be given to two people." },
++  "PIN hii tayari inatumika na mtu mwingine kwenye mfumo. Chagua PIN nyingine.": { sw: "PIN hii tayari inatumika na mtu mwingine kwenye mfumo. Chagua PIN nyingine.", en: "This PIN is already used by someone else in the system. Choose another PIN." },
++  "PIN ya mtumiaji huyu sasa inatumiwa na mtu mwingine. Mwekee PIN mpya kabla ya kumwasha.": { sw: "PIN ya mtumiaji huyu sasa inatumiwa na mtu mwingine. Mwekee PIN mpya kabla ya kumwasha.", en: "This user's PIN is now used by someone else. Give him a new PIN before turning him on." },
++  "Hesabu za mauzo ya Selling Point (za zamani)": { sw: "Hesabu za mauzo ya Selling Point (za zamani)", en: "Selling Point sales accounting (older receipts)" },
++  "Malipo ya wahudumu yaliyopokelewa kabla ya marekebisho haya hayakuingia kwenye hesabu (Profit & Loss, Cash flow, Balance sheet). Kitufe hiki kinaingiza ambayo hayajaingizwa; ukibonyeza mara mbili hakirudii. Chagua biashara kwanza.": { sw: "Malipo ya wahudumu yaliyopokelewa kabla ya marekebisho haya hayakuingia kwenye hesabu (Profit & Loss, Cash flow, Balance sheet). Kitufe hiki kinaingiza ambayo hayajaingizwa; ukibonyeza mara mbili hakirudii. Chagua biashara kwanza.", en: "Waiter money received before this fix was not booked in the accounts (Profit & Loss, Cash flow, Balance sheet). This button books what is missing; pressing it twice never repeats. Choose a business first." },
++  "Ingiza hesabu zilizokosekana": { sw: "Ingiza hesabu zilizokosekana", en: "Book the missing entries" },
++  "Imekamilika.": { sw: "Imekamilika.", en: "Done." },
++  "Zimeingizwa: {0}. Zimerukwa (kipindi kimefungwa): {1}.": { sw: "Zimeingizwa: {0}. Zimerukwa (kipindi kimefungwa): {1}.", en: "Booked: {0}. Skipped (period closed): {1}." },
++  "Ingia kwa username na password": { sw: "Ingia kwa username na password", en: "Sign in with username and password" },
++  "Staff PIN": { sw: "Staff PIN", en: "Staff PIN" },
+ };
+diff --git a/src/lib/i18n-dict-sellingpoint.ts b/src/lib/i18n-dict-sellingpoint.ts
+index d578b67..b631a0d 100644
+--- a/src/lib/i18n-dict-sellingpoint.ts
++++ b/src/lib/i18n-dict-sellingpoint.ts
+@@ -1,5 +1,26 @@
+ /* Selling Point, Bills and Cashier staff-settlement texts (Kiswahili is the source text; English alongside). */
+ export const SELLING_POINT_DICT: Record<string, { sw: string; en: string }> = {
++  "BILI YA MTEJA": { sw: "BILI YA MTEJA", en: "CUSTOMER'S BILL" },
++  "ODA": { sw: "ODA", en: "ORDER" },
++  "Muda wa kufungua": { sw: "Muda wa kufungua", en: "Open Time" },
++  "Muda wa kuchapa": { sw: "Muda wa kuchapa", en: "Print Time" },
++  "Namba ya bili": { sw: "Namba ya bili", en: "Bill ID" },
++  "Mhudumu": { sw: "Mhudumu", en: "Attendant" },
++  "Namba ya meza": { sw: "Namba ya meza", en: "Table No" },
++  "IDADI": { sw: "IDADI", en: "QTY" },
++  "BIDHAA": { sw: "BIDHAA", en: "ITEM" },
++  "KIASI": { sw: "KIASI", en: "AMOUNT" },
++  "JUMLA INAYODAIWA": { sw: "JUMLA INAYODAIWA", en: "TOTAL DUE" },
++  "Pokea fedha za wahudumu → Cashier": { sw: "Pokea fedha za wahudumu → Cashier", en: "Receive waiters' money → Cashier" },
++  "Ukurasa huu ni wa cashier pekee.": { sw: "Ukurasa huu ni wa cashier pekee.", en: "This page is for the cashier only." },
++  "Cashier": { sw: "Cashier", en: "Cashier" },
++  "Pokea fedha kutoka kwa wahudumu, weka malipo na uone madeni yao.": { sw: "Pokea fedha kutoka kwa wahudumu, weka malipo na uone madeni yao.", en: "Receive money from waiters, record payments and see their debts." },
++  "Foleni ya oda": { sw: "Foleni ya oda", en: "Order queue" },
++  "Oda za wahudumu zisizolipwa": { sw: "Oda za wahudumu zisizolipwa", en: "Waiter orders not yet paid" },
++  "Onyesha invoice zilizokwisha kwenye bili": { sw: "Onyesha invoice zilizokwisha kwenye bili", en: "Show invoices already on a bill" },
++  "Bili imechapishwa na kuondolewa kwenye orodha. Fungua tena kupitia \"Bili zilizopita\".": { sw: "Bili imechapishwa na kuondolewa kwenye orodha. Fungua tena kupitia \"Bili zilizopita\".", en: "Bill printed and removed from the list. Reopen it from \"Previous bills\"." },
++  "Printer iliyochaguliwa ni ya \"direct\" (USB/Bluetooth) na haiwezi kutumika hapa. Chagua printer ya QZ Tray kwenye mipangilio ya vifaa.": { sw: "Printer iliyochaguliwa ni ya \"direct\" (USB/Bluetooth) na haiwezi kutumika hapa. Chagua printer ya QZ Tray kwenye mipangilio ya vifaa.", en: "The selected printer is a \"direct\" (USB/Bluetooth) printer and cannot be used here. Choose a QZ Tray printer in the hardware settings." },
++  "Oda hii tayari imelipwa kwa cashier; haiwezi kufutwa (mauzo na fedha vimeshahesabiwa).": { sw: "Oda hii tayari imelipwa kwa cashier; haiwezi kufutwa (mauzo na fedha vimeshahesabiwa).", en: "This order was already paid to the cashier and cannot be deleted (sales and cash are already counted)." },
+   "Seva haijasasishwa: kazi '{0}' haipo kwenye mfumo huu. Wasiliana na msimamizi wa mfumo.": { sw: "Seva haijasasishwa: kazi '{0}' haipo kwenye mfumo huu. Wasiliana na msimamizi wa mfumo.", en: "The server is not up to date: function '{0}' does not exist on this system. Contact your system administrator." },
+   "Aina ya eneo": { sw: "Aina ya eneo", en: "Location type" },
+   "Meza": { sw: "Meza", en: "Table" },
+diff --git a/src/lib/print-waiter-order.test.ts b/src/lib/print-waiter-order.test.ts
+index 406df81..25bb325 100644
+--- a/src/lib/print-waiter-order.test.ts
++++ b/src/lib/print-waiter-order.test.ts
+@@ -1,7 +1,7 @@
+ import { beforeEach, describe, expect, it, vi } from "vitest";
+ import { toast } from "sonner";
+ import { printHtmlViaQz } from "./printers.ts";
+-import { printWaiterOrder } from "./print-waiter-order.ts";
++import { printWaiterOrder, qzPrinterFrom } from "./print-waiter-order.ts";
+ 
+ vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+ vi.mock("./i18n.ts", () => ({ tr: (value: string) => value }));
+@@ -35,9 +35,32 @@ describe("waiter order QZ printing", () => {
+     expect(html).toContain("58mm");
+   });
+ 
++  it("prints logo, title, company, info rows, QTY/ITEM/AMOUNT, total, payment info and footer in the receipt layout", async () => {
++    vi.mocked(printHtmlViaQz).mockResolvedValue(undefined);
++    await printWaiterOrder(order, "Receipt Printer", "80mm", { title: "CUSTOMER'S BILL", companyName: "Rudy's Farm", phone: "0656403636", logoUrl: "data:image/png;base64,AAAA", footer: "The Barbecue Place", paymentInfo: ["Voda: 51068098"], billId: "261022006", openTime: "2026-10-22 13:17:05" });
++    const html = vi.mocked(printHtmlViaQz).mock.calls[0][1] as string;
++    for (const part of ["data:image/png;base64,AAAA", "CUSTOMER&#39;S BILL", "RUDY&#39;S FARM", "TEL : 0656403636", "261022006", "2026-10-22 13:17:05", "IDADI", "BIDHAA", "KIASI", "JUMLA INAYODAIWA", "12,000/=", "Voda: 51068098", "The Barbecue Place"]) expect(html, part).toContain(part);
++    expect(html.indexOf("data:image/png")).toBeLessThan(html.indexOf("CUSTOMER"));
++    expect(html.indexOf("JUMLA INAYODAIWA")).toBeLessThan(html.indexOf("Voda: 51068098"));
++    expect(html.indexOf("Voda: 51068098")).toBeLessThan(html.indexOf("The Barbecue Place"));
++  });
++
+   it("reports QZ Tray failures and never reports the order as printed", async () => {
+     vi.mocked(printHtmlViaQz).mockRejectedValue(new Error("QZ disconnected"));
+     await expect(printWaiterOrder(order, "Receipt Printer")).resolves.toBe(false);
+     expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("QZ disconnected"));
+   });
+ });
++
++describe("qzPrinterFrom (cashier and waiter share one printer rule)", () => {
++  it("uses the saved printer for installed or unset source", () => {
++    expect(qzPrinterFrom({ printerSource: "installed", receiptPrinter: " POS-80 " })).toBe("POS-80");
++    expect(qzPrinterFrom({ receiptPrinter: "POS-80" })).toBe("POS-80");
++  });
++  it("returns nothing for direct devices, blank names or missing settings", () => {
++    expect(qzPrinterFrom({ printerSource: "direct", receiptPrinter: "POS-80" })).toBeUndefined();
++    expect(qzPrinterFrom({ printerSource: "installed", receiptPrinter: "  " })).toBeUndefined();
++    expect(qzPrinterFrom(undefined)).toBeUndefined();
++  });
++});
++
+diff --git a/src/lib/print-waiter-order.ts b/src/lib/print-waiter-order.ts
+index 65eae11..8cfe6a5 100644
+--- a/src/lib/print-waiter-order.ts
++++ b/src/lib/print-waiter-order.ts
+@@ -1,6 +1,7 @@
+ import { toast } from "sonner";
+ import { tr } from "./i18n.ts";
+ import { printHtmlViaQz } from "./printers.ts";
++import { stamp, type ReceiptBranding } from "./receipt-branding.ts";
+ 
+ export type PrintableOrder = {
+   customerName: string;
+@@ -11,6 +12,17 @@ export type PrintableOrder = {
+   lines: Array<{ productName: string; qty: number; lineTotal: number }>;
+ };
+ 
++type HardwareSettings = { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
++
++/**
++ * The QZ Tray printer saved under Maintenance > Hardware. One rule for waiter, cashier and Bills printing.
++ * "direct" (USB/Bluetooth) printers are not QZ printers; everything else with a saved name is used as-is.
++ */
++export function qzPrinterFrom(hardware?: HardwareSettings | null): string | undefined {
++  if (!hardware || hardware.printerSource === "direct") return undefined;
++  return hardware.receiptPrinter?.trim() || undefined;
++}
++
+ const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
+   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+ })[c] as string);
+@@ -19,35 +31,56 @@ const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (
+  * Print waiter order slips through the configured QZ Tray printer only.
+  * Resolving true means QZ Tray accepted the job; it cannot prove paper physically emerged.
+  */
+-export async function printWaiterOrder(order: PrintableOrder, printerName?: string, paperWidth = "80mm"): Promise<boolean> {
++export async function printWaiterOrder(order: PrintableOrder, printerName?: string, paperWidth = "80mm", branding: ReceiptBranding = {}): Promise<boolean> {
+   if (!printerName?.trim()) {
+     toast.error(tr("Chagua printer ya QZ Tray kwenye mipangilio ya vifaa kabla ya kuchapa."));
+     return false;
+   }
+   const rows = order.lines.map((line) => `<tr>
+-    <td class="name">${escapeHtml(line.productName)}</td>
+     <td class="qty">${escapeHtml(Number(line.qty).toLocaleString())}</td>
+-    <td class="amount">${escapeHtml(Number(line.lineTotal).toLocaleString())}</td>
++    <td class="name">${escapeHtml(line.productName)}</td>
++    <td class="amount">${escapeHtml(Number(line.lineTotal).toLocaleString())}/=</td>
+   </tr>`).join("");
+   const width = paperWidth === "58mm" ? "58mm" : paperWidth === "A4" ? "190mm" : "80mm";
++  const info = (label: string, value?: string) => value ? `<div class="row"><span class="lab">${escapeHtml(label)}</span><span>: ${escapeHtml(value)}</span></div>` : "";
++  const company = (branding.companyName ?? "").trim();
+   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+     @page{size:${width} auto;margin:3mm}*{box-sizing:border-box}
+-    body{font:12px/1.35 monospace;margin:0;width:100%;overflow-wrap:anywhere}
+-    h2,p{margin:0 0 5px}h2{text-align:center;font-size:14px}
++    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:100%;overflow-wrap:anywhere;color:#000}
++    .c{text-align:center}p{margin:0 0 3px}.title{font-size:15px;font-weight:800;margin:6px 0 2px}
++    .logo{display:block;margin:0 auto 4px;max-width:60%;max-height:70px;object-fit:contain;filter:grayscale(1)}
++    hr{border:0;border-top:1px dashed #000;margin:6px 0}
++    .row{display:flex;gap:2px}.lab{display:inline-block;min-width:22mm}
+     table{width:100%;border-collapse:collapse;table-layout:fixed}
+-    th,td{padding:3px 1px;border-bottom:1px dashed #999;vertical-align:top}
+-    th{text-align:left} .name{width:52%;overflow-wrap:anywhere;word-break:normal}
+-    .qty{width:14%;text-align:right;white-space:normal}
+-    .amount{width:34%;text-align:right;overflow-wrap:anywhere}
+-    .total{font-weight:bold;text-align:right;margin-top:8px}
++    th,td{padding:2px 1px;vertical-align:top;text-align:left}th{font-weight:800}
++    .qty{width:12%;overflow-wrap:anywhere}.name{width:56%;overflow-wrap:anywhere;word-break:normal}
++    .amount{width:32%;text-align:right;overflow-wrap:anywhere}th.amount{text-align:right}
++    .total{display:flex;justify-content:space-between;font-weight:800;font-size:14px;margin:2px 0}
++    .sign{display:flex;gap:2px;margin:10px 0 2px}.line{flex:1;border-bottom:1px solid #000}
+   </style></head><body>
+-    <h2>SMARTHUB POS - ODA</h2>
+-    <p>${escapeHtml(tr("Mteja"))}: ${escapeHtml(order.customerName)}</p>
+-    <p>${escapeHtml(tr("Meza"))}: ${escapeHtml(order.tableNumber || "-")}</p>
+-    <p>${escapeHtml(tr("Waiter"))}: ${escapeHtml(order.waiterName)}</p>
+-    <table><thead><tr><th class="name">${escapeHtml(tr("Bidhaa"))}</th><th class="qty">${escapeHtml(tr("Idadi"))}</th><th class="amount">${escapeHtml(tr("Jumla"))}</th></tr></thead><tbody>${rows}</tbody></table>
+-    <p class="total">${escapeHtml(tr("JUMLA"))}: ${escapeHtml(Number(order.total).toLocaleString())}</p>
+-    ${order.notes ? `<p>${escapeHtml(tr("Maelezo"))}: ${escapeHtml(order.notes)}</p>` : ""}
++    ${branding.logoUrl ? `<img class="logo" alt="" src="${escapeHtml(branding.logoUrl)}">` : ""}
++    <p class="c title">${escapeHtml(branding.title || tr("ODA"))}</p>
++    ${company ? `<p class="c">${escapeHtml(company.toUpperCase())}</p>` : ""}
++    ${branding.address ? `<p class="c">${escapeHtml(branding.address)}</p>` : ""}
++    ${branding.phone ? `<p class="c">TEL : ${escapeHtml(branding.phone)}</p>` : ""}
++    <hr>
++    ${info(tr("Muda wa kufungua"), branding.openTime)}
++    ${info(tr("Muda wa kuchapa"), stamp(new Date()))}
++    ${info(tr("Namba ya bili"), branding.billId)}
++    ${info(tr("Mhudumu"), order.waiterName)}
++    ${info(tr("Mteja"), order.customerName)}
++    ${info(tr("Namba ya meza"), order.tableNumber)}
++    <hr>
++    <table><thead><tr><th class="qty">${escapeHtml(tr("IDADI"))}</th><th class="name">${escapeHtml(tr("BIDHAA"))}</th><th class="amount">${escapeHtml(tr("KIASI"))}</th></tr></thead></table>
++    <hr>
++    <table><tbody>${rows}</tbody></table>
++    <hr>
++    <div class="total"><span>${escapeHtml(tr("JUMLA INAYODAIWA"))}</span><span>${escapeHtml(Number(order.total).toLocaleString())}/=</span></div>
++    <hr>
++    ${order.notes ? `<p>${escapeHtml(tr("Maelezo"))}: ${escapeHtml(order.notes)}</p>` : `<div class="sign"><span>${escapeHtml(tr("Mteja"))}</span><span>:</span><span class="line"></span></div><div class="sign"><span>${escapeHtml(tr("Maelezo"))}</span><span>:</span><span class="line"></span></div>`}
++    <hr>
++    ${(branding.paymentInfo ?? []).map((l) => `<p class="c">${escapeHtml(l)}</p>`).join("")}
++    ${branding.footer ? `<p class="c">${escapeHtml(branding.footer)}</p>` : ""}
+   </body></html>`;
+   try {
+     await printHtmlViaQz(printerName.trim(), html);
+diff --git a/src/lib/selling-point-access.ts b/src/lib/selling-point-access.ts
+index 3c585cb..6d2ec82 100644
+--- a/src/lib/selling-point-access.ts
++++ b/src/lib/selling-point-access.ts
+@@ -50,7 +50,9 @@ export function routeAccess({ pathname, role, permissions, modules, moduleKey }:
+   const sellingPoint = pathname === "/selling-point" || pathname.startsWith("/selling-point/");
+   if (sellingPoint && isSuperAdminRole(role)) return "allowed";
+   if (moduleKey && modules && !modules.includes(moduleKey)) return "blocked";
+-  const needed = sellingPoint ? "waiterOrders.view" : pathname === "/sales" || pathname.startsWith("/sales/") ? "sales.view" : null;
++  const cashierDesk = pathname === "/cashier" || pathname.startsWith("/cashier/");
++  if (cashierDesk && isSuperAdminRole(role)) return "blocked"; // orders and waiter money belong to the cashier, not the Super Admin
++  const needed = cashierDesk ? "waiterOrders.manage" : sellingPoint ? "waiterOrders.view" : pathname === "/sales" || pathname.startsWith("/sales/") ? "sales.view" : null;
+   if (!needed) return "allowed";
+   if (!permissions) return "loading";
+   return permissions.includes(needed) ? "allowed" : "blocked";
+diff --git a/src/pages/bills/page.tsx b/src/pages/bills/page.tsx
+index 8583330..c1f03f6 100644
+--- a/src/pages/bills/page.tsx
++++ b/src/pages/bills/page.tsx
+@@ -11,6 +11,8 @@ import { formatDate } from "@/lib/format.ts";
+ import { tr, errorText } from "@/lib/i18n.ts";
+ import { toast } from "sonner";
+ import BillSheet from "@/components/BillSheet.tsx";
++import BillsPanel from "@/pages/waiter-orders/BillsPanel.tsx";
++import ErrorBoundary from "@/components/error-boundary.tsx";
+ 
+ /**
+  * Bills = customer bills built from Sales invoices.
+@@ -23,11 +25,13 @@ export default function BillsPage() {
+   const [search, setSearch] = useState("");
+   const [clientId, setClientId] = useState("");
+   const [onlyOpen, setOnlyOpen] = useState(false);
++  const [showBilled, setShowBilled] = useState(false); // invoices already put on a bill leave the list; tick to see them again
+   const [picked, setPicked] = useState<Set<string>>(new Set());
+   const [showBill, setShowBill] = useState(false);
+   const [billInvoiceIds, setBillInvoiceIds] = useState<Id<"invoices">[]>([]);
+   const [creatingBill, setCreatingBill] = useState(false);
+   const access = useQuery(api.customerBills.access);
++  const business = useQuery(api.tenants.current);
+   const createBill = useMutation(api.customerBills.create);
+   const [allDepts, setAllDepts] = useState(true);
+   const [deptFilter, setDeptFilter] = useState("");
+@@ -44,7 +48,7 @@ export default function BillsPage() {
+     [clients, needle],
+   );
+ 
+-  const list = (invoices ?? []).filter((i) => !combine || !deptFilter || i.department === deptFilter);
++  const list = (invoices ?? []).filter((i) => (!combine || !deptFilter || i.department === deptFilter) && (showBilled || !i.alreadyBilled));
+   const eligible = list.filter((i) => i.eligible);
+   const chosen = eligible.filter((i) => picked.has(String(i._id)));
+   const sum = (k: "total" | "amountPaid" | "outstanding") => chosen.reduce((n, i) => n + i[k], 0);
+@@ -79,6 +83,8 @@ export default function BillsPage() {
+       <div className="print:hidden space-y-4">
+         <PageHeader icon={Receipt} title={tr("Bills")} subtitle={tr("Bili za wateja: chagua mteja, weka alama kwenye invoice unazotaka, kisha chapisha bili.")} />
+ 
++        {business?.waiterOrdersEnabled !== false && <ErrorBoundary inline><BillsPanel /></ErrorBoundary>}
++
+         <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3">
+           <Stat label={tr("Invoice zilizochaguliwa")} value={`${chosen.length} / ${eligible.length}`} icon={Receipt} tone="violet" />
+           <Stat label={tr("Jumla ya bili")} value={money(sum("total"))} icon={Wallet} tone="blue" />
+@@ -95,6 +101,7 @@ export default function BillsPage() {
+               </SelectBox>
+             </FormField>
+             <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={onlyOpen} onChange={(e) => { setOnlyOpen(e.target.checked); resetSelection(); }} />{tr("Zenye deni tu")}</label>
++            <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={showBilled} onChange={(e) => { setShowBilled(e.target.checked); resetSelection(); }} />{tr("Onyesha invoice zilizokwisha kwenye bili")}</label>
+             {access?.allDepartments && (
+               <>
+                 <label className="flex items-end gap-2 pb-2 text-sm md:col-span-2"><input type="checkbox" checked={allDepts} onChange={(e) => { setAllDepts(e.target.checked); setDeptFilter(""); resetSelection(); }} />{tr("Unganisha invoice za idara zote (Jikoni, Bar, Lounge…)")}</label>
+@@ -157,7 +164,7 @@ export default function BillsPage() {
+         </div>
+       </Panel>}
+ 
+-      {showBill && billInvoiceIds.length > 0 && <BillSheet invoiceIds={billInvoiceIds} printToken={printToken} paper={paper} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={(value) => { setWhatsappEnabled(value); localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); }} />}
++      {showBill && billInvoiceIds.length > 0 && <BillSheet invoiceIds={billInvoiceIds} printToken={printToken} paper={paper} onPrinted={() => { setShowBill(false); setBillInvoiceIds([]); setPicked(new Set()); toast.success(tr("Bili imechapishwa na kuondolewa kwenye orodha. Fungua tena kupitia \"Bili zilizopita\".")); }} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={(value) => { setWhatsappEnabled(value); localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); }} />}
+     </div>
+   );
+ }
+diff --git a/src/pages/dashboard/page.tsx b/src/pages/dashboard/page.tsx
+index 4112480..3105eb2 100644
+--- a/src/pages/dashboard/page.tsx
++++ b/src/pages/dashboard/page.tsx
+@@ -45,6 +45,7 @@ function BusinessDashboard() {
+     { label: tr("Today's Sales"), value: metrics && money(metrics.todaySales), icon: TrendingUp, tone: "blue" as const },
+     { label: tr("Cash Received"), value: metrics && money(metrics.todayCash), icon: DollarSign, tone: "green" as const },
+     { label: tr("Today's Purchases"), value: metrics && money(metrics.todayPurchaseTotal), icon: Truck, tone: "violet" as const },
++    { label: tr("Oda za wahudumu zisizolipwa"), value: metrics && money(metrics.waiterOwing), icon: Receipt, tone: "amber" as const },
+     { label: tr("Outstanding Receivables"), value: metrics && money(metrics.totalOutstandingCustomer), icon: ShoppingCart, tone: "amber" as const },
+     { label: tr("Outstanding Payables"), value: metrics && money(metrics.totalOutstandingSupplier), icon: Users, tone: "rose" as const },
+     { label: tr("Inventory Value"), value: metrics && money(metrics.inventoryValue), icon: Package, tone: "cyan" as const },
+diff --git a/src/pages/layout/_components/sidebar.tsx b/src/pages/layout/_components/sidebar.tsx
+index ce84b5d..3bff4d5 100644
+--- a/src/pages/layout/_components/sidebar.tsx
++++ b/src/pages/layout/_components/sidebar.tsx
+@@ -16,6 +16,7 @@ import {
+   UserCog,
+   Bell,
+   LifeBuoy,
++  Wallet,
+ } from "lucide-react";
+ import { tr } from "@/lib/i18n.ts";
+ import { isSellingStaffRole, isSuperAdminRole, showSellingPointInMenu } from "@/lib/selling-point-access.ts";
+@@ -28,6 +29,7 @@ const groups = [
+       { label: tr("Dashboard"), icon: LayoutDashboard, path: "/dashboard", module: "dashboard" },
+       { label: tr("Sales"), icon: ShoppingCart, path: "/sales", module: "sales" },
+       { label: tr("Selling Point"), icon: Receipt, path: "/selling-point", module: "waiterOrders" },
++      { label: tr("Cashier"), icon: Wallet, path: "/cashier", module: "cashier" },
+       { label: tr("Stock"), icon: Package, path: "/stock", module: "stock" },
+       { label: tr("Purchasing"), icon: Truck, path: "/purchasing", module: "purchasing" },
+     ],
+@@ -87,6 +89,9 @@ export default function Sidebar({
+         if (item.module === "waiterOrders") {
+           return showSellingPointInMenu({ role: currentUser?.role, permissions, modules, waiterOrdersEnabled: tenant?.waiterOrdersEnabled });
+         }
++        if (item.module === "cashier") {
++          return !superAdmin && !sellingStaff && permissions.includes("waiterOrders.manage") && tenant?.waiterOrdersEnabled === true && (!modules || modules.includes("waiterOrders"));
++        }
+         if (sellingStaff && item.module === "dashboard") return false;
+         if (superAdmin) return true;
+         if (modules && !modules.includes(item.module)) return false;
+diff --git a/src/pages/maintenance/DataPages.tsx b/src/pages/maintenance/DataPages.tsx
+index 55306ef..1ec842f 100644
+--- a/src/pages/maintenance/DataPages.tsx
++++ b/src/pages/maintenance/DataPages.tsx
+@@ -98,8 +98,10 @@ export function DatabasePage() {
+   const health = useQuery(api.maintenance.healthCheck, {});
+   const assign = useMutation(api.maintenance.assignUnscoped);
+   const purge = useMutation(api.maintenance.purgeAuditLogs);
++  const bookWaiterJournals = useMutation(api.waiterCollections.bookMissingJournals);
+   const { busy, run } = useRun();
+   const [days, setDays] = useState("365");
++  const [booked, setBooked] = useState<{ booked: number; skipped: number } | null>(null);
+   const issues = health ? [
+     health.superAdmins === 0 && tr("Hakuna Super Admin aliye active."),
+     health.usersWithoutRole > 0 && tr("Watumiaji {0} hawana role.", [health.usersWithoutRole]),
+@@ -121,6 +123,11 @@ export function DatabasePage() {
+           <Button disabled={busy} onClick={() => void run(async () => { const r = await assign({}); if (r.more) throw new Error(tr("Zimeunganishwa {0}; bado zipo — bonyeza tena.", [r.updated])); }, tr("Rekodi zimeunganishwa na ofisi/branch ya kwanza."))}>{tr("Unganisha rekodi zisizo na ofisi na ofisi ya kwanza")}</Button>
+         )}
+       </Card>
++      <Card title={tr("Hesabu za mauzo ya Selling Point (za zamani)")}>
++        <p className="text-sm">{tr("Malipo ya wahudumu yaliyopokelewa kabla ya marekebisho haya hayakuingia kwenye hesabu (Profit & Loss, Cash flow, Balance sheet). Kitufe hiki kinaingiza ambayo hayajaingizwa; ukibonyeza mara mbili hakirudii. Chagua biashara kwanza.")}</p>
++        <Button variant="outline" disabled={busy} onClick={() => void run(async () => { setBooked(await bookWaiterJournals({})); }, tr("Imekamilika."))}>{tr("Ingiza hesabu zilizokosekana")}</Button>
++        {booked && <p className="text-sm">{tr("Zimeingizwa: {0}. Zimerukwa (kipindi kimefungwa): {1}.", [booked.booked, booked.skipped])}</p>}
++      </Card>
+       <Card title={tr("Idadi ya rekodi kwa table")}>
+         {!health ? <Loading /> : (
+           <div className="grid gap-x-8 gap-y-1 text-sm md:grid-cols-3">
+diff --git a/src/pages/maintenance/UsersPage.tsx b/src/pages/maintenance/UsersPage.tsx
+index 77e411a..c4c410c 100644
+--- a/src/pages/maintenance/UsersPage.tsx
++++ b/src/pages/maintenance/UsersPage.tsx
+@@ -40,7 +40,8 @@ export default function UsersPage() {
+   // A user tied to ONE department can only create/manage users of that same department.
+   // A user tied to one department, or given a few, can only give those same departments to others. null = no limit.
+   const myLimit: string[] | null = isSuper ? null : me?.branchIds && me.branchIds.length > 1 ? me.branchIds.map(String) : me?.branchId && !me?.branchPicked ? [String(me.branchId)] : null;
+-  const departmentRoles = ["cashier", "accountant", "viewer"]; // these must always belong to one department when the business has departments
++  const departmentRoles = ["cashier", "accountant", "viewer"];
++  const pinOnlyRole = !!f && ["waiter", "waitress"].includes(f.role.trim().toLowerCase()); // waiters / waitresses are registered with a PIN, not a password // these must always belong to one department when the business has departments
+   const needsBranch = !!f && !editingSelf && f.role !== "super_admin" && branches.length > 0 && departmentRoles.includes(f.role) && !f.allDepartments && f.branchIds.length === 0;
+   const branchChoices = myLimit ? branches.filter((b) => myLimit.includes(b._id)) : branches;
+ 
+@@ -52,16 +53,20 @@ export default function UsersPage() {
+           <div className="grid gap-4 md:grid-cols-2">
+             <TextField label={tr("Jina kamili")} value={f.name} onChange={(v) => set("name", v)} />
+             <TextField label={tr("Username")} value={f.username} onChange={(v) => set("username", v.toLowerCase())} disabled={editing && editingSelf} hint={tr("Herufi ndogo/namba, 3–32, bila nafasi. Jina ni la kipekee kwa biashara zote (mfano asha.duka1). Biashara moja inaweza kuwa na admin na watumiaji wengi wa role moja, kila mmoja akiwa na username yake.")} />
+-            {!editing && <TextField label={tr("Password ya kuanzia")} type="password" value={f.password} onChange={(v) => set("password", v)} />}
++            {!editing && !pinOnlyRole && <TextField label={tr("Password ya kuanzia")} type="password" value={f.password} onChange={(v) => set("password", v)} />}
+             <SelectField label={tr("Role")} value={f.role} onChange={(v) => set("role", v)} options={roleOptions} />
+             <TextField label={tr("Staff code (kwa cashier kutafuta mauzo)")} value={f.staffCode} onChange={(v) => set("staffCode", v.toUpperCase())} hint={tr("Herufi/namba 2-20, ya kipekee kwa biashara. Cashier huiandika kuona mauzo na kupokea malipo ya mhudumu huyu.")} />
+             <div className="space-y-2 rounded-xl border p-3 md:col-span-2">
+-                <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+-                  <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.pinLoginEnabled} onChange={(e) => setF((p) => (p ? { ...p, pinLoginEnabled: e.target.checked } : p))} />
+-                  {tr("Ruhusu kuingia kwa Staff PIN")}
+-                </label>
+-                <TextField label={tr("PIN mpya ya tarakimu 4 (hiari ikiwa tayari ipo)")} type="password" value={f.pin} onChange={(v) => setF((p) => (p ? { ...p, pin: v.replace(/\D/g, "").slice(0, 4) } : p))} hint={f.hasPin ? tr("Acha wazi ili kubakiza PIN iliyopo. Weka PIN mpya ili kuibadilisha.") : tr("PIN haitahifadhiwa kama maandishi ya kawaida.")} />
+-                <p className="text-xs text-muted-foreground">{tr("Baada ya majaribio 5 yasiyo sahihi, PIN itafungwa kwa dakika 10.")}</p>
++                {pinOnlyRole ? (
++                  <p className="text-sm font-medium">{tr("Mhudumu huingia kwa PIN tu (hana password).")}</p>
++                ) : (
++                  <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
++                    <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.pinLoginEnabled} onChange={(e) => setF((p) => (p ? { ...p, pinLoginEnabled: e.target.checked } : p))} />
++                    {tr("Ruhusu kuingia kwa Staff PIN")}
++                  </label>
++                )}
++                <TextField label={pinOnlyRole && !f.hasPin ? tr("PIN ya tarakimu 4 hadi 6") : tr("PIN mpya ya tarakimu 4 hadi 6 (hiari ikiwa tayari ipo)")} type="password" value={f.pin} onChange={(v) => setF((p) => (p ? { ...p, pin: v.replace(/\D/g, "").slice(0, 6) } : p))} hint={f.hasPin ? tr("Acha wazi ili kubakiza PIN iliyopo. Weka PIN mpya ili kuibadilisha.") : tr("PIN haitahifadhiwa kama maandishi ya kawaida.")} />
++                <p className="text-xs text-muted-foreground">{tr("PIN ni ya kipekee kwenye mfumo mzima: mfumo unamtambua mtu kwa PIN yake peke yake, kwa hiyo hairuhusiwi PIN ile ile kwa watu wawili.")}</p>
+               </div>
+             {isSuper && f.role !== "super_admin" && (
+               <SelectField label={tr("Ofisi")} value={f.tenantId} onChange={(v) => setF((p) => (p ? { ...p, tenantId: v, branchIds: [], allDepartments: false } : p))} options={[["", tr("— chagua ofisi —")], ...(offices?.tenants ?? []).map((t) => [t._id, t.name] as [string, string])]} />
+@@ -117,8 +122,10 @@ export default function UsersPage() {
+             <Button disabled={busy} onClick={() => void run(async () => {
+               if (!f.name.trim() || (!editing && !f.username)) throw new Error(tr("Jina na username vinahitajika."));
+               if (needsBranch) throw new Error(tr("Chagua idara za mtumiaji huyu (tiki moja au zaidi) au washa 'Idara zote'."));
+-              if (f.pin && !/^\d{4}$/.test(f.pin)) throw new Error(tr("PIN lazima iwe tarakimu 4."));
+-              if (f.pinLoginEnabled && !f.pin && !f.hasPin) throw new Error(tr("Weka PIN ya tarakimu 4 kabla ya kuruhusu Staff PIN."));
++              if (f.pin && !/^\d{4,6}$/.test(f.pin)) throw new Error(tr("PIN lazima iwe tarakimu 4 hadi 6."));
++              if (pinOnlyRole && !f.pin && !f.hasPin) throw new Error(tr("Mhudumu husajiliwa kwa PIN: weka PIN ya tarakimu 4 hadi 6."));
++              if (f.pinLoginEnabled && !f.pin && !f.hasPin) throw new Error(tr("Weka PIN ya tarakimu 4 hadi 6 kabla ya kuruhusu Staff PIN."));
++              const pinLogin = pinOnlyRole ? true : f.pinLoginEnabled;
+               const tenantId = (f.tenantId || undefined) as Id<"tenants"> | undefined;
+               // Department access: ticked departments (1 = tied to it, 2+ = switches between them) or all departments.
+               const dept = editingSelf || branches.length === 0 ? {} : { branchIds: (f.allDepartments ? [] : f.branchIds) as Id<"branches">[], allDepartments: f.allDepartments };
+@@ -135,12 +142,12 @@ export default function UsersPage() {
+                 await update({ userId: f.id!, name: f.name, role: f.role, tenantId, ...dept, ...(editingSelf ? {} : { ...access, ...(f.menuAll ? { clearMenuAccess: true } : menu) }) });
+                 savedUserId = f.id!;
+               } else {
+-                const createdId = await create({ name: f.name, username: f.username, password: f.password, role: f.role, tenantId, ...dept, ...access, ...menu });
++                const createdId = await create({ name: f.name, username: f.username, ...(pinOnlyRole ? {} : { password: f.password }), role: f.role, tenantId, ...dept, ...access, ...menu, ...(f.pin ? { pin: f.pin, pinLoginEnabled: pinLogin } : {}) });
+                 savedUserId = createdId as Id<"users">;
+               }
+-              if (editing || f.pin || f.pinLoginEnabled) {
+-                try { await setStaffPin({ userId: savedUserId, ...(f.pin ? { pin: f.pin } : {}), enabled: f.pinLoginEnabled }); }
+-                catch (e) { throw new Error(`${editing ? "" : tr("Mtumiaji ameundwa, lakini PIN haikuhifadhiwa. Fungua Modify kuweka PIN tena. ")}${e instanceof Error ? e.message : ""}`.trim(), { cause: e }); }
++              if (editing) { // a new user's PIN was already saved (and checked for duplicates) together with the account
++                try { await setStaffPin({ userId: savedUserId, ...(f.pin ? { pin: f.pin } : {}), enabled: pinLogin }); }
++                catch (e) { throw new Error(errorText(e), { cause: e }); }
+               }
+               if (f.staffCode.trim() || editing) {
+                 try { await setStaffCode({ userId: savedUserId, staffCode: f.staffCode }); }
+diff --git a/src/pages/sales/InvoiceEntry.tsx b/src/pages/sales/InvoiceEntry.tsx
+index 2f30af9..08b4367 100644
+--- a/src/pages/sales/InvoiceEntry.tsx
++++ b/src/pages/sales/InvoiceEntry.tsx
+@@ -12,11 +12,12 @@ import { Input } from "@/components/ui/input";
+ import { Stat } from "@/pages/shared/report.tsx";
+ import { fmt, num, round2, today } from "@/pages/shared/report-utils.ts";
+ import { tr, errorText } from "@/lib/i18n.ts";
++import { brandingFromSettings } from "@/lib/receipt-branding.ts";
+ import BillSheet from "@/components/BillSheet.tsx";
+ import ReturnPanel from "@/pages/sales/ReturnPanel.tsx";
+ import type { Paper } from "@/lib/print-area.ts";
+ import { tokenAfterSave } from "@/lib/print-policy.ts";
+-import { printWaiterOrder } from "@/lib/print-waiter-order.ts";
++import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
+ 
+ type Line = { productId: string; qty: string; price: string; discount: string };
+ const emptyLine = (): Line => ({ productId: "", qty: "1", price: "0", discount: "0" });
+@@ -47,6 +48,7 @@ export default function InvoiceEntry() {
+   const [servicePoint, setServicePoint] = useState<ServicePoint>(emptyServicePoint());
+   const tableNo = formatServicePoint(servicePoint, serviceWords());
+   const settings = useQuery(api.maintenance.getSettings, {});
++  const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
+   const allowNegative = !!settings?.company?.allowNegativeStock; // same switch the server uses (Maintenance > Company)
+ 
+   const [pickedClient, setClientId] = useState("");
+@@ -170,7 +172,7 @@ export default function InvoiceEntry() {
+   };
+   const printPlaced = async () => {
+     if (!placedId || !placedOrder) return;
+-    const printed = await printWaiterOrder(placedOrder, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
++    const printed = await printWaiterOrder(placedOrder, qzPrinterFrom(hardware), hardware.paperWidth, branding);
+     if (!printed) return;
+     try {
+       await markPrinted({ orderId: placedId });
+diff --git a/src/pages/waiter-orders/BillsPanel.tsx b/src/pages/waiter-orders/BillsPanel.tsx
+index d75ffd5..7790a77 100644
+--- a/src/pages/waiter-orders/BillsPanel.tsx
++++ b/src/pages/waiter-orders/BillsPanel.tsx
+@@ -1,12 +1,13 @@
+ import { useState } from "react";
+-import { useQuery } from "convex/react";
++import { useMutation, useQuery } from "convex/react";
+ import { api } from "@/convex/_generated/api";
+ import type { Id } from "@/convex/_generated/dataModel";
+ import { Button } from "@/components/ui/button";
+ import { Input } from "@/components/ui/input";
+ import { toast } from "sonner";
+-import { tr } from "@/lib/i18n.ts";
+-import { printWaiterOrder } from "@/lib/print-waiter-order.ts";
++import { tr, errorText } from "@/lib/i18n.ts";
++import { brandingFromSettings } from "@/lib/receipt-branding.ts";
++import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
+ 
+ const money = (n: number) => Number(n).toLocaleString();
+ const STATUS: Record<string, string> = { pending: "Inasubiri cashier", accepted: "Imepokelewa", printed: "Imechapishwa" };
+@@ -17,8 +18,10 @@ export default function BillsPanel() {
+   const [picked, setPicked] = useState<string[]>([]);
+   const orders = useQuery(api.waiterOrders.listForBills, { table: search });
+   const summary = useQuery(api.waiterOrders.billSummary, picked.length ? { orderIds: picked as Id<"waiterOrders">[] } : "skip");
++  const markBillPrinted = useMutation(api.waiterOrders.markBillPrinted);
+   const user = useQuery(api.users.getCurrentUser);
+   const settings = useQuery(api.maintenance.getSettings, {});
++  const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
+   const hw = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
+ 
+   const groups = new Map<string, NonNullable<typeof orders>>();
+@@ -27,8 +30,16 @@ export default function BillsPanel() {
+ 
+   async function printBill() {
+     if (!summary) return;
+-    const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: summary.tables.join(", ") || undefined, total: summary.total, lines: summary.lines.map((l) => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })) }, hw.printerSource === "installed" ? hw.receiptPrinter : undefined, hw.paperWidth);
+-    if (ok) toast.success(tr("Bili imechapishwa. Hakuna mauzo, malipo wala stock vilivyobadilika."));
++    if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
++    const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: summary.tables.join(", ") || undefined, total: summary.total, lines: summary.lines.map((l) => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })) }, qzPrinterFrom(hw), hw.paperWidth, { ...branding, title: tr("BILI YA MTEJA") });
++    if (!ok) return; // print failed: the bills stay in the list so they can be printed again
++    try {
++      await markBillPrinted({ orderIds: picked as Id<"waiterOrders">[] });
++      setPicked([]);
++      toast.success(tr("Bili imechapishwa. Hakuna mauzo, malipo wala stock vilivyobadilika."));
++    } catch (error) {
++      toast.error(errorText(error, tr("Bili imechapishwa, lakini hali yake haikuhifadhiwa. Jaribu kusasisha ukurasa.")));
++    }
+   }
+ 
+   return (
+diff --git a/src/pages/waiter-orders/SellingPoint.test.tsx b/src/pages/waiter-orders/SellingPoint.test.tsx
+index 97cbb34..43965f4 100644
+--- a/src/pages/waiter-orders/SellingPoint.test.tsx
++++ b/src/pages/waiter-orders/SellingPoint.test.tsx
+@@ -21,7 +21,10 @@ vi.mock("convex/react", () => ({
+   useMutation: () => submit,
+ }));
+ vi.mock("sonner", () => ({ toast }));
+-vi.mock("@/lib/print-waiter-order.ts", () => ({ printWaiterOrder }));
++vi.mock("@/lib/print-waiter-order.ts", async (importActual) => ({
++  ...(await importActual<typeof import("@/lib/print-waiter-order.ts")>()),
++  printWaiterOrder,
++}));
+ 
+ import SellingPoint from "@/pages/waiter-orders/SellingPoint.tsx";
+ 
+@@ -103,4 +106,15 @@ describe("Selling Point: Send and Print", () => {
+     expect(String(toast.error.mock.calls[0][0])).toContain("waiterOrders:submit");
+     expect(cartHasBia()).toBe(true);
+   });
++
++  it("uses the saved printer even when printerSource was never stored (cashier regression)", async () => {
++    settings = { hardware: { receiptPrinter: "XP-80", paperWidth: "80mm" } };
++    submit.mockResolvedValue({ orderId: "o9", status: "printed", duplicate: false });
++    printWaiterOrder.mockResolvedValue(true);
++    render(<SellingPoint />);
++    addBia();
++    fireEvent.click(screen.getByRole("button", { name: /^(Print|Chapisha)$/ }));
++    await waitFor(() => expect(printWaiterOrder).toHaveBeenCalledTimes(1));
++    expect(printWaiterOrder.mock.calls[0][1]).toBe("XP-80");
++  });
+ });
+diff --git a/src/pages/waiter-orders/SellingPoint.tsx b/src/pages/waiter-orders/SellingPoint.tsx
+index fe371f2..a5a1aa8 100644
+--- a/src/pages/waiter-orders/SellingPoint.tsx
++++ b/src/pages/waiter-orders/SellingPoint.tsx
+@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
+ import { Input } from "@/components/ui/input";
+ import { toast } from "sonner";
+ import { tr, errorText } from "@/lib/i18n.ts";
++import { brandingFromSettings } from "@/lib/receipt-branding.ts";
+ import ServicePointFields from "@/components/ServicePointFields.tsx";
+ import { emptyServicePoint, filterProducts, formatServicePoint, serviceWords, type ServicePoint } from "@/lib/sales-flow.ts";
+-import { printWaiterOrder } from "@/lib/print-waiter-order.ts";
++import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
+ 
+ const money = (n: number) => Number(n).toLocaleString();
+ const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+@@ -32,6 +33,7 @@ export default function SellingPoint() {
+   const groups = useQuery(api.products.listGroups);
+   const user = useQuery(api.users.getCurrentUser);
+   const settings = useQuery(api.maintenance.getSettings, {});
++  const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
+   const submit = useMutation(api.waiterOrders.submit);
+   const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
+ 
+@@ -66,7 +68,7 @@ export default function SellingPoint() {
+       setQuery("");
+       setClientKey(newKey());
+       if (mode === "print" && !res.duplicate) {
+-        const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: table.trim() || undefined, total, lines: lines.map((l) => ({ productName: l.p!.name, qty: l.qty, lineTotal: l.qty * l.p!.sellingPrice })) }, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
++        const ok = await printWaiterOrder({ customerName: "", waiterName: user?.name ?? user?.username ?? "", tableNumber: table.trim() || undefined, total, lines: lines.map((l) => ({ productName: l.p!.name, qty: l.qty, lineTotal: l.qty * l.p!.sellingPrice })) }, qzPrinterFrom(hardware), hardware.paperWidth, branding);
+         if (!ok) toast.message(tr("Oda imehifadhiwa. Chapisha tena kupitia Bills (haipunguzi stock)."));
+       }
+     } catch (e) {
+@@ -77,8 +79,8 @@ export default function SellingPoint() {
+   function reset() { setCart({}); setServicePoint(emptyServicePoint()); setQuery(""); setClientKey(newKey()); setGroupId("all"); }
+ 
+   return (
+-    <section className="grid gap-4 lg:grid-cols-[1fr_340px]">
+-      <div className="space-y-3">
++    <section className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(280px,340px)]">
++      <div className="min-w-0 space-y-2">
+         <Input value={query} disabled={locked} placeholder={tr("Tafuta bidhaa au scan code")} aria-label={tr("Tafuta bidhaa au scan code")}
+           onChange={(e) => setQuery(e.target.value)}
+           onKeyDown={(e) => {
+@@ -97,16 +99,16 @@ export default function SellingPoint() {
+               className={`min-h-9 shrink-0 rounded-lg border px-3 py-1.5 text-sm font-bold transition ${style.tab} ${groupId === id ? "ring-2 ring-offset-1 shadow-sm" : "opacity-80"}`}>{g.name}</button>;
+           })}
+         </div>
+-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
++        <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6">
+           {shown.map((p) => {
+             const q = cart[String(p._id)] ?? 0;
+             const style = groupStyle(groupId, activeGroups);
+             return (
+               <button key={p._id} type="button" disabled={locked} onClick={() => add(String(p._id), 1)}
+-                className={`relative flex min-h-[76px] flex-col justify-between rounded-xl border p-2.5 text-left transition active:scale-[0.98] disabled:opacity-60 ${q ? style.active : style.tile}`}>
+-                <span className="line-clamp-2 text-sm font-semibold leading-snug">{p.name}</span>
+-                <span className="mt-2 text-xs font-medium text-muted-foreground">{money(p.sellingPrice)}</span>
+-                {q > 0 && <span className="absolute right-2 top-2 rounded-full bg-primary px-2 py-0.5 text-xs font-bold text-primary-foreground">{q}</span>}
++                className={`relative flex min-h-[52px] min-w-0 flex-col justify-between rounded-lg border p-1.5 text-left transition active:scale-[0.98] disabled:opacity-60 ${q ? style.active : style.tile}`}>
++                <span className="line-clamp-2 break-words text-xs font-semibold leading-tight">{p.name}</span>
++                <span className="mt-1 text-[11px] font-medium text-muted-foreground">{money(p.sellingPrice)}</span>
++                {q > 0 && <span className="absolute right-1 top-1 rounded-full bg-primary px-1.5 text-[11px] leading-4 font-bold text-primary-foreground">{q}</span>}
+               </button>
+             );
+           })}
+@@ -114,9 +116,9 @@ export default function SellingPoint() {
+         </div>
+       </div>
+ 
+-      <aside className="h-fit space-y-3 rounded-2xl border bg-card p-4 shadow-sm lg:sticky lg:top-3">
++      <aside className="h-fit min-w-0 space-y-2 rounded-2xl border bg-card p-3 shadow-sm md:sticky md:top-2">
+         <h2 className="text-lg font-bold">{tr("Oda ya sasa")}</h2>
+-        <ul className="space-y-2">
++        <ul className="max-h-[38vh] space-y-2 overflow-y-auto pr-1">
+           {lines.map((l) => (
+             <li key={l.id} className="flex items-center justify-between gap-2">
+               <div className="min-w-0"><div className="truncate text-sm font-medium">{l.p!.name}</div><div className="text-xs text-muted-foreground">{money(l.p!.sellingPrice)} × {l.qty} = {money(l.p!.sellingPrice * l.qty)}</div></div>
+@@ -129,7 +131,11 @@ export default function SellingPoint() {
+           ))}
+           {lines.length === 0 && <li className="text-sm text-muted-foreground">{tr("Gusa bidhaa kuiongeza kwenye oda.")}</li>}
+         </ul>
+-        <details className="text-sm"><summary className="cursor-pointer select-none py-2">{tr("Eneo la huduma (hiari)")}</summary>
++        <label className="grid gap-1 text-sm">{tr("Namba ya meza (hiari)")}
++          <Input value={servicePoint.name} maxLength={40} disabled={locked} placeholder={tr("Mf. 5 (acha wazi kama haihitajiki)")} aria-label={tr("Namba ya meza (hiari)")}
++            onChange={(e) => setServicePoint({ ...servicePoint, name: e.target.value })} />
++        </label>
++        <details className="text-sm"><summary className="cursor-pointer select-none py-2">{tr("Zaidi: ghorofa / chumba (hiari)")}</summary>
+           <ServicePointFields className="grid gap-3" value={servicePoint} disabled={locked} onChange={setServicePoint} />
+         </details>
+         <p className="text-xl font-bold">{tr("Jumla")}: {money(total)}</p>
+diff --git a/src/pages/waiter-orders/page.tsx b/src/pages/waiter-orders/page.tsx
+index e26b7f4..6a375ba 100644
+--- a/src/pages/waiter-orders/page.tsx
++++ b/src/pages/waiter-orders/page.tsx
+@@ -4,12 +4,10 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
+ import { Button } from "@/components/ui/button";
+ import { toast } from "sonner";
+ import { tr, errorText } from "@/lib/i18n.ts";
+-import WaiterDirectory from "./WaiterDirectory.tsx";
++import { brandingFromSettings } from "@/lib/receipt-branding.ts";
++import { Link } from "react-router-dom";
+ import SellingPoint from "./SellingPoint.tsx";
+-import BillsPanel from "./BillsPanel.tsx";
+-import StaffSettlement from "./StaffSettlement.tsx";
+-import ErrorBoundary from "@/components/error-boundary.tsx";
+-import { printWaiterOrder, type PrintableOrder } from "@/lib/print-waiter-order.ts";
++import { printWaiterOrder, qzPrinterFrom, type PrintableOrder } from "@/lib/print-waiter-order.ts";
+ 
+ const waiterApi = api.waiterOrders;
+ 
+@@ -24,13 +22,17 @@ export default function WaiterOrdersPage() {
+   const markPrinted = useMutation(waiterApi.markPrinted);
+   const cancelOrder = useMutation(waiterApi.cancel);
+   const settings = useQuery(api.maintenance.getSettings, {});
++  const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
+   const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
+ 
+   const role = String(user?.role ?? "").toLowerCase();
+-  const cashier = ["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role);
++  // Cashier = any non-waiter role that may manage waiter orders (custom role names such as "Kassa" included), plus the built-in names.
++  const isWaiterRole = role === "waiter" || role === "waitress";
++  const superAdmin = ["super_admin", "superadmin"].includes(role.replace(/[\s-]+/g, "_"));
++  const cashier = !isWaiterRole && !superAdmin && (["cashier", "manager", "admin", "administrator", "owner", "business_owner", "super_admin", "superadmin"].includes(role) || business?.canManageWaiterOrders === true);
+ 
+   // Waiter and Waitress each follow their own switch (Super Admin > Edit Business); other roles need at least one on.
+-  const roleEnabled = role === "waitress" ? business?.waitressEnabled === true : role === "waiter" ? business?.waiterEnabled === true : business?.waiterOrdersEnabled === true;
++  const roleEnabled = superAdmin || role === "waitress" ? business?.waitressEnabled === true : role === "waiter" ? business?.waiterEnabled === true : business?.waiterOrdersEnabled === true;
+ 
+   async function send(orderId: string) {
+     try {
+@@ -42,7 +44,8 @@ export default function WaiterOrdersPage() {
+   }
+ 
+   async function printPlaced(order: Order) {
+-    const printed = await printWaiterOrder(order, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
++    if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
++    const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth, branding);
+     if (!printed) return;
+     try {
+       await markPrinted({ orderId: order._id });
+@@ -63,7 +66,8 @@ export default function WaiterOrdersPage() {
+   }
+ 
+   async function receiveAndPrint(order: Order) {
+-    const printed = await printWaiterOrder(order, hardware.printerSource === "installed" ? hardware.receiptPrinter : undefined, hardware.paperWidth);
++    if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
++    const printed = await printWaiterOrder(order, qzPrinterFrom(hardware), hardware.paperWidth, branding);
+     if (!printed) return;
+     try {
+       await markHandled({ orderId: order._id });
+@@ -74,7 +78,7 @@ export default function WaiterOrdersPage() {
+   }
+ 
+   return (
+-    <div className="mx-auto max-w-5xl space-y-6 p-3 sm:p-6">
++    <div className="mx-auto max-w-7xl space-y-4 overflow-x-hidden p-2 sm:p-4">
+       <header>
+         <h1 className="text-2xl font-bold">{tr("Selling Point")}</h1>
+         <p className="mt-1 text-sm text-muted-foreground">
+@@ -112,13 +116,7 @@ export default function WaiterOrdersPage() {
+         </article>)}
+         {orders && orders.length === 0 && <p className="rounded-xl border p-5 text-sm text-muted-foreground">{tr("Hakuna oda bado.")}</p>}
+       </section>}
+-      {/* Waiter orders are handed off to the cashier queue; do not duplicate them below the selling screen. */}
+-      {/* Each optional panel has its own boundary: one panel failing (e.g. a Convex function not deployed yet) must not blank the whole page. */}
+-      <ErrorBoundary inline><BillsPanel /></ErrorBoundary>
+-      {cashier && role !== "super_admin" && role !== "superadmin" && <>
+-        <ErrorBoundary inline><StaffSettlement /></ErrorBoundary>
+-        <ErrorBoundary inline><WaiterDirectory /></ErrorBoundary>
+-      </>}
++      {cashier && <Link to="/cashier" className="inline-flex rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">{tr("Pokea fedha za wahudumu → Cashier")}</Link>}
+     </div>
+   );
+ }

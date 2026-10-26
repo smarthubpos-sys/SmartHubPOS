@@ -28,6 +28,9 @@ export const {
   store,
   isAuthenticated,
 } = convexAuth({
+  // Convex Auth defaults let a login live 30 days. A shop device must not stay signed in that long: a refresh token that is unused
+  // for 2 hours is refused, and no login lasts longer than 14 hours (one working day) without the password / PIN being entered again.
+  session: { totalDurationMs: 14 * 60 * 60 * 1000, inactiveDurationMs: 2 * 60 * 60 * 1000 },
   providers: [
     ConvexCredentials({
       id: "staffPin",

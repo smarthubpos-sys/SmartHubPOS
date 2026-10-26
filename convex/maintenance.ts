@@ -13,7 +13,7 @@ import type { UserLike } from "./access";
 import { ALL_PERMISSION_KEYS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
 
 const LOGIN_DOMAIN = "login.smarthub.invalid";
-const DEFAULT_SECURITY = { minPasswordLength: 10, sessionTimeoutMinutes: 30, requirePasswordChangeForNewUsers: true };
+const DEFAULT_SECURITY = { minPasswordLength: 10, sessionTimeoutMinutes: 15, requirePasswordChangeForNewUsers: true };
 
 /**
  * Maintenance tools (backup, health check, clear data, assign unscoped) work on tables chosen at run time, so the
@@ -954,16 +954,19 @@ export const purgeAuditLogs = mutation({
 
 /* ───────────────────────── Clear Data File (Super Admin + Super Admin password) ───────────────────────── */
 
-type ClearStep = { table: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean };
+type ClearStep = { table: string; index?: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean };
 type ClearCategory = { label: string; description: string; steps: ClearStep[]; resetSequences?: ("salesSequences" | "purchaseSequences")[]; rebuildStats?: boolean };
 
 /** What the Super Admin can wipe. Child tables (lines) are removed together with their parent record. */
 export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
   invoices: {
-    label: "Sales Invoices", description: "Invoices za mauzo, mistari yake, malipo ya wateja na sales returns",
+    label: "Sales Invoices", description: "Invoices za mauzo, mistari yake, malipo ya wateja, sales returns, bili za wateja na mauzo ya Selling Point (oda na makusanyo ya wahudumu)",
     steps: [
       { table: "customerPayments" },
       { table: "salesReturns", via: "clients" },
+      { table: "customerBills" },
+      { table: "waiterCollections", index: "by_tenant_date" },
+      { table: "waiterOrders", index: "by_scope_status" },
       { table: "invoices", children: [{ table: "invoiceLines", index: "by_invoice", field: "invoiceId" }] },
     ],
     resetSequences: ["salesSequences"], rebuildStats: true,
@@ -1060,7 +1063,7 @@ export const clearStepBatch = internalMutation({
       return { done: true, deleted };
     }
 
-    const batch = await db.query(step.table).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).take(CLEAR_BATCH);
+    const batch = await db.query(step.table).withIndex(step.index ?? "by_scope", (q) => q.eq("tenantId", a.tenantId)).take(CLEAR_BATCH);
     for (const doc of batch) { await removeWithChildren(doc); deleted++; }
     return { done: batch.length < CLEAR_BATCH, deleted };
   },
@@ -1077,6 +1080,14 @@ export const finishClear = internalMutation({
       }
     }
     if (a.categories.some((k) => CLEAR_CATEGORIES[k]?.rebuildStats)) {
+      // Dashboard numbers come from small pre-computed rows. Empty them NOW (every day, not only the rebuilt window) so the dashboard
+      // shows zeros immediately; the rebuild below then recalculates whatever data is really left (e.g. stock when only invoices were cleared).
+      const days = await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", a.tenantId)).take(8000);
+      for (const d of days) await ctx.db.delete("statsDaily", d._id);
+      const totals = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", a.tenantId)).collect();
+      for (const t of totals) {
+        await ctx.db.patch("statsTotals", t._id, { receivable: 0, payable: 0, billsDue: 0, topD7: [], topD30: [], topD90: [] });
+      }
       await ctx.scheduler.runAfter(0, internal.stats.requestRebuild, { tenantId: a.tenantId });
     }
     await logAudit(ctx, actor, { action: "clear_data_file", module: "maintenance", details: `${a.categories.join(", ")} — ${a.counts}` });

@@ -13,6 +13,7 @@ import { tr, setLang } from "@/lib/i18n.ts";
 import { scrollAppToTop } from "@/lib/app-scroll.ts";
 import BusinessPicker from "@/pages/super-admin/BusinessPicker.tsx";
 import { PICK_BUSINESS_FLAG } from "@/lib/business-session.ts";
+import { clearActivity, idleLimitMinutes, isIdleExpired, markActivity } from "@/lib/session-security.ts";
 import AnnouncementPopup from "@/components/announcement-popup.tsx";
 import ErrorBoundary from "@/components/error-boundary.tsx";
 import SubscriptionBanner from "./_components/SubscriptionBanner.tsx";
@@ -25,17 +26,42 @@ function LoadingScreen() {
   </div>;
 }
 
-/** Signs the user out after `minutes` without keyboard/mouse/touch activity (0 = disabled). */
+/**
+ * Signs the user out after `minutes` without keyboard/mouse/touch activity (0 = disabled).
+ * The clock is a timestamp, so a tablet that was locked / asleep (timers frozen) is still signed out the moment it wakes up.
+ */
 function useIdleSignOut(enabled: boolean, minutes: number) {
   const { signOut } = useAuthActions();
+  const navigate = useNavigate();
   useEffect(() => {
     if (!enabled || !(minutes > 0)) return;
-    let timer = window.setTimeout(() => void signOut(), minutes * 60_000);
-    const reset = () => { window.clearTimeout(timer); timer = window.setTimeout(() => void signOut(), minutes * 60_000); };
+    const leave = () => {
+      clearActivity();
+      try { window.sessionStorage.removeItem(PICK_BUSINESS_FLAG); } catch { /* ignore */ }
+      void signOut().finally(() => navigate("/", { replace: true }));
+    };
+    // A session that was restored (browser reopened, tab restored) with a stale or missing clock is not trusted.
+    if (isIdleExpired(minutes)) { leave(); return; }
+    markActivity();
+    let lastWrite = Date.now();
+    const onActivity = () => {
+      const now = Date.now();
+      if (now - lastWrite > 5_000) { lastWrite = now; markActivity(); }
+    };
+    const check = () => { if (isIdleExpired(minutes)) leave(); };
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
     const events = ["mousemove", "keydown", "click", "touchstart", "scroll"];
-    events.forEach((e) => window.addEventListener(e, reset, { passive: true }));
-    return () => { window.clearTimeout(timer); events.forEach((e) => window.removeEventListener(e, reset)); };
-  }, [enabled, minutes, signOut]);
+    events.forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", check);
+    const timer = window.setInterval(check, 15_000);
+    return () => {
+      window.clearInterval(timer);
+      events.forEach((e) => window.removeEventListener(e, onActivity));
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", check);
+    };
+  }, [enabled, minutes, signOut, navigate]);
 }
 
 export default function AppLayout() {
@@ -63,8 +89,8 @@ export default function AppLayout() {
   const securitySettings = settings?.app.security as unknown;
   const timeoutValue = typeof securitySettings === "object" && securitySettings !== null && "sessionTimeoutMinutes" in securitySettings
     ? securitySettings.sessionTimeoutMinutes
-    : 30;
-  const timeout = Number(timeoutValue ?? 30);
+    : 15;
+  const timeout = idleLimitMinutes(Number(timeoutValue ?? 15), user?.role === "super_admin");
   useIdleSignOut(isAuthenticated && !!user, timeout);
   // ONE language for the whole system: the language saved for the business (default Kiswahili).
   useEffect(() => {

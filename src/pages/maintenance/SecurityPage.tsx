@@ -32,7 +32,7 @@ export default function SecurityPage() {
   if (!s) return <PageShell title={tr("User Security Settings")}><Loading /></PageShell>;
   const securityValue: unknown = s.app.security;
   const sec = typeof securityValue === "object" && securityValue !== null ? securityValue as Record<string, unknown> : {};
-  const form = f ?? { min: String(sec.minPasswordLength ?? 10), timeout: String(sec.sessionTimeoutMinutes ?? 30), force: typeof sec.requirePasswordChangeForNewUsers === "boolean" ? sec.requirePasswordChangeForNewUsers : true };
+  const form = f ?? { min: String(sec.minPasswordLength ?? 10), timeout: String(sec.sessionTimeoutMinutes ?? 15), force: typeof sec.requirePasswordChangeForNewUsers === "boolean" ? sec.requirePasswordChangeForNewUsers : true };
   const ok = s.canEdit["maintenance.security"];
   return (
     <PageShell title={tr("User Security Settings")} subtitle={tr("Sera ya password na session")}>

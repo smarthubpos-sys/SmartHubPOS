@@ -207,16 +207,18 @@ export default function BillSheet({
         data-paper={paper}
         className={`print-area mx-auto space-y-2 rounded-2xl border bg-white p-4 text-[12px] font-semibold leading-snug text-black print:rounded-none print:border-0 print:p-0 ${paper === "A4" ? "max-w-xl print:max-w-none" : paper === "58mm" ? "max-w-[58mm]" : "max-w-[80mm]"}`}
       >
-        {bill.company.logoUrl && (
-          <img src={bill.company.logoUrl} alt="" className="mx-auto max-h-20 max-w-[60%] object-contain grayscale" />
-        )}
-        <h3 className="text-center text-base font-extrabold tracking-wide">{heading}</h3>
-        <div className="space-y-0.5 text-center">
-          <p className="uppercase">{bill.company.name || tr("Biashara")}</p>
-          {bill.company.address && <p>{bill.company.address}</p>}
-          {bill.company.phone && <p>TEL : {bill.company.phone}</p>}
-          {bill.company.taxId && <p>TIN : {bill.company.taxId}</p>}
-        </div>
+        <header className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1 space-y-0.5 text-left">
+            <p className="break-words text-[13px] font-extrabold uppercase leading-tight">{bill.company.name || tr("Biashara")}</p>
+            {bill.company.address && <p className="break-words">{bill.company.address}</p>}
+            {bill.company.phone && <p className="break-words">TEL : {bill.company.phone}</p>}
+            {bill.company.taxId && <p>TIN : {bill.company.taxId}</p>}
+          </div>
+          {bill.company.logoUrl && (
+            <img src={bill.company.logoUrl} alt="" className={`shrink-0 object-contain grayscale ${paper === "58mm" ? "max-h-10 max-w-[28%]" : paper === "A4" ? "max-h-24 max-w-[30%]" : "max-h-14 max-w-[30%]"}`} />
+          )}
+        </header>
+        <h3 className="border-y border-black py-1 text-center text-base font-extrabold tracking-wide">{heading}</h3>
         <hr className="border-0 border-t border-dashed border-black" />
         <div className="space-y-0.5">
           <ReceiptRow label={tr("Muda wa kufungua")} value={openedAt} />
