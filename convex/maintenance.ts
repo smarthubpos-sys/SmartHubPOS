@@ -959,13 +959,13 @@ export const purgeAuditLogs = mutation({
  * `movementTypes` = delete the stock movements written by these kinds of documents. Reports (Profit & Loss, stock history, item history...)
  * are calculated from those rows, so a category is only really "cleared, nothing left" when they go too.
  */
-type ClearStep = { table: string; index?: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean; journalSources?: string[]; movementTypes?: string[] };
+type ClearStep = { table: string; index?: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean; journalSources?: string[]; movementTypes?: string[]; restoreStock?: boolean };
 type ClearCategory = { label: string; description: string; steps: ClearStep[]; resetSequences?: ("salesSequences" | "purchaseSequences")[]; rebuildStats?: boolean };
 
 /** What the Super Admin can wipe. Child tables (lines) are removed together with their parent record. */
 export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
   invoices: {
-    label: "Sales Invoices", description: "Invoices za mauzo, malipo ya wateja, sales returns, bili za wateja, mauzo ya Selling Point, PAMOJA na ripoti zake zote (journals za mauzo, historia ya stock ya mauzo, ripoti za kipindi). Hakuna kinachobaki.",
+    label: "Sales Invoices", description: "Invoices za mauzo, malipo ya wateja, sales returns, bili za wateja, mauzo ya Selling Point, PAMOJA na ripoti zake zote (journals za mauzo, historia ya stock ya mauzo, ripoti za kipindi). Ukichagua Sales peke yake, idadi ya stock inarudishwa kama mauzo hayajawahi kutokea; ukichagua pia Stock au Products, vyote vinafutwa. Hakuna kinachobaki.",
     steps: [
       { table: "customerPayments" },
       { table: "salesReturns", via: "clients" },
@@ -975,7 +975,7 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
       { table: "invoices", children: [{ table: "invoiceLines", index: "by_invoice", field: "invoiceId" }] },
       // What the reports read: sales journals (profit & loss, cash, receivables), the stock the sales took out (item history) and saved period reports.
       { table: "journalEntries", journalSources: ["sale", "sale_return", "sale_void", "payment", "waiter_sale"] },
-      { table: "stockMovements", movementTypes: ["sale", "sale_return", "waiter_order", "waiter_order_cancel"] },
+      { table: "stockMovements", movementTypes: ["sale", "sale_return", "waiter_order", "waiter_order_cancel"], restoreStock: true },
       { table: "reportRuns", index: "by_tenant" },
     ],
     resetSequences: ["salesSequences"], rebuildStats: true,
@@ -1043,7 +1043,7 @@ export const authorizeClear = internalQuery({
 
 /** Deletes up to one batch of a single step for one business. Returns `done: true` once the step has nothing left. */
 export const clearStepBatch = internalMutation({
-  args: { actorId: v.id("users"), tenantId: v.id("tenants"), category: v.string(), step: v.number() },
+  args: { actorId: v.id("users"), tenantId: v.id("tenants"), category: v.string(), step: v.number(), restoreStock: v.optional(v.boolean()) },
   handler: async (ctx, a) => {
     const actor = await ctx.db.get("users", a.actorId);
     if (!actor || !isSuperAdmin(actor) || actor.isActive === false) throw new Error("Forbidden: Super Admin only");
@@ -1091,7 +1091,18 @@ export const clearStepBatch = internalMutation({
       const types = step.movementTypes;
       // eslint-disable-next-line @convex-dev/no-filter-in-query -- one-off Super Admin wipe: the document kind has no index, the scan stops after one batch of matches
       const moves = await ctx.db.query("stockMovements").withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).filter((q) => q.or(...types.map((t) => q.eq(q.field("movementType"), t)))).take(CLEAR_BATCH);
-      for (const m of moves) { await ctx.db.delete("stockMovements", m._id); deleted++; }
+      for (const m of moves) {
+        // Sales cleared on their own: the goods the sales took out go back on the shelf (a return that was put back comes off again),
+        // so the quantities look as if these sales never happened. Not done when Stock / Products are cleared in the same run: that wipes the quantities anyway.
+        if (step.restoreStock && a.restoreStock === true) {
+          const product = await ctx.db.get("products", m.productId);
+          if (product && product.tenantId === a.tenantId) {
+            const back = (m.qtyOut ?? 0) - (m.qtyIn ?? 0);
+            if (back !== 0) await ctx.db.patch("products", product._id, { currentQty: Math.round((product.currentQty + back) * 1e6) / 1e6 });
+          }
+        }
+        await ctx.db.delete("stockMovements", m._id); deleted++;
+      }
       return { done: moves.length < CLEAR_BATCH, deleted };
     }
 
@@ -1155,6 +1166,8 @@ export const clearData = action({
     }
     // Audit logs go last so the record of this very action is kept.
     const ordered = [...a.categories].sort((x, y) => Number(x === "auditLogs") - Number(y === "auditLogs"));
+    // Sales alone: put the sold stock back. Sales together with Stock / Products: everything is wiped, nothing to put back.
+    const restoreStock = ordered.includes("invoices") && !ordered.includes("stock") && !ordered.includes("products");
     let total = 0;
     const perCategory: string[] = [];
     for (const category of ordered) {
@@ -1162,7 +1175,7 @@ export const clearData = action({
       const steps = CLEAR_CATEGORIES[category].steps;
       for (let step = 0; step < steps.length; step++) {
         for (let guard = 0; guard < 5000; guard++) {
-          const r: { done: boolean; deleted: number } = await ctx.runMutation(internal.maintenance.clearStepBatch, { actorId: auth.actorId, tenantId: auth.tenantId, category, step });
+          const r: { done: boolean; deleted: number } = await ctx.runMutation(internal.maintenance.clearStepBatch, { actorId: auth.actorId, tenantId: auth.tenantId, category, step, restoreStock });
           count += r.deleted;
           if (r.done) break;
         }

@@ -172,3 +172,61 @@ describe("Clear Data File > Sales Invoices also clears Selling Point sales and t
     expect(left.totals.find((x) => x.tenantId === tenantB)?.receivable).toBe(90);
   });
 });
+
+describe("Clear Data File > Sales alone puts the stock back; Sales with Stock wipes everything", () => {
+  async function sold() {
+    const base = await setup();
+    await base.t.run(async (ctx) => {
+      const { tenantA, superId, a, b } = base;
+      await ctx.db.patch("products", a.productId, { currentQty: 2 }); // started with 5: sold 4, one customer returned 1
+      await ctx.db.insert("stockMovements", { tenantId: tenantA, productId: a.productId, movementDate: "2026-10-01", movementType: "sale", qtyIn: 0, qtyOut: 4, runningBalance: 1, createdBy: superId });
+      await ctx.db.insert("stockMovements", { tenantId: tenantA, productId: a.productId, movementDate: "2026-10-02", movementType: "sale_return", qtyIn: 1, qtyOut: 0, runningBalance: 2, createdBy: superId });
+      await ctx.db.insert("stockMovements", { tenantId: tenantA, productId: a.productId, movementDate: "2026-10-03", movementType: "purchase", qtyIn: 3, qtyOut: 0, runningBalance: 5, createdBy: superId });
+      await ctx.db.patch("products", b.productId, { currentQty: 1 });
+      await ctx.db.insert("stockMovements", { tenantId: base.tenantB, productId: b.productId, movementDate: "2026-10-01", movementType: "sale", qtyIn: 0, qtyOut: 4, runningBalance: 1, createdBy: superId });
+    });
+    return base;
+  }
+  const qtyOf = (t: TestConvex<typeof schema>, id: Id<"products">) => t.run(async (ctx) => (await ctx.db.get("products", id))!.currentQty);
+  const run = async (t: TestConvex<typeof schema>, superId: Id<"users">, tenantId: Id<"tenants">, restoreStock: boolean) => {
+    for (let step = 0; step < CLEAR_CATEGORIES.invoices.steps.length; step++) {
+      for (let i = 0; i < 20; i++) if ((await t.mutation(internal.maintenance.clearStepBatch, { actorId: superId, tenantId, category: "invoices", step, restoreStock })).done) break;
+    }
+  };
+
+  it("Sales alone: sold quantities go back (return taken off), other business and purchases untouched", async () => {
+    const { t, tenantA, superId, a, b } = await sold();
+    await run(t, superId, tenantA, true);
+    expect(await qtyOf(t, a.productId)).toBe(2 + 4 - 1); // 5 = as if the sales never happened
+    expect(await qtyOf(t, b.productId)).toBe(1); // another business is not touched
+    const moves = await t.run(async (ctx) => (await ctx.db.query("stockMovements").collect()).filter((m) => m.tenantId === tenantA).map((m) => m.movementType));
+    expect(moves).toEqual(["purchase"]);
+  });
+
+  it("running it twice does not restore twice", async () => {
+    const { t, tenantA, superId, a } = await sold();
+    await run(t, superId, tenantA, true);
+    await run(t, superId, tenantA, true);
+    expect(await qtyOf(t, a.productId)).toBe(5);
+  });
+
+  it("without the restore flag (Sales chosen together with Stock) quantities are not touched here", async () => {
+    const { t, tenantA, superId, a } = await sold();
+    await run(t, superId, tenantA, false);
+    expect(await qtyOf(t, a.productId)).toBe(2);
+  });
+
+  it("Sales + Stock chosen together: everything is wiped and quantities end at 0", async () => {
+    const { t, tenantA, tenantB, superId, a } = await sold();
+    await t.run(async (ctx) => { await ctx.db.patch("users", superId, { tenantId: tenantA }); });
+    const asSuper = t.withIdentity({ subject: superId, tokenIdentifier: "x|1" });
+    // the real action re-checks the password, so drive the same steps the action would: restore is OFF because Stock is chosen too
+    for (const category of ["invoices", "stock"]) {
+      const steps = CLEAR_CATEGORIES[category].steps.length;
+      for (let step = 0; step < steps; step++) for (let i = 0; i < 20; i++) if ((await t.mutation(internal.maintenance.clearStepBatch, { actorId: superId, tenantId: tenantA, category, step, restoreStock: false })).done) break;
+    }
+    void asSuper; void tenantB;
+    expect(await qtyOf(t, a.productId)).toBe(0);
+    expect(await t.run(async (ctx) => (await ctx.db.query("stockMovements").collect()).filter((m) => m.tenantId === tenantA).length)).toBe(0);
+  });
+});
