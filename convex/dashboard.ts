@@ -72,7 +72,7 @@ export const getMetrics = query({
       recentInvoices: posted(recentInvoices),
       recentPurchases: posted(recentPurchases),
       totalProducts: sum(totals, "productCount"),
-      waiterOwing: round2(open.reduce((s, o) => s + o.total, 0)),
+      waiterOwing: round2(open.reduce((s, o) => s + Math.max(0, o.total - (o.paidAmount ?? 0)), 0)),
       waiterOwingOrders: open.length,
     };
   },

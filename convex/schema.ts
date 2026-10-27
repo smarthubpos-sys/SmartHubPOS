@@ -152,6 +152,37 @@ export default defineSchema({
   }) .index("by_scope", ["tenantId", "branchId"]).index("by_code", ["code"]),
 
   // ── PRODUCTS ─────────────────────────────────────────────────
+  // ── PRODUCTION / RECIPES ─────────────────────────────────────
+  productionRecipes: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    branchId: v.optional(v.id("branches")),
+    outputProductId: v.id("products"),
+    outputQty: v.number(), // yield produced by one recipe run
+    ingredients: v.array(v.object({ productId: v.id("products"), qty: v.number() })),
+    active: v.boolean(),
+    updatedAt: v.string(),
+    updatedBy: v.id("users"),
+  }).index("by_scope", ["tenantId", "branchId"])
+    .index("by_output", ["outputProductId"])
+    .index("by_tenant", ["tenantId"]),
+
+  productionBatches: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    branchId: v.optional(v.id("branches")),
+    outputProductId: v.id("products"),
+    plannedQty: v.number(),
+    producedQty: v.number(),
+    status: v.string(), // completed; records are immutable after posting
+    recipeSnapshot: v.array(v.object({ productId: v.id("products"), productName: v.string(), qty: v.number(), unitCost: v.number() })),
+    totalCost: v.number(),
+    unitCost: v.number(),
+    notes: v.optional(v.string()),
+    createdAt: v.string(),
+    createdBy: v.id("users"),
+  }).index("by_scope", ["tenantId", "branchId"])
+    .index("by_output", ["outputProductId"])
+    .index("by_tenant_date", ["tenantId", "createdAt"]),
+
   products: defineTable({
     tenantId: v.optional(v.id("tenants")),
     branchId: v.optional(v.id("branches")),
@@ -882,7 +913,8 @@ export default defineSchema({
     clientKey: v.optional(v.string()), // one random key per cart: a repeated tap / retry returns the SAME order instead of a second one
     sentAt: v.optional(v.string()),
     printedAt: v.optional(v.string()),
-    settledAt: v.optional(v.string()), // cashier received the money for this order from the waiter
+    settledAt: v.optional(v.string()), // cashier received the money for this order from the waiter (set only when the order is paid IN FULL)
+    paidAmount: v.optional(v.number()), // money the cashier has received so far for this order; below `total` = the waiter still owes the rest
     collectionId: v.optional(v.id("waiterCollections")),
     billPrintedAt: v.optional(v.string()), // set only after a Bills-screen print succeeded; the order itself is never deleted
     billSentAt: v.optional(v.string()), // the waiter generated his bill and SENT it to the cashier: only then does the cashier see it on the Bills screen
@@ -920,6 +952,9 @@ export default defineSchema({
     total: v.number(),
     splits: v.array(v.object({ method: v.string(), methodId: v.optional(v.id("paymentMethods")), amount: v.number(), reference: v.optional(v.string()) })),
     orderIds: v.array(v.id("waiterOrders")),
+    allocations: v.optional(v.array(v.object({ orderId: v.id("waiterOrders"), amount: v.number() }))), // how `total` was shared over the orders (partial payment); absent = every order paid in full
+    settledCount: v.optional(v.number()), // orders fully paid by this receipt (absent = all of orderIds)
+    shortfall: v.optional(v.number()), // part of the chosen orders NOT paid at this receipt = debt the waiter was left with
     createdAt: v.string(),
   }).index("by_tenant_date", ["tenantId", "date"])
     .index("by_staff", ["staffId"]),

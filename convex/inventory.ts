@@ -126,6 +126,8 @@ export const stockRegisters = query({
       for (const c of collections) {
         for (const orderId of c.orderIds) {
           const o = await ctx.db.get("waiterOrders", orderId); if (!o) continue;
+          const part = c.allocations?.find((x) => x.orderId === orderId)?.amount; // partial payment: only the paid share of the order is earned now
+          const share = part !== undefined && o.total > 0 ? Math.min(1, part / o.total) : 1;
           const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
           const unitCostOf = (productId: string) => {
             let qty = 0, cost = 0;
@@ -134,7 +136,7 @@ export const stockRegisters = query({
           };
           for (const l of o.lines) {
             const e = earn.get(String(l.productId)) ?? { qty: 0, sales: 0, cost: 0, invoices: new Set<string>() };
-            e.qty += l.qty; e.sales += l.lineTotal; e.cost += l.qty * unitCostOf(String(l.productId)); e.invoices.add(String(o._id));
+            e.qty += l.qty * share; e.sales += l.lineTotal * share; e.cost += l.qty * share * unitCostOf(String(l.productId)); e.invoices.add(String(o._id));
             earn.set(String(l.productId), e);
           }
         }

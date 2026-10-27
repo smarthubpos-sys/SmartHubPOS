@@ -1,6 +1,8 @@
 import { useMaintenanceSettings, useRun } from "./helpers.ts";
 import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
+import { toast } from "sonner";
+import { prepareLogo } from "@/lib/logo-image.ts";
 import { Plus, Trash2 } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -34,10 +36,16 @@ function CompanyForm({ s }: { s: Settings }) {
   const allowed = s.canEdit["maintenance.company"];
   const onLogo = (file?: File) => {
     if (!file) return;
-    if (file.size > 300_000) return void run(async () => { throw new Error(tr("Logo iwe chini ya KB 300.")); });
-    const r = new FileReader();
-    r.onload = () => set("logoUrl", String(r.result));
-    r.readAsDataURL(file);
+    void run(async () => {
+      try {
+        const { dataUrl, resized } = await prepareLogo(file); // big logos are shrunk, not refused
+        set("logoUrl", dataUrl);
+        if (resized) toast.message(tr("Logo imepunguzwa ukubwa ili ifae kuchapishwa."));
+      } catch (e) {
+        const code = e instanceof Error ? e.message : "";
+        throw new Error(code === "NOT_IMAGE" ? tr("Faili hii si picha ya logo (tumia PNG, JPG au WebP).") : code === "TOO_BIG" ? tr("Logo iwe chini ya KB 300.") : tr("Imeshindikana kusoma logo. Jaribu faili jingine."), { cause: e });
+      }
+    }, tr("Logo imechaguliwa. Bonyeza Hifadhi ili ihifadhiwe."));
   };
   return (
     <>
@@ -52,10 +60,10 @@ function CompanyForm({ s }: { s: Settings }) {
           <TextField label={tr("Anwani")} value={f.address} onChange={(v) => set("address", v)} disabled={!allowed} />
           <TextField label={tr("Website")} value={f.website} onChange={(v) => set("website", v)} disabled={!allowed} />
           <div className="grid gap-2 text-sm md:col-span-2">
-            <span className="font-medium">{tr("Logo (PNG/JPG/WebP, chini ya KB 300)")}</span>
+            <span className="font-medium">{tr("Logo (PNG/JPG/JPEG/WebP; kubwa itapunguzwa yenyewe)")}</span>
             <div className="flex items-center gap-4">
               {f.logoUrl && <img src={f.logoUrl} alt={tr("Logo")} className="h-16 w-16 rounded border object-contain" />}
-              <input type="file" accept="image/*" disabled={!allowed} onChange={(e) => onLogo(e.target.files?.[0])} />
+              <input type="file" accept="image/*,.jpg,.jpeg,.jfif,.png,.webp,.gif,.bmp,.svg" disabled={!allowed} onChange={(e) => onLogo(e.target.files?.[0])} />
               {f.logoUrl && allowed && <Button variant="outline" size="sm" onClick={() => set("logoUrl", "")}>{tr("Ondoa")}</Button>}
             </div>
           </div>

@@ -311,6 +311,7 @@ export const cancel = mutation({
     }
     if (order.status === "cancelled") return order._id;
     if (order.settledAt) throw new Error("Oda hii tayari imelipwa kwa cashier; haiwezi kufutwa (mauzo na fedha vimeshahesabiwa).");
+    if ((order.paidAmount ?? 0) > 0) throw new Error("Oda hii imeshalipiwa kiasi kwa cashier; haiwezi kufutwa. Maliza deni lililobaki.");
     const now = new Date().toISOString();
     if (order.stockDeducted) {
       for (const line of order.lines) {

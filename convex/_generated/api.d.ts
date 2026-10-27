@@ -32,6 +32,7 @@ import type * as periodReport from "../periodReport.js";
 import type * as permissions from "../permissions.js";
 import type * as pinCrypto from "../pinCrypto.js";
 import type * as plans from "../plans.js";
+import type * as production from "../production.js";
 import type * as products from "../products.js";
 import type * as purchaseReports from "../purchaseReports.js";
 import type * as purchasing from "../purchasing.js";
@@ -84,6 +85,7 @@ declare const fullApi: ApiFromModules<{
   permissions: typeof permissions;
   pinCrypto: typeof pinCrypto;
   plans: typeof plans;
+  production: typeof production;
   products: typeof products;
   purchaseReports: typeof purchaseReports;
   purchasing: typeof purchasing;

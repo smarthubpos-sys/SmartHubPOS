@@ -14,6 +14,8 @@ const isWaiter = (role?: string) => ["waiter", "waitress"].includes(normalizeRol
 const eatDay = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10); // East Africa Time business day
 /** Orders whose money the cashier can still receive: sent / received / printed, not cancelled, not yet settled. */
 const collectable = (o: Doc<"waiterOrders">) => !o.settledAt && (o.status === "pending" || o.status === "accepted" || o.status === "printed");
+/** What the waiter still owes for an order (a partly paid order owes less than its total). */
+const remainingOf = (o: Doc<"waiterOrders">) => Math.max(0, r2(o.total - (o.paidAmount ?? 0)));
 
 async function cashierScope(ctx: Parameters<typeof requirePermission>[0]) {
   const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
@@ -40,16 +42,18 @@ async function orderCost(ctx: MutationCtx, orderId: Id<"waiterOrders">): Promise
  */
 async function postCollectionJournal(
   ctx: MutationCtx,
-  a: { collectionId: Id<"waiterCollections">; userId: Id<"users">; date: string; staffName: string; orders: Doc<"waiterOrders">[]; splits: Array<{ method: string; methodId?: Id<"paymentMethods">; amount: number }> },
+  a: { collectionId: Id<"waiterCollections">; userId: Id<"users">; date: string; staffName: string; orders: Doc<"waiterOrders">[]; splits: Array<{ method: string; methodId?: Id<"paymentMethods">; amount: number }>; alloc?: Map<string, number> },
 ) {
-  const total = r2(a.orders.reduce((n, o) => n + o.total, 0));
+  // Partial payment: only the part of each order that was really paid at this receipt is booked (revenue and cost of goods in the same proportion).
+  const amt = (o: Doc<"waiterOrders">) => a.alloc?.get(String(o._id)) ?? o.total;
+  const total = r2(a.orders.reduce((n, o) => n + amt(o), 0));
   if (total <= 0 || !a.orders.length) return;
   const tenantId = a.orders[0].tenantId;
   const groups = new Map<string, { branchId?: Id<"branches">; orders: Doc<"waiterOrders">[]; total: number }>();
   for (const o of a.orders) {
     const k = String(o.branchId ?? "");
     const g = groups.get(k) ?? { branchId: o.branchId, orders: [], total: 0 };
-    g.orders.push(o); g.total = r2(g.total + o.total); groups.set(k, g);
+    g.orders.push(o); g.total = r2(g.total + amt(o)); groups.set(k, g);
   }
   const remaining = a.splits.map((s) => s.amount);
   const list = [...groups.values()];
@@ -65,7 +69,7 @@ async function postCollectionJournal(
     amts.forEach((x, i) => { remaining[i] = r2(remaining[i] - x); });
     const scope = { tenantId, branchId: g.branchId };
     let cost = 0;
-    for (const o of g.orders) cost += await orderCost(ctx, o._id);
+    for (const o of g.orders) cost += o.total > 0 ? (await orderCost(ctx, o._id)) * Math.min(1, amt(o) / o.total) : 0;
     cost = r2(cost);
     const revenue = await getSystemAccount(ctx, scope, "4000", "Sales revenue", "revenue");
     const cogs = await getSystemAccount(ctx, scope, "5000", "Cost of goods sold", "expense");
@@ -88,12 +92,14 @@ export const owing = query({
   handler: async (ctx) => {
     const { tenantId, branchId } = await cashierScope(ctx).catch((e) => { throw surfaceError(e); });
     const rows = (await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId)).collect()).filter((o) => inScope(branchId, o) && collectable(o));
-    const byWaiter = new Map<string, { staffId: Id<"users">; staffName: string; total: number; orders: Array<{ _id: Id<"waiterOrders">; createdAt: string; tableNumber?: string; total: number; lines: string }> }>();
+    const byWaiter = new Map<string, { staffId: Id<"users">; staffName: string; total: number; orders: Array<{ _id: Id<"waiterOrders">; createdAt: string; tableNumber?: string; total: number; orderTotal: number; paid: number; lines: string }> }>();
     for (const o of rows) {
       const k = String(o.waiterId);
       const cur = byWaiter.get(k) ?? { staffId: o.waiterId, staffName: o.waiterName, total: 0, orders: [] };
-      cur.total = r2(cur.total + o.total);
-      cur.orders.push({ _id: o._id, createdAt: o.createdAt, tableNumber: o.tableNumber, total: o.total, lines: o.lines.map((l) => `${l.productName}×${l.qty}`).join(", ") });
+      const left = remainingOf(o); // `total` of a row = what is STILL owed (full total when nothing was paid yet)
+      if (left <= 0) continue;
+      cur.total = r2(cur.total + left);
+      cur.orders.push({ _id: o._id, createdAt: o.createdAt, tableNumber: o.tableNumber, total: left, orderTotal: o.total, paid: r2(o.paidAmount ?? 0), lines: o.lines.map((l) => `${l.productName}×${l.qty}`).join(", ") });
       byWaiter.set(k, cur);
     }
     const list = [...byWaiter.values()].map((w) => ({ ...w, orders: w.orders.sort((a, b) => a.createdAt.localeCompare(b.createdAt)) })).sort((a, b) => a.staffName.localeCompare(b.staffName));
@@ -101,7 +107,11 @@ export const owing = query({
   },
 });
 
-/** Receive the money of the chosen orders from one waiter. The total is recomputed on the server; orders are marked settled, never deleted. */
+/**
+ * Receive money of the chosen orders from one waiter. The amount may be LESS than what is due (the waiter hands over only what he has in hand):
+ * the money is shared over the orders oldest first, fully paid orders are marked settled, and the rest stays owed by the waiter (debt).
+ * The amount can never be zero or more than what is due. Orders are never deleted.
+ */
 export const collect = mutation({
   args: { staffId: v.id("users"), orderIds: v.array(v.id("waiterOrders")), splits: v.array(splitValidator) },
   handler: async (ctx, args) => {
@@ -117,22 +127,39 @@ export const collect = mutation({
         if (!collectable(o)) throw new Error("Oda moja tayari imelipwa au haiwezi kulipwa.");
         orders.push(o);
       }
-      const total = r2(orders.reduce((s, o) => s + o.total, 0));
+      orders.sort((x, y) => x.createdAt.localeCompare(y.createdAt)); // oldest order is paid first
+      const due = r2(orders.reduce((s, o) => s + remainingOf(o), 0));
       const { splits, total: paid } = await normaliseSplits(ctx, user, args.splits);
-      if (Math.abs(paid - total) > 0.005) throw new Error(`Kiasi kilichopokelewa (${paid}) lazima kilingane na jumla ya oda (${total}).`);
+      if (paid <= 0.005) throw new Error("Weka kiasi kilichopokelewa (zaidi ya sifuri).");
+      if (paid - due > 0.005) throw new Error(`Kiasi kilichopokelewa (${paid}) kimezidi deni la oda (${due}).`);
+      const alloc = new Map<string, number>();
+      let left = paid;
+      for (const o of orders) {
+        const give = r2(Math.min(left, remainingOf(o)));
+        if (give > 0.005) { alloc.set(String(o._id), give); left = r2(left - give); }
+      }
+      const touched = orders.filter((o) => alloc.has(String(o._id)));
+      const fullyPaid = touched.filter((o) => remainingOf(o) - (alloc.get(String(o._id)) ?? 0) <= 0.005);
+      const shortfall = r2(due - paid);
       const staff = await ctx.db.get("users", args.staffId);
+      const staffName = staff?.name ?? staff?.username ?? orders[0].waiterName;
       const now = new Date().toISOString();
       const date = eatDay(now);
       const collectionId = await ctx.db.insert("waiterCollections", {
-        tenantId, branchId, staffId: args.staffId, staffName: staff?.name ?? staff?.username ?? orders[0].waiterName,
-        cashierId: user._id, cashierName: user.name ?? user.username ?? "cashier", date, total, splits, orderIds: orders.map((o) => o._id), createdAt: now,
+        tenantId, branchId, staffId: args.staffId, staffName,
+        cashierId: user._id, cashierName: user.name ?? user.username ?? "cashier", date, total: paid, splits, orderIds: touched.map((o) => o._id), createdAt: now,
+        allocations: touched.map((o) => ({ orderId: o._id, amount: alloc.get(String(o._id))! })), settledCount: fullyPaid.length, shortfall,
       });
-      for (const o of orders) await ctx.db.patch("waiterOrders", o._id, { settledAt: now, collectionId, updatedAt: now });
-      await postCollectionJournal(ctx, { collectionId, userId: user._id, date, staffName: staff?.name ?? staff?.username ?? orders[0].waiterName, orders, splits });
-      // Dashboard: the sale and the cash are counted once, on the day the cashier receives the money (see stats.rebuild "waiter" phase).
-      await bumpStats(ctx, { tenantId, branchId }, { date, sales: total, collected: total, invoices: orders.length });
-      await logAudit(ctx, user, { action: "collect_waiter_money", module: "sales", referenceId: String(collectionId), referenceType: "waiterCollection", details: `${staff?.name ?? ""}; oda ${orders.length}; jumla ${total}` });
-      return { collectionId, total, orders: orders.length };
+      const fullIds = new Set(fullyPaid.map((o) => String(o._id)));
+      for (const o of touched) {
+        const paidNow = r2((o.paidAmount ?? 0) + alloc.get(String(o._id))!);
+        await ctx.db.patch("waiterOrders", o._id, fullIds.has(String(o._id)) ? { paidAmount: paidNow, settledAt: now, collectionId, updatedAt: now } : { paidAmount: paidNow, updatedAt: now });
+      }
+      await postCollectionJournal(ctx, { collectionId, userId: user._id, date, staffName, orders: touched, splits, alloc });
+      // Dashboard: the cash is counted once, on the day the cashier receives it (see stats.rebuild "waiter" phase). Orders count as sales when fully paid.
+      await bumpStats(ctx, { tenantId, branchId }, { date, sales: paid, collected: paid, invoices: fullyPaid.length });
+      await logAudit(ctx, user, { action: "collect_waiter_money", module: "sales", referenceId: String(collectionId), referenceType: "waiterCollection", details: `${staffName}; oda ${touched.length}; zilizopokelewa ${paid}${shortfall > 0 ? `; deni lililobaki ${shortfall}` : ""}` });
+      return { collectionId, total: paid, orders: touched.length, due, debt: shortfall };
     } catch (e) { throw surfaceError(e); }
   },
 });
@@ -216,7 +243,7 @@ export const receipts = query({
   handler: async (ctx, args) => {
     const { tenantId, branchId } = await cashierScope(ctx).catch((e) => { throw surfaceError(e); });
     const rows = (await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).eq("date", args.date)).collect()).filter((c) => !branchId || c.branchId === branchId);
-    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ _id: c._id, staffName: c.staffName, cashierName: c.cashierName, total: c.total, orders: c.orderIds.length, createdAt: c.createdAt, methods: c.splits.map((s) => `${s.method} ${s.amount}`).join(" + "), splits: c.splits.map((s) => ({ method: s.method, amount: s.amount })) }));
+    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ _id: c._id, staffName: c.staffName, cashierName: c.cashierName, total: c.total, debt: c.shortfall ?? 0, orders: c.orderIds.length, createdAt: c.createdAt, methods: c.splits.map((s) => `${s.method} ${s.amount}`).join(" + "), splits: c.splits.map((s) => ({ method: s.method, amount: s.amount })) }));
   },
 });
 
@@ -240,8 +267,9 @@ export const bookMissingJournals = mutation({
         if (done) continue;
         const orders: Doc<"waiterOrders">[] = [];
         for (const id of c.orderIds) { const o = await ctx.db.get("waiterOrders", id); if (o) orders.push(o); }
+        const alloc = c.allocations ? new Map(c.allocations.map((x) => [String(x.orderId), x.amount] as const)) : undefined;
         try {
-          await postCollectionJournal(ctx, { collectionId: c._id, userId: user._id, date: c.date, staffName: c.staffName, orders, splits: c.splits });
+          await postCollectionJournal(ctx, { collectionId: c._id, userId: user._id, date: c.date, staffName: c.staffName, orders, splits: c.splits, alloc });
           booked++;
         } catch { skipped++; }
       }

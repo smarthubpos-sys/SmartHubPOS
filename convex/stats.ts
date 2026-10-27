@@ -207,7 +207,7 @@ export const rebuild = internalMutation({
         const bk = bkey(c.branchId);
         const k = `${bk}|${c.date}`;
         const d = (acc.daily[k] ??= { bk, date: c.date, sales: 0, purchases: 0, collected: 0, invoices: 0 });
-        d.sales = round2(d.sales + c.total); d.collected = round2(d.collected + c.total); d.invoices += c.orderIds.length;
+        d.sales = round2(d.sales + c.total); d.collected = round2(d.collected + c.total); d.invoices += c.settledCount ?? c.orderIds.length;
       }
       return await (page.isDone ? go("purchases", null) : go("waiter", page.continueCursor));
     }
@@ -273,7 +273,10 @@ export const rebuild = internalMutation({
         for (const oid of c.orderIds) {
           const o = await ctx.db.get("waiterOrders", oid);
           if (!o) continue;
-          for (const l of o.lines) {
+          const part = c.allocations?.find((x) => x.orderId === oid)?.amount; // partial payment: only the paid share of the order counts
+          const share = part !== undefined && o.total > 0 ? Math.min(1, part / o.total) : 1;
+          for (const l0 of o.lines) {
+            const l = { productId: l0.productId, lineTotal: l0.lineTotal * share };
             const id = String(l.productId);
             r.d90.set(id, (r.d90.get(id) ?? 0) + l.lineTotal);
             if (c.date >= since30) r.d30.set(id, (r.d30.get(id) ?? 0) + l.lineTotal);

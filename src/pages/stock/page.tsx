@@ -1,9 +1,10 @@
 import { useNavigate, Routes, Route } from "react-router-dom";
 import ModuleMenu from "@/pages/layout/_components/ModuleMenu.tsx";
-import { Package, Sliders, FolderTree, Hash, ArrowLeftRight, BarChart2, Tag, TrendingUp, ClipboardList, Calendar, Barcode, AlertTriangle, X, History, FileSpreadsheet } from "lucide-react";
+import { Package, Sliders, FolderTree, Hash, ArrowLeftRight, BarChart2, Tag, TrendingUp, ClipboardList, Calendar, Barcode, AlertTriangle, X, History, FileSpreadsheet, Factory } from "lucide-react";
 import StockWorkspace from "@/pages/stock/StockWorkspace.tsx";
 import StockImport from "@/pages/stock/StockImport.tsx";
 import WarehousePage from "@/pages/stock/WarehousePage.tsx";
+import ProductionPage from "@/pages/stock/ProductionPage.tsx";
 import { tr } from "@/lib/i18n.ts";
 import { useStockRights } from "@/hooks/use-stock-rights.ts";
 
@@ -12,6 +13,7 @@ const stockMenuItems = [
     section: tr("Stock Management"),
     items: [
       { label: tr("Add / Modify Stock"), icon: Package, path: "/stock/products", description: tr("Manage product catalog") },
+      { label: tr("Back Office · Production"), icon: Factory, path: "/stock/production", description: tr("Recipes, ingredients and production batches") },
       { label: tr("Store / Ghala"), icon: ArrowLeftRight, path: "/stock/warehouses", description: tr("Separate warehouse stock and transfers") },
       { label: tr("Import from Excel"), icon: FileSpreadsheet, path: "/stock/import", description: tr("Upload products with an Excel file") },
       { label: tr("Quantity Adjustment"), icon: Sliders, path: "/stock/adjustment", description: tr("Adjust stock quantities") },
@@ -56,6 +58,7 @@ export default function StockPage() {
         }
       />
       <Route path="import" element={<StockImport />} />
+      <Route path="production" element={<ProductionPage />} />
       <Route path="warehouses" element={<WarehousePage />} />
       <Route path="*" element={<StockWorkspace />} />
     </Routes>

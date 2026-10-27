@@ -17,6 +17,8 @@ export type PaymentReceipt = {
   orders?: Array<{ label: string; amount: number }>;
   payments: Array<{ method: string; amount: number }>;
   total: number;
+  /** Part of the orders NOT paid at this receipt: the waiter still owes it (partial payment). */
+  debt?: number;
 };
 
 const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -71,6 +73,7 @@ export function paymentReceiptHtml(r: PaymentReceipt, paperWidth = "80mm", brand
     <div class="total"><span>${escapeHtml(tr("JUMLA"))}</span><span>${escapeHtml(num(r.total))}/=</span></div>
     <p>${escapeHtml(tr("Imelipwa kwa"))}:</p>
     ${payRows}
+    ${r.debt && r.debt > 0 ? `<div class="total"><span>${escapeHtml(tr("DENI LILILOBAKI"))}</span><span>${escapeHtml(num(r.debt))}/=</span></div>` : ""}
     <hr>
     ${branding.footer ? `<p class="c">${escapeHtml(branding.footer)}</p>` : `<p class="c">${escapeHtml(tr("Asante kwa kutuchagua"))}</p>`}
   </body></html>`;

@@ -39,10 +39,49 @@ describe("Selling Point orders reach the cashier, and the cashier receives the m
     expect(owing).toHaveLength(1);
     expect(owing[0].total).toBe(4000);
     const orderIds = owing[0].orders.map((o) => o._id);
-    await expect(asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds, splits: [{ method: "cash", amount: 3000 }] })).rejects.toThrow();
+    await expect(asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds, splits: [{ method: "cash", amount: 5000 }] })).rejects.toThrow(); // more than owed
+    await expect(asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds, splits: [{ method: "cash", amount: 0 }] })).rejects.toThrow(); // nothing received
     await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds, splits: [{ method: "cash", amount: 4000 }] });
     expect(await asCashier.query(api.waiterCollections.owing, {})).toHaveLength(0);
     await expect(asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds, splits: [{ method: "cash", amount: 4000 }] })).rejects.toThrow();
+  });
+
+  it("partial payment: the waiter hands over less, the rest stays as his debt, and is paid later", async () => {
+    const { t, asWaiter, asCashier, asBoss, waiter, productId } = await setup();
+    await t.run(async (ctx) => { await ctx.db.patch("products", productId, { weightedAvgCost: 1200 }); });
+    const sent = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "key-12345678", mode: "send", lines: [{ productId, qty: 2 }] }); // 4000
+    const res = await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [sent.orderId], splits: [{ method: "cash", amount: 1000 }] });
+    expect(res).toMatchObject({ total: 1000, debt: 3000 });
+    const owing = await asCashier.query(api.waiterCollections.owing, {});
+    expect(owing).toHaveLength(1);
+    expect(owing[0].total).toBe(3000);
+    expect(owing[0].orders[0]).toMatchObject({ total: 3000, orderTotal: 4000, paid: 1000 });
+    await expect(asCashier.mutation(api.waiterOrders.cancel, { orderId: sent.orderId })).rejects.toThrow(); // partly paid orders cannot be deleted
+    const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
+    expect((await asCashier.query(api.waiterCollections.receipts, { date: today }))[0]).toMatchObject({ total: 1000, debt: 3000 });
+    const report1 = await asBoss.query(api.sales.salesRegisters, {});
+    expect(report1.totals).toMatchObject({ sales: 1000, waiterDebt: 3000, waiterDebtOpen: 3000 });
+    // the rest is paid later, never more than owed
+    await expect(asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [sent.orderId], splits: [{ method: "cash", amount: 3500 }] })).rejects.toThrow();
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [sent.orderId], splits: [{ method: "cash", amount: 3000 }] });
+    expect(await asCashier.query(api.waiterCollections.owing, {})).toHaveLength(0);
+    const report2 = await asBoss.query(api.sales.salesRegisters, {});
+    expect(report2.totals).toMatchObject({ sales: 4000, waiterDebtOpen: 0 });
+    expect(report2.lines.reduce((n, l) => n + l.net, 0)).toBe(4000);
+    expect(report2.lines.reduce((n, l) => n + l.cost, 0)).toBe(2400);
+    const cash = await t.run(async (ctx) => { let d = 0, c = 0; for (const e of await ctx.db.query("journalEntries").collect()) for (const l of await ctx.db.query("journalLines").withIndex("by_entry", (q) => q.eq("entryId", e._id)).collect()) { const ac = await ctx.db.get("accounts", l.accountId); if (ac?.code === "4000") c += l.credit; if (ac?.code === "1000") d += l.debit; } return { d, c }; });
+    expect(cash).toEqual({ d: 4000, c: 4000 }); // cash and revenue match what was really received
+  });
+
+  it("partial money pays the oldest order first and leaves the newer one untouched", async () => {
+    const { asWaiter, asCashier, waiter, productId } = await setup();
+    const a = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "key-aaaaaaaa", mode: "send", lines: [{ productId, qty: 1 }] }); // 2000
+    const b = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "key-bbbbbbbb", mode: "send", lines: [{ productId, qty: 1 }] }); // 2000
+    const res = await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [a.orderId, b.orderId], splits: [{ method: "cash", amount: 2500 }] });
+    expect(res).toMatchObject({ total: 2500, debt: 1500, orders: 2 });
+    const owing = await asCashier.query(api.waiterCollections.owing, {});
+    expect(owing[0].orders.map((o) => o.total)).toEqual([1500]); // first order fully paid, second owes 1500
+    expect(owing[0].total).toBe(1500);
   });
 
   it("a waiter cannot receive money", async () => {

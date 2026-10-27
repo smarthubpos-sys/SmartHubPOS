@@ -37,7 +37,8 @@ export default function WaiterCollection() {
   const chosen = (waiter?.orders ?? []).filter((o) => picked.includes(String(o._id)));
   const due = Math.round(chosen.reduce((s, o) => s + o.total, 0) * 100) / 100;
   const paying = splitsTotal(lines);
-  const canSave = !busy && chosen.length > 0 && Math.abs(paying - due) < 0.005;
+  const debtLeft = Math.round((due - paying) * 100) / 100; // > 0: the waiter hands over less than the bill; the rest stays as his debt
+  const canSave = !busy && chosen.length > 0 && paying > 0.005 && debtLeft > -0.005;
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
   function pickWaiter(id: string) {
@@ -54,7 +55,7 @@ export default function WaiterCollection() {
     try {
       const splits = toSplits(lines, methods);
       const res = await collect({ staffId: waiter.staffId as Id<"users">, orderIds: chosen.map((o) => o._id), splits: splits as never });
-      toast.success(tr("Fedha zimepokelewa na kuhifadhiwa."));
+      toast.success(res.debt > 0 ? tr("Fedha zimepokelewa. Deni lililobaki kwa mhudumu: {0}", [money(res.debt)]) : tr("Fedha zimepokelewa na kuhifadhiwa."));
       const receipt = {
         receiptNo: String(res.collectionId).slice(-6).toUpperCase(),
         cashierName,
@@ -62,6 +63,7 @@ export default function WaiterCollection() {
         orders: chosen.map((o) => ({ label: `${new Date(o.createdAt).toLocaleTimeString()}${o.tableNumber ? ` · ${o.tableNumber}` : ""}`, amount: o.total })),
         payments: splits.map((p) => ({ method: p.method, amount: p.amount })),
         total: res.total,
+        debt: res.debt,
       };
       setPicked([]); setStaffId(""); setLines([newSplitLine(methods)]);
       if (printReceipt) {
@@ -76,7 +78,7 @@ export default function WaiterCollection() {
   // Reprint a receipt taken earlier today. Only prints what was already saved; money and stock are untouched.
   async function reprint(r: NonNullable<typeof receipts>[number]) {
     if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
-    await printPaymentReceipt({ receiptNo: String(r._id).slice(-6).toUpperCase(), cashierName: r.cashierName || cashierName, fromName: r.staffName, payments: r.splits, total: r.total }, qzPrinterFrom(hw), hw.paperWidth, branding);
+    await printPaymentReceipt({ receiptNo: String(r._id).slice(-6).toUpperCase(), cashierName: r.cashierName || cashierName, fromName: r.staffName, payments: r.splits, total: r.total, debt: r.debt }, qzPrinterFrom(hw), hw.paperWidth, branding);
   }
 
   return (
@@ -101,7 +103,7 @@ export default function WaiterCollection() {
               <li key={String(o._id)}>
                 <label className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg px-2 hover:bg-muted">
                   <input type="checkbox" className="h-5 w-5" checked={picked.includes(String(o._id))} onChange={() => toggle(String(o._id))} />
-                  <span className="flex-1 text-sm">{new Date(o.createdAt).toLocaleTimeString()}{o.tableNumber ? ` · ${o.tableNumber}` : ""} · {o.lines}</span>
+                  <span className="flex-1 text-sm">{new Date(o.createdAt).toLocaleTimeString()}{o.tableNumber ? ` · ${o.tableNumber}` : ""} · {o.lines}{o.paid > 0 && <em className="ml-1 text-xs text-amber-600">({tr("imelipwa")} {money(o.paid)} {tr("kati ya")} {money(o.orderTotal)})</em>}</span>
                   <strong className="tabular-nums">{money(o.total)}</strong>
                 </label>
               </li>
@@ -109,6 +111,8 @@ export default function WaiterCollection() {
           </ul>
           <p className="text-base font-bold">{tr("Jumla ya kupokea")}: {money(due)}</p>
           <PaymentSplit methods={methods} lines={lines} onChange={setLines} due={due} disabled={busy} />
+          <p className="text-xs text-muted-foreground">{tr("Unaweza kupokea kiasi kidogo kuliko jumla (kile alichonacho mhudumu mkononi). Kinachobaki kinabaki kama deni lake.")}</p>
+          {debtLeft > 0.005 && paying > 0.005 && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-sm font-semibold">{tr("Deni litakalobaki kwa mhudumu")}: {money(debtLeft)}</p>}
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4" checked={printReceipt} onChange={(e) => { setPrintReceipt(e.target.checked); try { localStorage.setItem(PRINT_RECEIPT_KEY, e.target.checked ? "1" : "0"); } catch { /* remembering the choice is optional */ } }} />{tr("Chapisha risiti ya malipo")}</label>
           <Button disabled={!canSave} onClick={() => void receive()}>{busy ? tr("Inahifadhi...") : tr("Pokea fedha")}</Button>
         </div>
@@ -118,7 +122,7 @@ export default function WaiterCollection() {
           <h3 className="text-sm font-semibold">{tr("Zilizopokelewa leo")}</h3>
           {receipts.map((r) => (
             <div key={String(r._id)} className="flex flex-wrap justify-between gap-2 text-sm">
-              <span>{new Date(r.createdAt).toLocaleTimeString()} · {r.staffName} · {r.orders} {tr("oda")} · {r.methods}</span>
+              <span>{new Date(r.createdAt).toLocaleTimeString()} · {r.staffName} · {r.orders} {tr("oda")} · {r.methods}{r.debt > 0 && <b className="ml-1 text-amber-600">· {tr("Deni")}: {money(r.debt)}</b>}</span>
               <span className="flex items-center gap-2"><strong className="tabular-nums">{money(r.total)}</strong><Button type="button" size="sm" variant="outline" onClick={() => void reprint(r)}>{tr("Chapisha risiti")}</Button></span>
             </div>
           ))}
