@@ -1015,8 +1015,17 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
     label: "Products", description: "Bidhaa zote, makundi (groups) na units",
     steps: [{ table: "purchasePriceHistory", via: "products" }, { table: "products" }, { table: "productGroups" }, { table: "unitsOfMeasure" }], rebuildStats: true,
   },
+  bills: {
+    label: "Bills (gharama)", description: "Bili za gharama (umeme, kodi, usafiri...), malipo yake, journals zake na ripoti za kipindi zilizohifadhiwa. Zinazodaiwa kwenye dashibodi zinakuwa 0. (Bili za wateja zinafutwa na Sales Invoices.)",
+    steps: [
+      { table: "billPayments" }, { table: "bills" },
+      { table: "journalEntries", journalSources: ["bill", "bill_payment", "bill_void"] },
+      { table: "reportRuns", index: "by_tenant" },
+    ],
+    rebuildStats: true,
+  },
   transactions: {
-    label: "Transaction Files", description: "Journal entries, expenses, capital receipts, bills za gharama na salio la accounts kuwa 0",
+    label: "Transaction Files", description: "Journal entries ZOTE (ndizo zinazotengeneza Profit & Loss, Trial Balance, Balance Sheet na ripoti za kipindi), expenses, capital receipts, bills za gharama na salio la accounts kuwa 0",
     steps: [
       { table: "journalLines" }, { table: "journalEntries" }, { table: "expenses" }, { table: "capitalReceipts" },
       { table: "billPayments" }, { table: "bills" }, { table: "accounts", resetBalances: true },

@@ -284,3 +284,35 @@ describe("Clear Data File > what the Sales menu reports and the dashboard debt c
     expect(c.totals).toMatchObject({ sales: 0, purchases: 0, invoices: 0 });
   });
 });
+
+describe("Clear Data File > Bills", () => {
+  it("clears running-cost bills, their payments, bill journals and saved reports; leaves other journals and the other business", async () => {
+    const { t, tenantA, tenantB, superId } = await setup();
+    await t.run(async (ctx) => {
+      for (const tenantId of [tenantA, tenantB]) {
+        const billId = await ctx.db.insert("bills", { tenantId, billNumber: "BILL-0001", vendor: "TANESCO", category: "electricity", billDate: "2026-10-01", dueDate: "2026-10-20", amount: 500, paidAmount: 100, status: "partial", createdBy: superId });
+        await ctx.db.insert("billPayments", { tenantId, billId, paymentDate: "2026-10-02", amount: 100, method: "cash", createdBy: superId });
+        for (const sourceType of ["bill", "bill_payment", "bill_void", "manual"]) {
+          const entryId = await ctx.db.insert("journalEntries", { tenantId, entryDate: "2026-10-01", reference: `R-${sourceType}`, description: sourceType, status: "posted", sourceType, totalDebit: 10, totalCredit: 10, createdBy: superId });
+          const accountId = await ctx.db.insert("accounts", { tenantId, code: `7${Math.floor(Math.random() * 100000)}`, name: sourceType, type: "expense", balance: 0, isActive: true });
+          await ctx.db.insert("journalLines", { tenantId, entryId, accountId, debit: 10, credit: 0 });
+        }
+        await ctx.db.insert("reportRuns", { tenantId, period: "day", startDate: "2026-10-01", endDate: "2026-10-01", scope: "all", scopeLabel: "All", title: "Daily", netProfit: 1, netSales: 1, totalExpenses: 0, data: "{}", createdBy: superId, createdByName: "x", createdAt: "2026-10-01T00:00:00.000Z" });
+      }
+    });
+    await runCategory(t, superId, tenantA, "bills", CLEAR_CATEGORIES.bills.steps.length);
+    const left = await t.run(async (ctx) => ({
+      bills: (await ctx.db.query("bills").collect()).map((b) => String(b.tenantId)),
+      pays: (await ctx.db.query("billPayments").collect()).map((b) => String(b.tenantId)),
+      sources: (await ctx.db.query("journalEntries").collect()).map((e) => `${e.tenantId === tenantA ? "A" : "B"}:${e.sourceType}`).sort(),
+      lines: (await ctx.db.query("journalLines").collect()).length,
+      reports: (await ctx.db.query("reportRuns").collect()).map((r) => String(r.tenantId)),
+    }));
+    expect(left.bills).toEqual([String(tenantB)]);
+    expect(left.pays).toEqual([String(tenantB)]);
+    expect(left.sources.filter((x) => x.startsWith("A"))).toEqual(["A:manual"]);
+    expect(left.sources.filter((x) => x.startsWith("B"))).toHaveLength(4);
+    expect(left.lines).toBe(1 + 4); // lines of removed entries are gone too
+    expect(left.reports).toEqual([String(tenantB)]);
+  });
+});
