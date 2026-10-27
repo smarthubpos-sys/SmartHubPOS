@@ -959,13 +959,13 @@ export const purgeAuditLogs = mutation({
  * `movementTypes` = delete the stock movements written by these kinds of documents. Reports (Profit & Loss, stock history, item history...)
  * are calculated from those rows, so a category is only really "cleared, nothing left" when they go too.
  */
-type ClearStep = { table: string; index?: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean; journalSources?: string[]; movementTypes?: string[]; restoreStock?: boolean };
+type ClearStep = { table: string; index?: string; children?: { table: string; index: string; field: string }[]; via?: "clients" | "products"; resetStock?: boolean; resetBalances?: boolean; resetOpening?: boolean; journalSources?: string[]; movementTypes?: string[]; restoreStock?: boolean };
 type ClearCategory = { label: string; description: string; steps: ClearStep[]; resetSequences?: ("salesSequences" | "purchaseSequences")[]; rebuildStats?: boolean };
 
 /** What the Super Admin can wipe. Child tables (lines) are removed together with their parent record. */
 export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
   invoices: {
-    label: "Sales Invoices", description: "Invoices za mauzo, malipo ya wateja, sales returns, bili za wateja, mauzo ya Selling Point, PAMOJA na ripoti zake zote (journals za mauzo, historia ya stock ya mauzo, ripoti za kipindi). Ukichagua Sales peke yake, idadi ya stock inarudishwa kama mauzo hayajawahi kutokea; ukichagua pia Stock au Products, vyote vinafutwa. Hakuna kinachobaki.",
+    label: "Sales Invoices", description: "Invoices za mauzo, malipo ya wateja, sales returns, bili za wateja, mauzo ya Selling Point, madeni ya kuanzia ya wateja (opening balance), PAMOJA na ripoti zake zote (journals za mauzo, historia ya stock ya mauzo, ripoti za kipindi). Ukichagua Sales peke yake, idadi ya stock inarudishwa kama mauzo hayajawahi kutokea; ukichagua pia Stock au Products, vyote vinafutwa. Hakuna kinachobaki.",
     steps: [
       { table: "customerPayments" },
       { table: "salesReturns", via: "clients" },
@@ -976,12 +976,14 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
       // What the reports read: sales journals (profit & loss, cash, receivables), the stock the sales took out (item history) and saved period reports.
       { table: "journalEntries", journalSources: ["sale", "sale_return", "sale_void", "payment", "waiter_sale"] },
       { table: "stockMovements", movementTypes: ["sale", "sale_return", "waiter_order", "waiter_order_cancel"], restoreStock: true },
+      // Customer reports and statements add the customer's opening (carried-over) debt to what the invoices left: it goes to 0 too, or the debt would still show.
+      { table: "clients", resetOpening: true },
       { table: "reportRuns", index: "by_tenant" },
     ],
     resetSequences: ["salesSequences"], rebuildStats: true,
   },
   purchases: {
-    label: "Purchases", description: "Manunuzi, purchase orders, GRN, malipo ya suppliers na purchase returns, PAMOJA na ripoti zake zote (journals za manunuzi, historia ya stock ya manunuzi, ripoti za kipindi). Hakuna kinachobaki.",
+    label: "Purchases", description: "Manunuzi, purchase orders, GRN, malipo ya suppliers na purchase returns, madeni ya kuanzia ya suppliers (opening balance), PAMOJA na ripoti zake zote (journals za manunuzi, historia ya stock ya manunuzi, ripoti za kipindi). Hakuna kinachobaki.",
     steps: [
       { table: "supplierPayments" },
       { table: "purchaseReturns", children: [{ table: "purchaseReturnLines", index: "by_return", field: "returnId" }] },
@@ -991,6 +993,8 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
       { table: "purchasePriceHistory", via: "products" },
       { table: "journalEntries", journalSources: ["purchase", "purchase_edit", "purchase_void", "grn", "grn_void", "purchase_return", "purchase_return_void", "supplier_payment"] },
       { table: "stockMovements", movementTypes: ["purchase", "purchase_edit", "purchase_void", "grn", "grn_void", "purchase_return", "purchase_return_void"] },
+      // Supplier statements and purchase reports add the supplier's opening (carried-over) debt: it goes to 0 too.
+      { table: "suppliers", resetOpening: true },
       { table: "reportRuns", index: "by_tenant" },
     ],
     resetSequences: ["purchaseSequences"], rebuildStats: true,
@@ -1106,11 +1110,12 @@ export const clearStepBatch = internalMutation({
       return { done: moves.length < CLEAR_BATCH, deleted };
     }
 
-    if (step.resetStock || step.resetBalances) {
+    if (step.resetStock || step.resetBalances || step.resetOpening) {
       const rows = await db.query(step.table).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).collect();
       for (const r of rows) {
         if (step.resetStock && (r.currentQty !== 0 || r.openingQty !== 0)) { await db.patch(step.table, r._id, { currentQty: 0, openingQty: 0 }); deleted++; }
         if (step.resetBalances && r.balance !== 0) { await db.patch(step.table, r._id, { balance: 0 }); deleted++; }
+        if (step.resetOpening && r.openingBalance !== 0) { await db.patch(step.table, r._id, { openingBalance: 0 }); deleted++; }
         if (deleted >= 400) return { done: false, deleted };
       }
       return { done: true, deleted };

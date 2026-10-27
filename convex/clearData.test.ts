@@ -230,3 +230,57 @@ describe("Clear Data File > Sales alone puts the stock back; Sales with Stock wi
     expect(await t.run(async (ctx) => (await ctx.db.query("stockMovements").collect()).filter((m) => m.tenantId === tenantA).length)).toBe(0);
   });
 });
+
+describe("Clear Data File > what the Sales menu reports and the dashboard debt cards show afterwards", () => {
+  async function owing() {
+    const base = await setup();
+    await base.t.run(async (ctx) => {
+      const { tenantA, tenantB, superId, a, b } = base;
+      await ctx.db.patch("clients", a.clientId, { openingBalance: 700 });
+      await ctx.db.patch("clients", b.clientId, { openingBalance: 300 });
+      for (const tenantId of [tenantA, tenantB]) {
+        await ctx.db.insert("statsTotals", { tenantId, receivable: 90, payable: 40, productCount: 1, lowStock: 0, outOfStock: 0, inventoryValue: 500, billsDue: 25, topD7: [{ name: "Prod", total: 100 }], topD30: [], topD90: [], refreshedAt: Date.now() });
+        await ctx.db.insert("statsDaily", { tenantId, date: "2026-10-01", sales: 100, purchases: 0, collected: 10, invoices: 1 });
+        await ctx.db.insert("suppliers", { tenantId, code: `S-${String(tenantId).slice(-4)}`, name: "Supplier", openingBalance: 450, isActive: true });
+      }
+      void superId;
+    });
+    return base;
+  }
+
+  it("Sales: customers' opening debts go to 0 (customer reports show nothing), the other business keeps its own", async () => {
+    const { t, tenantA, superId, a, b } = await owing();
+    await runCategory(t, superId, tenantA, "invoices", CLEAR_CATEGORIES.invoices.steps.length);
+    const out = await t.run(async (ctx) => ({ ca: (await ctx.db.get("clients", a.clientId))!.openingBalance, cb: (await ctx.db.get("clients", b.clientId))!.openingBalance, suppliers: (await ctx.db.query("suppliers").collect()).filter((x) => x.tenantId === tenantA).map((x) => x.openingBalance) }));
+    expect(out).toEqual({ ca: 0, cb: 300, suppliers: [450] }); // supplier debts belong to Purchases, not Sales
+    const asSuper = t.withIdentity({ subject: superId, tokenIdentifier: "x|1" });
+    const report = await asSuper.query(api.sales.salesRegisters, { startDate: "2026-01-01", endDate: "2026-12-31", withLines: true });
+    expect(report.invoices).toHaveLength(0);
+    expect(report.lines).toHaveLength(0);
+    expect(report.payments).toHaveLength(0);
+    expect(report.balances.every((x) => x.closing === 0)).toBe(true);
+    expect(report.totals.sales).toBe(0);
+  });
+
+  it("Purchases: suppliers' opening debts go to 0", async () => {
+    const { t, tenantA, tenantB, superId } = await owing();
+    await runCategory(t, superId, tenantA, "purchases", CLEAR_CATEGORIES.purchases.steps.length);
+    const sup = await t.run(async (ctx) => (await ctx.db.query("suppliers").collect()).map((x) => `${x.tenantId === tenantA ? "A" : x.tenantId === tenantB ? "B" : "?"}:${x.openingBalance}`).sort());
+    expect(sup).toEqual(["A:0", "B:450"]);
+  });
+
+  it("dashboard debt cards read 0 once the clean-up and the background recount are done", async () => {
+    const { t, tenantA, superId } = await owing();
+    await t.run(async (ctx) => { await ctx.db.patch("users", superId, { tenantId: tenantA }); });
+    // everything that feeds the cards: invoices (receivable), purchases (payable), running-cost bills (bills due)
+    for (const category of ["invoices", "purchases", "transactions", "stock"]) await runCategory(t, superId, tenantA, category, CLEAR_CATEGORIES[category].steps.length);
+    await t.mutation(internal.maintenance.finishClear, { actorId: superId, tenantId: tenantA, categories: ["invoices", "purchases", "transactions", "stock"], counts: "test" });
+    await t.finishAllScheduledFunctions(() => {});
+    const asSuper = t.withIdentity({ subject: superId, tokenIdentifier: "x|1" });
+    const m = await asSuper.query(api.dashboard.getMetrics, { date: "2026-10-01" });
+    expect(m).toMatchObject({ totalOutstandingCustomer: 0, totalOutstandingSupplier: 0, todaySales: 0, todayCash: 0, waiterOwing: 0, inventoryValue: 0 });
+    const c = await asSuper.query(api.dashboard.getCharts, { from: "2026-09-01", today: "2026-10-31" });
+    expect(c).toMatchObject({ receivable: 0, payable: 0, billsDue: 0, topProducts: [] });
+    expect(c.totals).toMatchObject({ sales: 0, purchases: 0, invoices: 0 });
+  });
+});
