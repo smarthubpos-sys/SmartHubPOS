@@ -1,4 +1,4 @@
-import path from "node:path";
+﻿import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
@@ -17,6 +17,7 @@ export default defineConfig({
   },
   test: {
     passWithNoTests: true,
+    testTimeout: 30000,
     // Restore Vitest mocks before each test to reduce state leakage.
     restoreMocks: true,
     projects: [

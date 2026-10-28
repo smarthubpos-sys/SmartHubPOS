@@ -1,6 +1,7 @@
 ﻿import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { useConvexAuth } from "convex/react";
+import { useConvex, useConvexAuth } from "convex/react";
+import { api } from "@/convex/_generated/api.js";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button.tsx";
 import { Eye, EyeOff } from "lucide-react";
@@ -13,7 +14,11 @@ import { markActivity, supportsTextMask } from "@/lib/session-security.ts";
 export function SignInButton() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const { signIn, signOut } = useAuthActions();
+  const convex = useConvex();
   const navigate = useNavigate();
+  // Every business has its own users and PINs, so sign-in names the business. The code is remembered on this device (a waiter types it once).
+  const BUSINESS_KEY = "smarthub.businessCode";
+  const [business, setBusiness] = useState(() => { try { return window.localStorage.getItem(BUSINESS_KEY) ?? ""; } catch { return ""; } });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginMode, setLoginMode] = useState<"password" | "pin">("password");
@@ -39,16 +44,22 @@ export function SignInButton() {
     try {
       const formData = new FormData();
       if (loginMode === "pin") {
-        formData.set("pin", pin); // PIN only: the system recognises the person by the PIN itself
+        formData.set("pin", pin); // the business code + PIN identify the person (a PIN is unique only inside its business)
+        formData.set("business", business.trim().toUpperCase());
         await signIn("staffPin", formData);
       } else {
         const normalizedUsername = username.trim().toLowerCase();
         formData.set("username", normalizedUsername);
         formData.set("flow", firstSetup ? "signUp" : "signIn");
-        formData.set("email", `${normalizedUsername}@login.smarthub.invalid`);
+        // With a business code the server tells which sign-in identity belongs to this name INSIDE that business; without one (Super Admin) the plain identity is used.
+        const email = business.trim() && !firstSetup
+          ? await convex.query(api.users.resolveLoginEmail, { business, username: normalizedUsername })
+          : `${normalizedUsername}@login.smarthub.invalid`;
+        formData.set("email", email);
         formData.set("password", password);
         await signIn("password", formData);
       }
+      try { window.localStorage.setItem(BUSINESS_KEY, business.trim().toUpperCase()); } catch { /* ignore */ }
       markActivity(); // starts the idle clock of this session
       try { window.sessionStorage.setItem(PICK_BUSINESS_FLAG, "1"); } catch { /* ignore */ }
       setUsername("");
@@ -77,6 +88,7 @@ export function SignInButton() {
     const keyClass = "h-11 rounded-xl bg-white text-lg font-bold text-slate-900 shadow-sm transition hover:bg-slate-200 active:scale-95 disabled:opacity-60";
     return (
       <form onSubmit={submit} className="mx-auto grid w-full max-w-[17rem] gap-3">
+        <Input name="sh-business" autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} required maxLength={20} className="h-10 text-center uppercase" value={business} onChange={(e) => setBusiness(e.target.value)} placeholder={tr("Msimbo wa biashara")} aria-label={tr("Msimbo wa biashara")} />
         <div className="flex h-11 items-center justify-center gap-2 rounded-xl bg-white/10 px-3" aria-label={tr("PIN ya wafanyakazi")} role="img">
           {pin.length === 0
             ? <span className="text-sm text-blue-100/80">{tr("Weka PIN yako")}</span>
@@ -91,7 +103,7 @@ export function SignInButton() {
           <button type="button" className="h-11 rounded-xl bg-sky-300 text-lg font-bold text-slate-900 transition hover:bg-sky-200 active:scale-95 disabled:opacity-60" disabled={busy || !pin} onClick={() => setPin((p) => p.slice(0, -1))} aria-label={tr("Futa tarakimu ya mwisho")}>⌫</button>
         </div>
         {error && <p role="alert" className="rounded-lg bg-red-900/40 p-2 text-center text-sm text-red-100">{error}</p>}
-        <Button type="submit" disabled={isLoading || busy || pin.length < 4} className="h-11 w-full">{tr("Ingia")}</Button>
+        <Button type="submit" disabled={isLoading || busy || pin.length < 4 || !business.trim()} className="h-11 w-full">{tr("Ingia")}</Button>
         <button type="button" className="text-center text-xs text-blue-100 underline-offset-2 hover:underline" disabled={busy} onClick={() => { setLoginMode("password"); setPin(""); setError(""); }}>{tr("Ingia kwa username na password")}</button>
       </form>
     );
@@ -99,6 +111,10 @@ export function SignInButton() {
 
   return (
     <form onSubmit={submit} autoComplete="off" className="grid gap-3">
+      <label className="grid gap-1 text-sm text-blue-100">
+        {tr("Msimbo wa biashara")}
+        <Input name="sh-business" autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={20} className="uppercase" value={business} onChange={(e) => setBusiness(e.target.value)} placeholder={tr("Msimbo wa biashara (Super Admin: acha wazi)")} />
+      </label>
       <label className="grid gap-1 text-sm text-blue-100">
         
         {tr("Jina la mtumiaji")}

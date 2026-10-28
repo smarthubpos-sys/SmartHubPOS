@@ -44,12 +44,20 @@ export const {
         if (state.locked) return null; // too many wrong PINs system-wide: PIN sign-in is paused for a few minutes (password sign-in still works)
         const lookup = await pinLookupKey(pin);
         let matched: Id<"users"> | null = null;
-        const owners = await ctx.runQuery(internal.maintenance.findPinOwners, { lookup });
+        // A PIN is unique only inside one business, so sign-in also carries the business code. Without a code only a PIN that belongs to
+        // exactly one person in the whole system can still sign in (old devices); otherwise it is refused and the person must type the code.
+        const businessCode = String(credentials.business ?? "").trim();
+        const tenantId = businessCode ? await ctx.runQuery(internal.maintenance.tenantIdByCode, { code: businessCode }) : undefined;
+        if (businessCode && !tenantId) {
+          await ctx.runMutation(internal.maintenance.recordPinLogin, { userId: undefined, success: false, now });
+          return null;
+        }
+        const owners = await ctx.runQuery(internal.maintenance.findPinOwners, { lookup, ...(tenantId ? { tenantId } : {}) });
         if (owners.length === 1) {
           const [owner] = owners;
           if (!owner.pinHash || await verifyStaffPin(pin, owner.pinHash)) matched = owner.userId;
         } else if (owners.length === 0) {
-          const legacy = await ctx.runQuery(internal.maintenance.legacyPinUsers, {});
+          const legacy = await ctx.runQuery(internal.maintenance.legacyPinUsers, tenantId ? { tenantId } : {});
           const hits: Id<"users">[] = [];
           for (const candidate of legacy.users) if (await verifyStaffPin(pin, candidate.pinHash)) hits.push(candidate.userId);
           if (hits.length === 1) matched = hits[0];
@@ -62,8 +70,9 @@ export const {
     Password({
       profile(params) {
         const emailValue = String(params.email ?? "").trim().toLowerCase();
-        const emailUsername = emailValue.endsWith(`@${INTERNAL_LOGIN_DOMAIN}`)
-          ? emailValue.slice(0, -(`@${INTERNAL_LOGIN_DOMAIN}`).length)
+        // Plain identity: name@login.smarthub.invalid. Business identity: name@<businessId>.login.smarthub.invalid.
+        const emailUsername = emailValue.endsWith(`.${INTERNAL_LOGIN_DOMAIN}`) || emailValue.endsWith(`@${INTERNAL_LOGIN_DOMAIN}`)
+          ? emailValue.slice(0, emailValue.lastIndexOf("@"))
           : undefined;
         const username = normalizeUsername(params.username ?? emailUsername);
         // During initial provisioning, only the configured initial administrator
@@ -81,7 +90,7 @@ export const {
         return {
           username,
           name: username,
-          email: `${username}@${INTERNAL_LOGIN_DOMAIN}`,
+          email: emailUsername !== undefined ? emailValue : `${username}@${INTERNAL_LOGIN_DOMAIN}`,
         };
       },
       validatePasswordRequirements(password) {

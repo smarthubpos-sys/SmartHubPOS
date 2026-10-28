@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
@@ -152,13 +152,13 @@ describe("one business can have several admins / users of the same role", () => 
   it("username status: free names pass, taken names get free suggestions, half-created accounts are reusable", async () => {
     const { t, T } = await setup();
     await t.run(async (ctx) => { await ctx.db.insert("users", { username: "ghost" }); }); // login created, setup never finished
-    // "adminu" belongs to business U; business T asks for it too
-    const taken = await t.query(internal.maintenance.usernameStatus, { username: "adminu", tenantId: T });
-    expect(taken.taken).toBe(true);
-    expect(taken.suggestions[0]).toBe("adminu.h");
-    expect(taken.suggestions.every((s) => s !== "adminu")).toBe(true);
-    expect((await t.query(internal.maintenance.usernameStatus, { username: "newadmin", tenantId: T })).taken).toBe(false);
-    const orphan = await t.query(internal.maintenance.usernameStatus, { username: "ghost", tenantId: T });
+    // "adminu" belongs to business U; the same username is free in business T
+    const taken = await t.query(internal.maintenance.usernameStatus, { username: "adminu", tenantId: T, email: `adminu@${String(T).toLowerCase()}.login.smarthub.invalid` });
+    expect(taken.taken).toBe(false);
+    expect(taken.suggestions).toEqual([]);
+    expect(taken.orphanId).toBeUndefined();
+    expect((await t.query(internal.maintenance.usernameStatus, { username: "newadmin", tenantId: T, email: `newadmin@${String(T).toLowerCase()}.login.smarthub.invalid` })).taken).toBe(false);
+    const orphan = await t.query(internal.maintenance.usernameStatus, { username: "ghost", tenantId: T, email: `ghost@${String(T).toLowerCase()}.login.smarthub.invalid` });
     expect(orphan.taken).toBe(false);
     expect(orphan.orphanId).toBeDefined();
   });

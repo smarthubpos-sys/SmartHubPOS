@@ -13,6 +13,12 @@ import type { UserLike } from "./access";
 import { ALL_PERMISSION_KEYS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
 
 const LOGIN_DOMAIN = "login.smarthub.invalid";
+/**
+ * Each business has its OWN login namespace: "admin" of business A and "admin" of business B are two different people.
+ * The sign-in identity of a business user is therefore username@<businessId>.login.smarthub.invalid (the business id is unique and never changes).
+ * Accounts created before this change keep their old username@login.smarthub.invalid identity and keep working.
+ */
+const scopedLoginEmail = (username: string, tenantId: string) => `${username}@${String(tenantId).toLowerCase()}.${LOGIN_DOMAIN}`;
 const DEFAULT_SECURITY = { minPasswordLength: 10, sessionTimeoutMinutes: 15, requirePasswordChangeForNewUsers: true };
 
 /**
@@ -348,23 +354,23 @@ export const pinLoginState = internalQuery({
 
 /** Everybody (active) who owns this PIN fingerprint. More than one = ambiguous = nobody signs in with it. */
 export const findPinOwners = internalQuery({
-  args: { lookup: v.string() },
+  args: { lookup: v.string(), tenantId: v.optional(v.id("tenants")) },
   handler: async (ctx, a) => {
-    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", a.lookup)).take(5);
+    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", a.lookup)).take(300);
     return rows
-      .filter((u) => u.tokenIdentifier === undefined && u.isActive !== false && u.pinLoginEnabled === true)
+      .filter((u) => (!a.tenantId || u.tenantId === a.tenantId) && u.tokenIdentifier === undefined && u.isActive !== false && u.pinLoginEnabled === true)
       .map((u) => ({ userId: u._id, pinHash: u.pinHash }));
   },
 });
 
 /** PINs saved before PIN-only sign-in existed have no fingerprint yet; they are matched once and then upgraded. Skipped for good when none are left. */
 export const legacyPinUsers = internalQuery({
-  args: {},
-  handler: async (ctx) => {
+  args: { tenantId: v.optional(v.id("tenants")) },
+  handler: async (ctx, a) => {
     const done = await ctx.db.query("pinLoginGuard").withIndex("by_key", (q) => q.eq("key", "legacy-done")).first();
     if (done) return { done: true as const, users: [] as Array<{ userId: Id<"users">; pinHash: string }> };
     const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", undefined)).take(3000);
-    const legacy = rows.filter((u) => u.tokenIdentifier === undefined && !!u.pinHash && u.pinLoginEnabled === true && u.isActive !== false);
+    const legacy = rows.filter((u) => (!a.tenantId || u.tenantId === a.tenantId) && u.tokenIdentifier === undefined && !!u.pinHash && u.pinLoginEnabled === true && u.isActive !== false);
     return { done: legacy.length === 0, users: legacy.slice(0, 12).map((u) => ({ userId: u._id, pinHash: u.pinHash! })) };
   },
 });
@@ -398,13 +404,24 @@ export const recordPinLogin = internalMutation({
   },
 });
 
-/** Used before a PIN is saved: is it already somebody else's? (never says whose) */
-export const assertPinFree = internalQuery({
-  args: { lookup: v.string(), exceptUserId: v.optional(v.id("users")) },
+/** Business id for a typed business code (case-insensitive). Used by PIN sign-in and by the login screen. */
+export const tenantIdByCode = internalQuery({
+  args: { code: v.string() },
   handler: async (ctx, a) => {
-    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", a.lookup)).take(5);
-    if (rows.some((u) => u.tokenIdentifier === undefined && u.isActive !== false && (!a.exceptUserId || u._id !== a.exceptUserId))) {
-      throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye mfumo. Chagua PIN nyingine.");
+    const code = a.code.trim().toUpperCase();
+    if (!code) return null;
+    const t = await ctx.db.query("tenants").withIndex("by_code", (q) => q.eq("code", code)).first();
+    return t ? t._id : null;
+  },
+});
+
+/** Used before a PIN is saved: is it already somebody else's IN THE SAME BUSINESS? (never says whose; other businesses are invisible) */
+export const assertPinFree = internalQuery({
+  args: { lookup: v.string(), tenantId: v.optional(v.id("tenants")), exceptUserId: v.optional(v.id("users")) },
+  handler: async (ctx, a) => {
+    const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", a.lookup)).take(300);
+    if (rows.some((u) => u.tenantId === a.tenantId && u.tokenIdentifier === undefined && u.isActive !== false && (!a.exceptUserId || u._id !== a.exceptUserId))) {
+      throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye biashara hii. Chagua PIN nyingine.");
     }
     return true;
   },
@@ -503,8 +520,12 @@ export const renameUsername = mutation({
     if (normalizeRole(target.role) === "super_admin" || normalizeRole(target.role) === "superadmin") throw new Error("Username ya Super Admin haibadilishwi hapa; inafungamana na SUPER_ADMIN_USERNAME kwenye Convex.");
     if (target.username === username) return { username };
     if (username === (process.env.SUPER_ADMIN_USERNAME ?? "").trim().toLowerCase()) throw new Error(`Username "${username}" imehifadhiwa kwa Super Admin.`);
-    if (await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", username)).first()) throw new Error(`Username "${username}" tayari inatumika. Chagua jina lingine.`);
-    const newEmail = `${username}@${LOGIN_DOMAIN}`;
+    // Unique only inside the target's own business (a user with no business: global).
+    const sameName = target.tenantId
+      ? await ctx.db.query("users").withIndex("by_tenant_username", (q) => q.eq("tenantId", target.tenantId).eq("username", username)).first()
+      : await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", username)).first();
+    if (sameName && sameName._id !== target._id) throw new Error(`Username "${username}" tayari inatumika ndani ya biashara hii. Chagua jina lingine.`);
+    const newEmail = target.tenantId ? scopedLoginEmail(username, target.tenantId) : `${username}@${LOGIN_DOMAIN}`;
     if (await ctx.db.query("authAccounts").withIndex("providerAndAccountId", (q) => q.eq("provider", "password").eq("providerAccountId", newEmail)).first()) throw new Error(`Username "${username}" tayari inatumika. Chagua jina lingine.`);
     const account = await ctx.db.query("authAccounts").withIndex("userIdAndProvider", (q) => q.eq("userId", a.userId).eq("provider", "password")).first();
     if (!account) throw new Error("Akaunti hii haina login ya password; badilisha username haiwezekani bila kuiharibu.");
@@ -564,8 +585,8 @@ export const updateUser = mutation({
     if (a.tenantId !== undefined) patch.tenantId = a.tenantId;
     if (deptTouched) { patch.branchId = next.branchId; patch.branchIds = next.branchIds; patch.allDepartments = next.allDepartments; patch.branchPicked = next.branchPicked; }
     if (a.isActive === true && target.isActive === false && target.pinLookup) {
-      const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", target.pinLookup)).take(5);
-      if (owners.some((u) => u._id !== target._id && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN ya mtumiaji huyu sasa inatumiwa na mtu mwingine. Mwekee PIN mpya kabla ya kumwasha.");
+      const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", target.pinLookup)).take(300);
+      if (owners.some((u) => u._id !== target._id && u.tenantId === target.tenantId && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN ya mtumiaji huyu sasa inatumiwa na mtu mwingine. Mwekee PIN mpya kabla ya kumwasha.");
     }
     if (a.isActive !== undefined) patch.isActive = a.isActive;
     if (a.requirePasswordChange !== undefined) patch.requirePasswordChange = a.requirePasswordChange;
@@ -614,11 +635,11 @@ export const saveStaffPin = internalMutation({
     const target = await ctx.db.get("users", a.userId);
     if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
     if (a.enabled && !(a.pinHash ?? target.pinHash)) throw new Error("Weka PIN ya tarakimu 4 hadi 6 kabla ya kuwasha Staff PIN.");
-    // One PIN = one person, across the whole system (the PIN is the only thing typed at sign-in).
+    // One PIN = one person INSIDE a business (sign-in asks for the business code + PIN). Other businesses may use the same PIN.
     const lookup = a.pinLookup ?? target.pinLookup;
     if (lookup) {
-      const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", lookup)).take(5);
-      if (owners.some((u) => u._id !== target._id && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye mfumo. Chagua PIN nyingine.");
+      const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", lookup)).take(300);
+      if (owners.some((u) => u._id !== target._id && u.tenantId === target.tenantId && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye biashara hii. Chagua PIN nyingine.");
     }
     await ctx.db.patch("users", a.userId, {
       ...(a.pinHash ? { pinHash: a.pinHash } : {}),
@@ -640,7 +661,7 @@ export const setStaffPin = action({
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { targetUserId: a.userId });
     const pinHash = a.pin === undefined ? undefined : await hashStaffPin(a.pin);
     const pinLookup = a.pin === undefined ? undefined : await pinLookupKey(a.pin);
-    if (pinLookup) await ctx.runQuery(internal.maintenance.assertPinFree, { lookup: pinLookup, exceptUserId: a.userId });
+    if (pinLookup) await ctx.runQuery(internal.maintenance.assertPinFree, { lookup: pinLookup, tenantId: auth.targetTenantId, exceptUserId: a.userId });
     await ctx.runMutation(internal.maintenance.saveStaffPin, { userId: a.userId, actorId: auth.actorId, pinHash, pinLookup, enabled: a.enabled });
     return true;
   },
@@ -662,31 +683,37 @@ export const authorizeUserAdmin = internalQuery({
       await assertDepartmentRules(ctx, actor, { role: a.role, tenantId, scope: departmentScope(acc), allDepartments: !!acc.allDepartments });
     }
     const policy = await securityPolicy(ctx, actor);
-    return { actorId: actor._id, minLength: policy.minPasswordLength as number, forceChange: !!policy.requirePasswordChangeForNewUsers, email: target?.email as string | undefined, username: target?.username as string | undefined, actorTenantId: actor.tenantId };
+    return { actorId: actor._id, minLength: policy.minPasswordLength as number, forceChange: !!policy.requirePasswordChangeForNewUsers, email: target?.email as string | undefined, username: target?.username as string | undefined, actorTenantId: actor.tenantId, targetTenantId: target?.tenantId };
   },
 });
 
 /**
- * Login names are unique across ALL businesses (the login screen has only username + password), so "admin" can belong to one
- * business only. This tells createUser whether a name is free, reuses a half-created account (setup that never finished),
- * and suggests free alternatives such as "admin.duka1".
+ * Login names are unique INSIDE one business only. "admin" of business A and "admin" of business B are different people and never see each other.
+ * This tells createUser whether the name is free in THIS business, reuses a half-created account (setup that never finished),
+ * and suggests free alternatives such as "admin1".
  */
 export const usernameStatus = internalQuery({
-  args: { username: v.string(), tenantId: v.optional(v.id("tenants")) },
+  args: { username: v.string(), tenantId: v.optional(v.id("tenants")), email: v.string() },
   handler: async (ctx, a) => {
-    const find = async (name: string) => await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", name)).first();
-    const existing = await find(a.username);
-    const orphanId = existing && existing.role === undefined && !existing.tenantId ? existing._id : undefined;
-    if (!existing || orphanId) return { taken: false as const, orphanId, suggestions: [] as string[] };
-    const code = a.tenantId ? ((await ctx.db.get("tenants", a.tenantId))?.code ?? "").toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+    const inBusiness = async (name: string) => a.tenantId
+      ? await ctx.db.query("users").withIndex("by_tenant_username", (q) => q.eq("tenantId", a.tenantId).eq("username", name)).first()
+      : await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", name)).first(); // no business (Super Admin): global
+    const existing = await inBusiness(a.username);
+    // An earlier attempt that created the login but never finished has no business/role yet: found by its own sign-in identity.
+    // (Older half-created accounts used the plain global identity, so they are also found by username.)
+    const byEmail = await ctx.db.query("users").withIndex("email", (q) => q.eq("email", a.email)).first();
+    const byName = await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", a.username)).first();
+    const half = [byEmail, byName].find((u) => u && u.role === undefined && !u.tenantId && u.tokenIdentifier === undefined);
+    const orphanId = half?._id;
+    const orphanEmail = half?.email;
+    if (!existing) return { taken: false as const, orphanId, orphanEmail, suggestions: [] as string[] };
     const free: string[] = [];
-    const candidates = [...(code ? [`${a.username}.${code}`] : []), ...[1, 2, 3, 4, 5].map((n) => `${a.username}${n}`)];
-    for (const c of candidates) {
-      const name = c.slice(0, 32);
-      if (/^[a-z0-9][a-z0-9._-]{2,31}$/.test(name) && !(await find(name))) free.push(name);
+    for (const n of [1, 2, 3, 4, 5]) {
+      const name = `${a.username}${n}`.slice(0, 32);
+      if (/^[a-z0-9][a-z0-9._-]{2,31}$/.test(name) && !(await inBusiness(name))) free.push(name);
       if (free.length === 3) break;
     }
-    return { taken: true as const, orphanId: undefined, suggestions: free };
+    return { taken: true as const, orphanId: undefined, orphanEmail: undefined, suggestions: free };
   },
 });
 
@@ -726,23 +753,24 @@ export const createUser = action({
     if (pinOnlyRole && !a.pin) throw new Error("Mhudumu husajiliwa kwa PIN: weka PIN ya tarakimu 4 hadi 6.");
     const newPin = a.pin ? a.pin : undefined;
     const newPinLookup = newPin ? await pinLookupKey(newPin) : undefined;
-    if (newPinLookup) await ctx.runQuery(internal.maintenance.assertPinFree, { lookup: newPinLookup }); // refuse BEFORE any account is created
     // A PIN-only person has no password to remember: the account gets a long random one nobody knows (an administrator can still reset it).
     const password = pinOnlyRole && !a.password ? `${crypto.randomUUID()}${crypto.randomUUID()}` : (a.password ?? "");
     if (!pinOnlyRole && password.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
     const tenantId = a.tenantId ?? auth.actorTenantId;
     if (!["super_admin", "superadmin"].includes(normalizeRole(a.role)) && !tenantId) throw new Error("Chagua ofisi kwa mtumiaji huyu.");
-    const email = `${username}@${LOGIN_DOMAIN}`;
+    if (newPinLookup) await ctx.runQuery(internal.maintenance.assertPinFree, { lookup: newPinLookup, tenantId }); // refuse BEFORE any account is created (same business only)
+    // A business user gets a business-scoped login identity; only a user with no business (Super Admin) uses the plain global one.
+    const email = tenantId ? scopedLoginEmail(username, tenantId) : `${username}@${LOGIN_DOMAIN}`;
     if (username === (process.env.SUPER_ADMIN_USERNAME ?? "").trim().toLowerCase()) throw new Error(`Username "${username}" imehifadhiwa kwa Super Admin. Chagua jina lingine.`);
-    const status = await ctx.runQuery(internal.maintenance.usernameStatus, { username, tenantId });
+    const status = await ctx.runQuery(internal.maintenance.usernameStatus, { username, tenantId, email });
     if (status.taken) {
       const hint = status.suggestions.length ? ` Jaribu: ${status.suggestions.join(", ")}.` : "";
-      throw new Error(`Username "${username}" tayari inatumika (majina ya watumiaji ni ya kipekee kwa biashara zote, hata kama role ni ile ile).${hint}`);
+      throw new Error(`Username "${username}" tayari inatumika ndani ya biashara hii (jina la mtumiaji ni la kipekee ndani ya biashara moja; biashara nyingine zinaweza kutumia jina hilo hilo).${hint}`);
     }
     let userId: Id<"users">;
     if (status.orphanId) {
       // An earlier attempt created the login but never finished: complete it with the new password instead of failing forever.
-      try { await modifyAccountCredentials(ctx, { provider: "password", account: { id: email, secret: password } }); }
+      try { await modifyAccountCredentials(ctx, { provider: "password", account: { id: status.orphanEmail ?? email, secret: password } }); }
       catch (e) { const err = new Error(`Username "${username}" imeshatumika bila kukamilika. Tumia jina lingine. Sababu: ${String((e as Error)?.message ?? e)}`) as Error & { cause?: unknown }; err.cause = e; throw err; }
       userId = status.orphanId;
     } else {

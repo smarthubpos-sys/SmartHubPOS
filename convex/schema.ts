@@ -63,6 +63,7 @@ export default defineSchema({
     .index("phone", ["phone"])
     .index("by_token", ["tokenIdentifier"])
     .index("by_username", ["username"])
+    .index("by_tenant_username", ["tenantId", "username"])
     .index("by_pin_lookup", ["pinLookup"]),
 
   // Global throttle for PIN-only sign-in (a PIN identifies the person, so failures cannot be counted per user).

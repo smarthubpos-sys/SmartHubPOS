@@ -30,7 +30,7 @@ describe("username change keeps login consistent", () => {
     expect(await asAdmin.mutation(api.maintenance.renameUsername, { userId: staff, newUsername: "  Juma.New " })).toEqual({ username: "juma.new" });
     const after = await t.run(async (ctx) => ({ u: await ctx.db.get("users", staff), acc: await ctx.db.query("authAccounts").withIndex("userIdAndProvider", (q) => q.eq("userId", staff).eq("provider", "password")).first(), accounts: (await ctx.db.query("authAccounts").collect()).length }));
     expect(after.u?.username).toBe("juma.new");
-    expect(after.acc?.providerAccountId).toBe(`juma.new@${DOMAIN}`);
+    expect(after.acc?.providerAccountId).toBe(`juma.new@${String(after.u?.tenantId).toLowerCase()}.${DOMAIN}`); // a business user gets a business-scoped login identity
     expect(after.acc?.secret).toBe("HASH-juma"); // password untouched, no second account
     expect(after.accounts).toBe(5 - 1); // no extra account created (4 users have logins)
     expect(await loginKeys(t)).not.toContain(`juma@${DOMAIN}`);

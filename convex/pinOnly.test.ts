@@ -15,8 +15,9 @@ async function setup() {
     const other = await ctx.db.insert("tenants", { name: "Hotel", code: "HTL", isActive: true, createdByToken: "t", createdAt: now });
     const boss = await ctx.db.insert("users", { name: "Boss", username: "boss", role: "super_admin", tenantId, isActive: true });
     const juma = await ctx.db.insert("users", { name: "Juma", username: "juma", role: "waiter", tenantId, isActive: true });
+    const musa = await ctx.db.insert("users", { name: "Musa", username: "musa", role: "waiter", tenantId, isActive: true }); // same business as Juma
     const asha = await ctx.db.insert("users", { name: "Asha", username: "asha", role: "waitress", tenantId: other, isActive: true }); // another business
-    return { boss, juma, asha };
+    return { boss, juma, musa, asha, tenantId, other };
   });
   return { t, ...ids };
 }
@@ -32,14 +33,27 @@ describe("PIN-only sign-in: one PIN, one person", () => {
     expect(await pinLookupKey("4821")).not.toBe(await pinLookupKey("4822"));
   });
 
-  it("refuses a PIN that somebody else already has - even in another business", async () => {
-    const { t, boss, juma, asha } = await setup();
+  it("refuses a PIN that somebody in the SAME business already has, but another business may use the same PIN", async () => {
+    const { t, boss, juma, musa, asha, tenantId, other } = await setup();
     const lookup = await pinLookupKey("4821");
     await t.mutation(internal.maintenance.saveStaffPin, { userId: juma, actorId: boss, pinHash: "h1", pinLookup: lookup, enabled: true });
-    await expect(t.mutation(internal.maintenance.saveStaffPin, { userId: asha, actorId: boss, pinHash: "h2", pinLookup: lookup, enabled: true })).rejects.toThrow(/tayari inatumika/);
-    await expect(t.query(internal.maintenance.assertPinFree, { lookup })).rejects.toThrow(/tayari inatumika/);
-    expect(await t.query(internal.maintenance.assertPinFree, { lookup, exceptUserId: juma })).toBe(true); // the owner may keep / re-save his own PIN
-    await t.mutation(internal.maintenance.saveStaffPin, { userId: asha, actorId: boss, pinHash: "h2", pinLookup: await pinLookupKey("7305"), enabled: true });
+    await expect(t.mutation(internal.maintenance.saveStaffPin, { userId: musa, actorId: boss, pinHash: "h2", pinLookup: lookup, enabled: true })).rejects.toThrow(/tayari inatumika/);
+    await expect(t.query(internal.maintenance.assertPinFree, { lookup, tenantId })).rejects.toThrow(/tayari inatumika/);
+    expect(await t.query(internal.maintenance.assertPinFree, { lookup, tenantId, exceptUserId: juma })).toBe(true); // the owner may keep / re-save his own PIN
+    // Another business is independent: the same PIN is free there and is saved without any message about the other business.
+    expect(await t.query(internal.maintenance.assertPinFree, { lookup, tenantId: other })).toBe(true);
+    await t.mutation(internal.maintenance.saveStaffPin, { userId: asha, actorId: boss, pinHash: "h3", pinLookup: lookup, enabled: true });
+  });
+
+  it("PIN sign-in lookup with a business only finds that business's person", async () => {
+    const { t, boss, juma, asha, tenantId, other } = await setup();
+    const lookup = await pinLookupKey("4821");
+    await t.mutation(internal.maintenance.saveStaffPin, { userId: juma, actorId: boss, pinHash: "h1", pinLookup: lookup, enabled: true });
+    await t.mutation(internal.maintenance.saveStaffPin, { userId: asha, actorId: boss, pinHash: "h3", pinLookup: lookup, enabled: true });
+    expect(await t.query(internal.maintenance.findPinOwners, { lookup, tenantId })).toEqual([{ userId: juma, pinHash: "h1" }]);
+    expect(await t.query(internal.maintenance.findPinOwners, { lookup, tenantId: other })).toEqual([{ userId: asha, pinHash: "h3" }]);
+    expect(await t.query(internal.maintenance.tenantIdByCode, { code: " bar " })).toBe(tenantId);
+    expect(await t.query(internal.maintenance.tenantIdByCode, { code: "NOPE" })).toBeNull();
   });
 
   it("finds the owner of a PIN, and only while he is active and allowed to use a PIN", async () => {

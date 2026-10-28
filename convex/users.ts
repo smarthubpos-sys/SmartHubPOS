@@ -1,3 +1,4 @@
+import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { getCurrentProfile, isSuperAdmin, normalizeRole } from "./access";
 
@@ -15,6 +16,25 @@ function isProfile(row: Record<string, unknown>) {
  *  - If no Super Admin exists yet, this account becomes the first Super Admin.
  *  - Everyone else defaults to "viewer" until an administrator assigns a role.
  */
+/**
+ * Login screen helper (no sign-in yet): which sign-in identity belongs to this username INSIDE this business?
+ * Returns only an internal, non-secret identity string. An unknown business or name returns a harmless identity that simply fails to sign in,
+ * so nobody can use this to find out which businesses or users exist.
+ */
+export const resolveLoginEmail = query({
+  args: { business: v.string(), username: v.string() },
+  handler: async (ctx, a) => {
+    const username = a.username.trim().toLowerCase();
+    const code = a.business.trim().toUpperCase();
+    const fallback = `${username}@unknown.${LOGIN_DOMAIN.slice(1)}`;
+    if (!code || !username) return fallback;
+    const tenant = await ctx.db.query("tenants").withIndex("by_code", (q) => q.eq("code", code)).first();
+    if (!tenant) return fallback;
+    const user = await ctx.db.query("users").withIndex("by_tenant_username", (q) => q.eq("tenantId", tenant._id).eq("username", username)).first();
+    return user && user.tokenIdentifier === undefined && user.email ? user.email : fallback;
+  },
+});
+
 export const updateCurrentUser = mutation({
   args: {},
   handler: async (ctx) => {
@@ -24,7 +44,8 @@ export const updateCurrentUser = mutation({
     if (!current) return null;
 
     const identityEmail = String(current.email ?? identity.email ?? "").trim().toLowerCase();
-    const username = current.username ?? (identityEmail.endsWith(LOGIN_DOMAIN) ? identityEmail.slice(0, -LOGIN_DOMAIN.length) : undefined);
+    const username = current.username ?? (identityEmail.endsWith(LOGIN_DOMAIN.slice(1)) ? identityEmail.slice(0, identityEmail.lastIndexOf("@")) : undefined);
+    const businessScopedLogin = identityEmail.endsWith(`.${LOGIN_DOMAIN.slice(1)}`); // belongs to ONE business: never merge it with another business's old rows
     const configuredAdmin = (process.env.SUPER_ADMIN_USERNAME ?? "").trim().toLowerCase();
     const isConfiguredAdmin = !!configuredAdmin && (username ?? "").toLowerCase() === configuredAdmin;
 
@@ -40,7 +61,7 @@ export const updateCurrentUser = mutation({
       const legacy = rows
         .filter((r) => r.tokenIdentifier !== undefined && r._id !== current._id && username && r.username === username)
         .sort((a, b) => Number(isSuperAdmin(b)) - Number(isSuperAdmin(a)) || Number(!!b.tenantId) - Number(!!a.tenantId));
-      const source = legacy[0];
+      const source = businessScopedLogin ? undefined : legacy[0];
       const otherSuperAdmin = rows.some((r) => r._id !== current._id && isSuperAdmin(r) && r.isActive !== false);
       if (source?.role) {
         patch.role = source.role;
