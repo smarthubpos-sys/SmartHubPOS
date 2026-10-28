@@ -13,6 +13,7 @@ import type * as accounting from "../accounting.js";
 import type * as announcements from "../announcements.js";
 import type * as attendance from "../attendance.js";
 import type * as auth from "../auth.js";
+import type * as autoProduce from "../autoProduce.js";
 import type * as bills from "../bills.js";
 import type * as biometric from "../biometric.js";
 import type * as capital from "../capital.js";
@@ -66,6 +67,7 @@ declare const fullApi: ApiFromModules<{
   announcements: typeof announcements;
   attendance: typeof attendance;
   auth: typeof auth;
+  autoProduce: typeof autoProduce;
   bills: typeof bills;
   biometric: typeof biometric;
   capital: typeof capital;
