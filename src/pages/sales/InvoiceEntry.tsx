@@ -13,10 +13,6 @@ import { Stat } from "@/pages/shared/report.tsx";
 import { fmt, num, round2, today } from "@/pages/shared/report-utils.ts";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { brandingFromSettings } from "@/lib/receipt-branding.ts";
-import BillSheet from "@/components/BillSheet.tsx";
-import ReturnPanel from "@/pages/sales/ReturnPanel.tsx";
-import type { Paper } from "@/lib/print-area.ts";
-import { tokenAfterSave } from "@/lib/print-policy.ts";
 import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 
 type Line = { productId: string; qty: string; price: string; discount: string };
@@ -33,7 +29,6 @@ export default function InvoiceEntry() {
   const createInvoice = useMutation(api.sales.createInvoice);
   // One key per sale attempt: a retry or double click re-sends the same key, so the server never sells twice. Renewed after a successful save.
   const requestKeyRef = useRef<string>(crypto.randomUUID());
-  const voidInvoice = useMutation(api.sales.voidInvoice);
   const business = useQuery(api.tenants.current);
   // Everyone sells here the same simple way as the Selling Point: pick the items, then "Send to cashier" or "Print".
   // The order goes to the cashier queue of the business / department the person is working in; the customer is optional.
@@ -52,21 +47,10 @@ export default function InvoiceEntry() {
   const [taxRate, setTaxRate] = useState("0");
   const [invoiceDiscount, setInvoiceDiscount] = useState("0");
   const hardware = (settings?.app?.hardware ?? {}) as { paperWidth?: string; autoPrintReceipt?: boolean; printerSource?: string; receiptPrinter?: string };
-  const paper: Paper = hardware.paperWidth === "a4" ? "A4" : hardware.paperWidth === "58mm" ? "58mm" : "80mm";
-  const [whatsappEnabled, setWhatsappEnabled] = useState(() => { try { return localStorage.getItem("smarthub-bill-whatsapp-enabled") !== "false"; } catch { return true; } });
-  const changeWhatsapp = (value: boolean) => { setWhatsappEnabled(value); try { localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); } catch { /* storage unavailable */ } };
-  // The invoice just saved, and the one picked in the list below: both are shown with the same layout as a Bill.
-  const [justSaved, setJustSaved] = useState<Id<"invoices"> | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [printToken, setPrintToken] = useState(0);
   const [notes, setNotes] = useState("");
   const [scan, setScan] = useState("");
   const [lines, setLines] = useState<Line[]>([emptyLine()]);
   const [busy, setBusy] = useState(false);
-  const [returning, setReturning] = useState(false); // partial return screen for the picked invoice
-  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
-  const [cancelReasonDetails, setCancelReasonDetails] = useState("");
 
   const unitName = useMemo(() => new Map((units ?? []).map((u) => [String(u._id), u.name])), [units]);
   const productById = useMemo(() => new Map((products ?? []).map((p) => [String(p._id), p])), [products]);
@@ -97,46 +81,6 @@ export default function InvoiceEntry() {
       return blank >= 0 ? old.map((l, i) => (i === blank ? fresh : l)) : [...old, fresh];
     });
     setScan("");
-  };
-
-  const cancelSelected = async () => {
-    if (!selected || !cancelReason) {
-      toast.error(tr("Chagua sababu ya kubatilisha invoice."));
-      return;
-    }
-
-    const reasonDetails = cancelReasonDetails.trim();
-    if (cancelReason === "Sababu nyingine" && !reasonDetails) {
-      toast.error(tr("Eleza sababu nyingine kabla ya kuendelea."));
-      return;
-    }
-
-    const inv = recent?.invoices.find((x) => String(x._id) === selected);
-    const confirmed = window.confirm(
-      tr("Una uhakika unataka kubatilisha invoice {0}? Stoo itarudi na malipo yaliyopokelewa yatarudishwa.", [inv?.invoiceNo ?? ""])
-    );
-    if (!confirmed) return;
-
-    setBusy(true);
-    try {
-      const r = await voidInvoice({
-        invoiceId: selected as Id<"invoices">,
-        reason: cancelReason,
-        ...(cancelReason === "Sababu nyingine" ? { reasonDetails } : {}),
-      });
-      toast.success(tr("Invoice {0} imebatilishwa. Yaliyorudishwa: {1}.", [r.invoiceNo, fmt(r.refunded)]));
-      setSelected(null);
-      setReturning(false);
-      setJustSaved(null);
-      setPrintToken(0);
-      setCancelDialogOpen(false);
-      setCancelReason("");
-      setCancelReasonDetails("");
-    } catch (e) {
-      toast.error(errorText(e, "Imeshindikana kubatilisha invoice."));
-    } finally {
-      setBusy(false);
-    }
   };
 
   const DEFAULT_CUSTOMER = "Mteja / Customer";
@@ -195,10 +139,6 @@ export default function InvoiceEntry() {
         requestKey: requestKeyRef.current,
       });
       requestKeyRef.current = crypto.randomUUID();
-      setSelected(null); setJustSaved(r.invoiceId);
-      // Printing is configured centrally under Maintenance > Hardware Setup.
-      // BillSheet prints only after its saved invoice data is loaded; it never creates another invoice.
-      setPrintToken((n) => tokenAfterSave(n, !!hardware.autoPrintReceipt));
       toast.success(tr("Invoice {0} imehifadhiwa — jumla {1}, deni {2}.", [r.invoiceNo, fmt(r.total), fmt(r.outstanding)]));
       if (r.creditWarning) toast.warning(tr("Onyo: mteja huyu amevuka kikomo chake cha mkopo."));
       setLines([emptyLine()]); setInvoiceDiscount("0"); setNotes("");
@@ -278,71 +218,7 @@ export default function InvoiceEntry() {
         </details>
       </section>
 
-      {justSaved && <section className="space-y-2 rounded-xl border p-4">
-        <div className="flex items-center justify-between gap-2 print:hidden"><h2 className="font-semibold">{tr("Invoice imehifadhiwa")}</h2><Button variant="outline" size="sm" onClick={() => setJustSaved(null)}>{tr("Funga")}</Button></div>
-        <BillSheet kind="invoice" invoiceIds={[justSaved]} printToken={printToken} paper={paper} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={changeWhatsapp} />
-      </section>}
-      {recent && (
-        <>
-          <div className="grid gap-3 sm:grid-cols-3"><Stat label={tr("Mauzo (siku 30)")} value={recent.totals.sales} /><Stat label={tr("Yaliyolipwa")} value={recent.totals.paid} /><Stat label={tr("Madeni")} value={recent.totals.outstanding} /></div>
-          <section className="space-y-3 rounded-xl border p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="font-semibold">{tr("Invoices za siku 30 zilizopita")}</h2>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button disabled={!selected} onClick={() => { setJustSaved(null); setPrintToken((n) => n + 1); }}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha invoice iliyochaguliwa")}</Button>
-                {business?.isManager && <Button variant="outline" disabled={!selected || busy} onClick={() => { setJustSaved(null); setReturning(true); }}>{tr("Rejesha bidhaa (sehemu)")}</Button>}
-                {business?.canVoidInvoice && <Button variant="destructive" disabled={!selected || busy} onClick={() => { setCancelReason(""); setCancelReasonDetails(""); setCancelDialogOpen(true); }}>{tr("Batilisha invoice iliyochaguliwa")}</Button>}
-              </div>
-            </div>
-            {!recent.invoices.length && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice bado.")}</p>}
-            {recent.invoices.length > 0 && <div className="overflow-x-auto"><table className="w-full text-sm">
-              <thead><tr className="border-b text-left">{["", tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Jumla"), tr("Imelipwa"), tr("Deni"), tr("Hali")].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
-              <tbody>{recent.invoices.slice(0, 20).map((x) => {
-                const id = String(x._id);
-                return <tr key={id} className={`cursor-pointer border-b ${selected === id ? "bg-primary/10" : "hover:bg-muted/50"}`} onClick={() => { setSelected(id); setReturning(false); setJustSaved(null); setPrintToken(0); }}>
-                  <td className="p-2"><input type="radio" name="picked-invoice" aria-label={x.invoiceNo} className="h-4 w-4 cursor-pointer accent-primary" checked={selected === id} onChange={() => { setSelected(id); setReturning(false); setJustSaved(null); setPrintToken(0); }} /></td>
-                  <td className="p-2 font-medium">{x.invoiceNo}</td><td className="p-2">{x.date}</td><td className="p-2">{x.clientName}</td>
-                  <td className="p-2 tabular-nums">{fmt(x.total)}</td><td className="p-2 tabular-nums">{fmt(x.amountPaid)}</td><td className="p-2 tabular-nums">{fmt(x.outstanding)}</td><td className="p-2">{x.paymentStatus}</td>
-                </tr>;
-              })}</tbody>
-            </table></div>}
-          </section>
-          {selected && returning && <ReturnPanel key={selected} invoiceId={selected as Id<"invoices">} onClose={() => setReturning(false)} />}
-          {selected && !justSaved && <section className="rounded-xl border p-4">
-            <BillSheet kind="invoice" key={selected} invoiceIds={[selected as Id<"invoices">]} printToken={printToken} paper={paper} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={changeWhatsapp} />
-          </section>}
-        </>
-      )}
-          {cancelDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="cancel-invoice-title">
-          <section className="w-full max-w-lg space-y-4 rounded-xl border bg-background p-5 shadow-xl">
-            <h2 id="cancel-invoice-title" className="text-lg font-semibold">{tr("Batilisha invoice")}</h2>
-            <p className="text-sm text-muted-foreground">{tr("Chagua sababu ya kubatilisha invoice. Stoo itarudi na malipo yaliyopokelewa yatarudishwa.")}</p>
-            <label className="grid gap-1 text-sm">
-              {tr("Sababu ya kubatilisha")}
-              <select className={selectClass + " w-full"} value={cancelReason} onChange={(e) => { setCancelReason(e.target.value); setCancelReasonDetails(""); }}>
-                <option value="">{tr("Chagua sababu...")}</option>
-                <option value="Kosa la kuingiza invoice">{tr("Kosa la kuingiza invoice")}</option>
-                <option value="Mteja amebadilisha mawazo">{tr("Mteja amebadilisha mawazo")}</option>
-                <option value="Bidhaa ime-expire">{tr("Bidhaa ime-expire")}</option>
-                <option value="Kosa la bei au kiasi">{tr("Kosa la bei au kiasi")}</option>
-                <option value="Mteja amebadilisha oda">{tr("Mteja amebadilisha oda")}</option>
-                <option value="Sababu nyingine">{tr("Sababu nyingine")}</option>
-              </select>
-            </label>
-            {cancelReason === "Sababu nyingine" && (
-              <label className="grid gap-1 text-sm">
-                {tr("Eleza sababu nyingine (lazima)")}
-                <textarea className="min-h-24 w-full rounded-md border bg-background p-3" value={cancelReasonDetails} onChange={(e) => setCancelReasonDetails(e.target.value)} maxLength={500} required placeholder={tr("Andika maelezo ya sababu...")} />
-              </label>
-            )}
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button variant="outline" disabled={busy} onClick={() => setCancelDialogOpen(false)}>{tr("Ghairi")}</Button>
-              <Button variant="destructive" disabled={busy || !cancelReason || (cancelReason === "Sababu nyingine" && !cancelReasonDetails.trim())} onClick={() => void cancelSelected()}>{busy ? tr("Inabatilisha...") : tr("Thibitisha kubatilisha")}</Button>
-            </div>
-          </section>
-        </div>
-      )}
+      {recent && <div className="grid gap-3 sm:grid-cols-3"><Stat label={tr("Mauzo (siku 30)")} value={recent.totals.sales} /><Stat label={tr("Yaliyolipwa")} value={recent.totals.paid} /><Stat label={tr("Madeni")} value={recent.totals.outstanding} /></div>}
     </div>
   );
 }
