@@ -50,7 +50,11 @@ export const listActive = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
-    return (await visibleProducts(ctx, user)).filter((p) => p.isActive);
+    const active = (await visibleProducts(ctx, user)).filter((p) => p.isActive);
+    // "autoProduced": made from its recipe at the moment of sale, so low / zero stock does not stop selling it.
+    const auto = new Set<string>();
+    if (user.tenantId) for (const r of await ctx.db.query("productionRecipes").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect()) if (r.active && r.autoOnSale === true) auto.add(String(r.outputProductId));
+    return active.map((p) => ({ ...p, autoProduced: auto.has(String(p._id)) }));
   },
 });
 

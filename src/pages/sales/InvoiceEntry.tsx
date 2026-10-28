@@ -193,7 +193,7 @@ export default function InvoiceEntry() {
     }
     for (const [id, qty] of requested) {
       const p = productById.get(id);
-      if (!allowNegative && p && qty > p.currentQty + 1e-8) { toast.error(tr("Stock haitoshi kwa {0}. Iliyopo: {1}, unayouza: {2}", [p.name, fmt(p.currentQty, 4), fmt(qty, 4)])); return; }
+      if (!allowNegative && p && !p.autoProduced && qty > p.currentQty + 1e-8) { toast.error(tr("Stock haitoshi kwa {0}. Iliyopo: {1}, unayouza: {2}", [p.name, fmt(p.currentQty, 4), fmt(qty, 4)])); return; }
     }
     setBusy(true);
     try {
@@ -252,7 +252,7 @@ export default function InvoiceEntry() {
             <tbody>
               {lines.map((l, i) => {
                 const p = productById.get(l.productId);
-                const over = p ? (requested.get(l.productId) ?? 0) > p.currentQty + 1e-8 : false;
+                const over = p && !p.autoProduced ? (requested.get(l.productId) ?? 0) > p.currentQty + 1e-8 : false;
                 return (
                   <tr key={i} className="border-b">
                     <td className="p-2">

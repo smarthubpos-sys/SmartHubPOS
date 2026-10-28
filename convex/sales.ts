@@ -6,6 +6,7 @@ import type { QueryCtx } from "./_generated/server";
 import type { UserLike } from "./access";
 import { canAccessRecord, isSuperAdmin, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope, getCompanySettings, logAudit } from "./access";
 import { bumpStats } from "./stats";
+import { autoProduceForSale } from "./autoProduce";
 import { visibleClients } from "./clients";
 import { assertDate, assertFinite, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
@@ -130,6 +131,8 @@ export const createInvoice = mutation({
     const invoicePrefix = (company?.invoicePrefix ?? "INV-") || "INV-";
     const requested = new Map<string, number>(); // same product on several lines must be checked together
     for (const line of args.lines) requested.set(String(line.productId), (requested.get(String(line.productId)) ?? 0) + (Number.isFinite(line.qty) ? line.qty : 0));
+    // Recipe products are produced from their ingredients here if the stock lacks them (cost then reflects the real ingredients).
+    await autoProduceForSale(ctx, user, scope, requested, allowNegativeStock, { id: "invoice", label: "invoice" });
     const prepared: Array<{ productId: Id<"products">; qty: number; unitPrice: number; discount: number; lineTotal: number; cost: number }> = [];
     let subtotal = 0;
     for (const line of args.lines) {

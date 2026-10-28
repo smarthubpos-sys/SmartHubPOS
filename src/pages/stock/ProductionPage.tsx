@@ -15,6 +15,7 @@ export default function ProductionPage() {
   const produceBatch = useMutation(api.production.produceBatch);
   const [outputProductId, setOutputProductId] = useState("");
   const [outputQty, setOutputQty] = useState("1");
+  const [autoOnSale, setAutoOnSale] = useState(true);
   const [ingredients, setIngredients] = useState<IngredientLine[]>([{ productId: "", qty: "1" }]);
   const [batchProductId, setBatchProductId] = useState("");
   const [batchQty, setBatchQty] = useState("1");
@@ -24,7 +25,7 @@ export default function ProductionPage() {
     if (!outputProductId || ingredients.some(x => !x.productId || !(Number(x.qty) > 0)) || !(Number(outputQty) > 0)) return toast.error("Jaza bidhaa ya mwisho, yield na malighafi zote.");
     setBusy(true);
     try {
-      await saveRecipe({ outputProductId: outputProductId as never, outputQty: Number(outputQty), active: true, ingredients: ingredients.map(x => ({ productId: x.productId as never, qty: Number(x.qty) })) });
+      await saveRecipe({ outputProductId: outputProductId as never, outputQty: Number(outputQty), active: true, autoOnSale, ingredients: ingredients.map(x => ({ productId: x.productId as never, qty: Number(x.qty) })) });
       toast.success("Recipe imehifadhiwa.");
     } catch (e) { toast.error(e instanceof Error ? e.message : "Imeshindikana kuhifadhi recipe."); }
     finally { setBusy(false); }
@@ -48,6 +49,7 @@ export default function ProductionPage() {
         <label className="space-y-1 text-sm">{tr("Bidhaa inayotengenezwa")}<select className={selectClass} value={outputProductId} onChange={e => setOutputProductId(e.target.value)}><option value="">-- Chagua bidhaa --</option>{productOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <label className="space-y-1 text-sm">{tr("Yield ya recipe (idadi inayotengenezwa)")}<Input type="number" min="0.001" step="any" value={outputQty} onChange={e => setOutputQty(e.target.value)} /></label>
       </div>
+      <label className="flex cursor-pointer items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 h-4 w-4 accent-primary" checked={autoOnSale} onChange={e => setAutoOnSale(e.target.checked)} /><span><b>{tr("Tengeneza yenyewe mauzo yanapofanyika")}</b><br /><span className="text-muted-foreground">{tr("Mhudumu akiuza bidhaa hii, mfumo unapunguza viungo kwenye stock yenyewe (bila kutengeneza batch kwanza).")}</span></span></label>
       <div className="space-y-2">{ingredients.map((line, i) => <div key={i} className="grid grid-cols-[1fr_120px_auto] gap-2">
         <select className={selectClass} value={line.productId} onChange={e => setIngredients(prev => prev.map((x,j) => j === i ? {...x, productId:e.target.value} : x))}><option value="">-- Malighafi --</option>{productOptions.filter(p => p.id !== outputProductId).map(p => <option key={p.id} value={p.id}>{p.name} (stock {p.qty})</option>)}</select>
         <Input type="number" min="0.001" step="any" aria-label="Kiasi cha malighafi" value={line.qty} onChange={e => setIngredients(prev => prev.map((x,j) => j === i ? {...x, qty:e.target.value} : x))} />
@@ -64,7 +66,7 @@ export default function ProductionPage() {
         <Button disabled={busy} onClick={() => void submitBatch()}>Kamilisha Production</Button>
       </div>
     </section>
-    <section className="rounded-xl border p-4 space-y-3"><h2 className="text-lg font-semibold">{tr("Recipes zilizopo")}</h2>{recipes.length === 0 ? <p className="text-sm text-muted-foreground">Bado hakuna recipe.</p> : <div className="space-y-2">{recipes.map((r) => <div key={r._id} className="rounded-lg bg-muted/40 p-3"><div className="font-medium">{r.outputName} · yield {r.outputQty}</div><div className="text-sm text-muted-foreground">{r.ingredients.map((x) => `${x.productName}: ${x.qty}`).join(" · ")}</div></div>)}</div>}</section>
+    <section className="rounded-xl border p-4 space-y-3"><h2 className="text-lg font-semibold">{tr("Recipes zilizopo")}</h2>{recipes.length === 0 ? <p className="text-sm text-muted-foreground">Bado hakuna recipe.</p> : <div className="space-y-2">{recipes.map((r) => <div key={r._id} className="rounded-lg bg-muted/40 p-3"><div className="font-medium">{r.outputName} · yield {r.outputQty}{r.autoOnSale ? <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">{tr("Inatengenezwa yenyewe mauzoni")}</span> : null}</div><div className="text-sm text-muted-foreground">{r.ingredients.map((x) => `${x.productName}: ${x.qty}`).join(" · ")}</div></div>)}</div>}</section>
     <section className="rounded-xl border p-4 space-y-3"><h2 className="text-lg font-semibold">{tr("Production ya karibuni")}</h2>{batches.length === 0 ? <p className="text-sm text-muted-foreground">Bado hakuna batch iliyokamilika.</p> : <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left"><th className="p-2">Tarehe</th><th className="p-2">Bidhaa</th><th className="p-2">Kiasi</th><th className="p-2">Gharama jumla</th><th className="p-2">Gharama/unit</th></tr></thead><tbody>{batches.map((b)=><tr key={b._id} className="border-b"><td className="p-2">{b.createdAt.slice(0,10)}</td><td className="p-2">{b.outputName}</td><td className="p-2">{b.producedQty}</td><td className="p-2">{b.totalCost.toLocaleString()}</td><td className="p-2">{b.unitCost.toLocaleString()}</td></tr>)}</tbody></table></div>}</section>
   </main>;
 }

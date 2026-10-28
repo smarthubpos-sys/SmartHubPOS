@@ -35,6 +35,7 @@ export const saveRecipe = mutation({
     outputQty: v.number(),
     ingredients: v.array(v.object({ productId: v.id("products"), qty: v.number() })),
     active: v.boolean(),
+    autoOnSale: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const user = await requireManagerOrPermission(ctx, "stock.manage", "stock");
@@ -55,7 +56,7 @@ export const saveRecipe = mutation({
     }
     const existing = await ctx.db.query("productionRecipes").withIndex("by_output", q => q.eq("outputProductId", output._id)).collect();
     const prior = existing.find(r => r.tenantId === scope.tenantId && r.branchId === scope.branchId);
-    const record = { ...scope, outputProductId: output._id, outputQty: args.outputQty, ingredients: args.ingredients, active: args.active, updatedAt: now(), updatedBy: user._id };
+    const record = { ...scope, outputProductId: output._id, outputQty: args.outputQty, ingredients: args.ingredients, active: args.active, autoOnSale: args.autoOnSale === true, updatedAt: now(), updatedBy: user._id };
     if (prior) await ctx.db.patch("productionRecipes", prior._id, record);
     else await ctx.db.insert("productionRecipes", record);
     return { ok: true };

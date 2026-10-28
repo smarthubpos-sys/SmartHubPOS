@@ -1,6 +1,7 @@
 import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { surfaceError } from "./surfaceError";
+import { assertAutoProducible, autoProduceForSale } from "./autoProduce";
 import type { Doc, Id } from "./_generated/dataModel";
 import { getCompanySettings, logAudit, normalizeRole, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
 import { resolveWaiterSettings, waiterOrdersAllowedFor } from "./waiterSettings";
@@ -28,6 +29,8 @@ export async function deductStockOnce(
   const allowNegativeStock = !!company?.allowNegativeStock;
   const need = new Map<string, number>();
   for (const line of fresh.lines) need.set(String(line.productId), (need.get(String(line.productId)) ?? 0) + line.qty);
+  // Recipe products ("Mbuzi Makange") are produced from their ingredients here when the stock lacks them.
+  await autoProduceForSale(ctx, user, scope, need, allowNegativeStock, { id: String(fresh._id), label: "oda" });
   // 1) check everything first, so a shortage on the last line leaves the earlier lines untouched
   for (const [pid, qty] of need) {
     const product = await ctx.db.get("products", pid as Id<"products">);
@@ -166,6 +169,7 @@ export const place = mutation({
       requested.set(String(line.productId), (requested.get(String(line.productId)) ?? 0) + (Number.isFinite(line.qty) ? line.qty : 0));
     }
 
+    const produceOnSale = await assertAutoProducible(ctx, scope, requested, allowNegativeStock); // recipe products: ingredients are checked instead of the product's own stock
     const lines = [];
     for (const line of args.lines) {
       if (!Number.isFinite(line.qty) || line.qty <= 0) {
@@ -179,7 +183,7 @@ export const place = mutation({
           (scope.branchId && product.branchId && product.branchId !== scope.branchId)) {
         throw new Error("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
       }
-      if (!allowNegativeStock && product.currentQty + 1e-8 < (requested.get(String(line.productId)) ?? line.qty)) {
+      if (!allowNegativeStock && !produceOnSale.has(String(line.productId)) && product.currentQty + 1e-8 < (requested.get(String(line.productId)) ?? line.qty)) {
         throw new Error(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, unayoweka: ${requested.get(String(line.productId))}`);
       }
       const unitPrice = product.sellingPrice;

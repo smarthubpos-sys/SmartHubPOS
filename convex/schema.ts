@@ -161,6 +161,7 @@ export default defineSchema({
     outputQty: v.number(), // yield produced by one recipe run
     ingredients: v.array(v.object({ productId: v.id("products"), qty: v.number() })),
     active: v.boolean(),
+    autoOnSale: v.optional(v.boolean()), // true: produced by itself when a sale needs more than the stock holds (see autoProduce.ts)
     updatedAt: v.string(),
     updatedBy: v.id("users"),
   }).index("by_scope", ["tenantId", "branchId"])

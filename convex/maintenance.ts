@@ -1249,7 +1249,10 @@ export const clearDataOverview = query({
 export const myPermissions = query({
   args: {},
   handler: async (ctx) => {
-    const user = await requireActiveUser(ctx);
+    // The shell asks for this right after sign-in, even for a user who must first change the password. That user sees only the
+    // change-password screen, so he gets an empty list (no menu, nothing leaked) instead of an error that crashes the page.
+    const user = await requireActiveUser(ctx, undefined, { allowPasswordChange: true });
+    if (user.requirePasswordChange === true) return [] as string[];
     const out: string[] = [];
 
     for (const key of ALL_PERMISSION_KEYS) {
