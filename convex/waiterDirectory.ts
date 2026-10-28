@@ -8,7 +8,7 @@ const isWaiterRole = (role?: string) => ["waiter", "waitress"].includes(String(r
 
 /** Cashier / manager only: a waiter's own data stays behind the waiter's personal views. */
 async function reviewer(ctx: Parameters<typeof requirePermission>[0]) {
-  const user = await requirePermission(ctx, "sales.view", "sales");
+  const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
   if (isWaiterRole(user.role)) throw new Error("Huna ruhusa ya kuona orodha ya wahudumu.");
   const scope = await resolveWriteScope(ctx, user);
   if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
