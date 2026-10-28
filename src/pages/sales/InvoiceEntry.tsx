@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import ServicePointFields from "@/components/ServicePointFields.tsx";
 import { emptyServicePoint, formatServicePoint, serviceWords, type ServicePoint } from "@/lib/sales-flow.ts";
-import { Printer } from "lucide-react";
+import { MessageCircle, Printer } from "lucide-react";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -14,6 +14,7 @@ import { fmt, num, round2, today } from "@/pages/shared/report-utils.ts";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
+import { whatsappOrderText, whatsappPhone, whatsappUrl } from "@/lib/whatsapp.ts";
 
 type Line = { productId: string; qty: string; price: string; discount: string };
 const emptyLine = (): Line => ({ productId: "", qty: "1", price: "0", discount: "0" });
@@ -84,12 +85,15 @@ export default function InvoiceEntry() {
   };
 
   const DEFAULT_CUSTOMER = "Mteja / Customer";
-  async function finishOrder(mode: "send" | "print") {
+  async function finishOrder(mode: "send" | "print", whatsapp = false) {
     if (busy) return;
     const used = lines.filter((l) => l.productId);
     if (!used.length) { toast.error(tr("Ongeza angalau bidhaa moja.")); return; }
     if (used.some((l) => !(num(l.qty) > 0))) { toast.error(tr("Quantity lazima iwe zaidi ya sifuri.")); return; }
-    const customerName = (clients ?? []).find((c) => String(c._id) === clientId)?.name ?? DEFAULT_CUSTOMER;
+    const customer = (clients ?? []).find((c) => String(c._id) === clientId);
+    const customerName = customer?.name ?? DEFAULT_CUSTOMER;
+    const waPhone = whatsapp ? whatsappPhone(customer?.phone) : "";
+    if (whatsapp && !waPhone) { toast.error(tr("Chagua mteja mwenye namba ya simu ili kutuma WhatsApp.")); return; }
     // Price reductions: the line's own discount, plus the invoice discount shared over the lines in proportion to their value.
     const base = used.map((l) => { const gross = round2(num(l.qty) * (productById.get(l.productId)?.sellingPrice ?? 0)); return { gross, own: round2(num(l.discount)) }; });
     if (base.some((b) => b.own < 0 || b.own > b.gross + 1e-8)) { toast.error(tr("Punguzo la mstari si sahihi.")); return; }
@@ -103,17 +107,26 @@ export default function InvoiceEntry() {
     });
     const priced = used.map((l, i) => ({ name: productById.get(l.productId)?.name ?? "", qty: num(l.qty), discount: effective[i], lineTotal: round2(base[i].gross - effective[i]) }));
     const orderTotal = round2(priced.reduce((n, l) => n + l.lineTotal, 0));
+    // Opened now (inside the tap) so the browser does not block it; pointed at WhatsApp only after the order is saved.
+    const waWindow = whatsapp ? window.open("", "_blank") : null;
     setBusy(true);
     try {
       const res = await submitOrder({ clientKey: orderKeyRef.current, mode, customerName, tableNumber: tableNo.trim() || undefined, notes: notes.trim() || undefined, lines: used.map((l, i) => ({ productId: l.productId as Id<"products">, qty: num(l.qty), discount: effective[i] > 0 ? effective[i] : undefined })) });
       toast.success(res.duplicate ? tr("Oda hii ilishachakatwa tayari. Stock haikupunguzwa tena.") : mode === "send" ? tr("Oda imetumwa kwa cashier. Stock imepunguzwa mara moja.") : tr("Oda imehifadhiwa. Stock imepunguzwa mara moja."));
       orderKeyRef.current = crypto.randomUUID();
+      if (whatsapp) {
+        if (res.duplicate) waWindow?.close();
+        else {
+          const link = whatsappUrl(waPhone, whatsappOrderText({ companyName: branding.companyName, customerName, tableNumber: tableNo.trim() || undefined, total: orderTotal, lines: priced, paymentInfo: branding.paymentInfo, footer: branding.footer }));
+          if (waWindow) waWindow.location.href = link; else window.location.assign(link);
+        }
+      }
       setLines([emptyLine()]); setNotes(""); setServicePoint(emptyServicePoint()); setClientId(""); setInvoiceDiscount("0");
       if (mode === "print" && !res.duplicate) {
         const ok = await printWaiterOrder({ customerName, waiterName: me?.name ?? me?.username ?? "", tableNumber: tableNo.trim() || undefined, total: orderTotal, lines: priced.map((l) => ({ productName: l.name, qty: l.qty, lineTotal: l.lineTotal })) }, qzPrinterFrom(hardware), hardware.paperWidth, branding);
         if (!ok) toast.message(tr("Oda imehifadhiwa. Chapisha tena kupitia Bills (haipunguzi stock)."));
       }
-    } catch (e) { toast.error(errorText(e, "Imeshindikana kuchakata oda.")); }
+    } catch (e) { waWindow?.close(); toast.error(errorText(e, "Imeshindikana kuchakata oda.")); }
     finally { setBusy(false); }
   }
 
@@ -207,6 +220,7 @@ export default function InvoiceEntry() {
           <details className="text-sm"><summary className="cursor-pointer select-none py-2">{tr("Eneo la huduma (hiari)")}</summary><ServicePointFields value={servicePoint} onChange={setServicePoint} /></details>
           <Button disabled={busy} onClick={() => void finishOrder("send")}>{busy ? tr("Inachakata...") : tr("Send to cashier")}</Button>
           <Button variant="outline" disabled={busy} onClick={() => void finishOrder("print")}><Printer className="mr-1 h-4 w-4" />{busy ? tr("Inachakata...") : tr("Print")}</Button>
+          <Button variant="outline" disabled={busy} onClick={() => void finishOrder("send", true)}><MessageCircle className="mr-1 h-4 w-4" />{busy ? tr("Inachakata...") : tr("Send WhatsApp")}</Button>
         </div>
         <details className="mt-3 text-sm">
           <summary className="cursor-pointer select-none py-2 text-muted-foreground">{tr("Invoice ya mkopo (mteja lazima)")}</summary>
