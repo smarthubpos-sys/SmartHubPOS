@@ -357,7 +357,7 @@ export const submit = mutation({
     customerName: v.optional(v.string()),
     tableNumber: v.optional(v.string()),
     notes: v.optional(v.string()),
-    lines: v.array(v.object({ productId: v.id("products"), qty: v.number() })),
+    lines: v.array(v.object({ productId: v.id("products"), qty: v.number(), discount: v.optional(v.number()) })),
   },
   handler: async (ctx, args) => {
     try {
@@ -373,18 +373,23 @@ export const submit = mutation({
     if (!waiterOrdersAllowedFor(user.role, settings)) throw new Error("Selling Point imezimwa kwa biashara hii.");
     if (args.lines.length === 0) throw new Error("Ongeza angalau bidhaa moja.");
 
-    const merged = new Map<string, number>(); // the same product tapped many times = one line
+    const merged = new Map<string, { qty: number; discount: number }>(); // the same product tapped many times = one line
     for (const l of args.lines) {
       if (!Number.isFinite(l.qty) || l.qty <= 0) throw new Error("Kiasi cha bidhaa lazima kiwe zaidi ya sifuri.");
-      merged.set(String(l.productId), (merged.get(String(l.productId)) ?? 0) + l.qty);
+      const d = l.discount ?? 0;
+      if (!Number.isFinite(d) || d < 0) throw new Error("Punguzo la bei si sahihi.");
+      const prev = merged.get(String(l.productId));
+      merged.set(String(l.productId), { qty: (prev?.qty ?? 0) + l.qty, discount: (prev?.discount ?? 0) + d });
     }
     const lines = [];
-    for (const [pid, qty] of merged) {
+    for (const [pid, { qty, discount }] of merged) {
       const product = await ctx.db.get("products", pid as Id<"products">);
       if (!product || product.isActive === false) throw new Error("Bidhaa haipo au haifanyi kazi.");
       if (product.tenantId !== scope.tenantId || (scope.branchId && product.branchId && product.branchId !== scope.branchId)) throw new Error("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
       if (!Number.isFinite(product.sellingPrice) || product.sellingPrice < 0) throw new Error("Bei ya bidhaa si sahihi.");
-      lines.push({ productId: product._id, productName: product.name, qty, unitPrice: product.sellingPrice, lineTotal: qty * product.sellingPrice });
+      const gross = Math.round(qty * product.sellingPrice * 100) / 100;
+      if (discount > gross + 1e-8) throw new Error(`Punguzo la ${product.name} linazidi bei ya mstari.`);
+      lines.push({ productId: product._id, productName: product.name, qty, unitPrice: product.sellingPrice, ...(discount > 0 ? { discount } : {}), lineTotal: Math.round((gross - discount) * 100) / 100 });
     }
     const now = new Date().toISOString();
     const orderId = await ctx.db.insert("waiterOrders", {

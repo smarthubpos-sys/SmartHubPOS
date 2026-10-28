@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import ServicePointFields from "@/components/ServicePointFields.tsx";
-import { emptyServicePoint, formatServicePoint, pickWalkInClient, serviceWords, type ServicePoint } from "@/lib/sales-flow.ts";
+import { emptyServicePoint, formatServicePoint, serviceWords, type ServicePoint } from "@/lib/sales-flow.ts";
 import { Printer } from "lucide-react";
 import { useMutation, useQuery } from "convex/react";
 import { useNavigate } from "react-router-dom";
@@ -35,27 +35,20 @@ export default function InvoiceEntry() {
   const requestKeyRef = useRef<string>(crypto.randomUUID());
   const voidInvoice = useMutation(api.sales.voidInvoice);
   const business = useQuery(api.tenants.current);
-  // Waiter / waitress (when Waiter Orders is ON for their role): this window does "Weka Order" -> Send / Print instead of saving an invoice.
+  // Everyone sells here the same simple way as the Selling Point: pick the items, then "Send to cashier" or "Print".
+  // The order goes to the cashier queue of the business / department the person is working in; the customer is optional.
   const me = useQuery(api.users.getCurrentUser);
-  const myRole = String(me?.role ?? "").toLowerCase();
-  const waiterMode = business?.waiterOrdersEnabled !== false && ((myRole === "waiter" && business?.waiterEnabled === true) || (myRole === "waitress" && business?.waitressEnabled === true));
-  const waiterOrderMode = business?.waiterOrderMode === "print" ? "print" : "cashier";
-  const placeOrder = useMutation(api.waiterOrders.place);
-  const sendToCashier = useMutation(api.waiterOrders.sendToCashier);
-  const markPrinted = useMutation(api.waiterOrders.markPrinted);
-  const myOrders = useQuery(api.waiterOrders.list, waiterMode ? {} : "skip");
-  const [placedId, setPlacedId] = useState<Id<"waiterOrders"> | null>(null);
+  const submitOrder = useMutation(api.waiterOrders.submit);
+  const orderKeyRef = useRef<string>(crypto.randomUUID()); // one key per cart: a repeated tap or retry cannot create a second order
   const [servicePoint, setServicePoint] = useState<ServicePoint>(emptyServicePoint());
   const tableNo = formatServicePoint(servicePoint, serviceWords());
   const settings = useQuery(api.maintenance.getSettings, {});
   const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
   const allowNegative = !!settings?.company?.allowNegativeStock; // same switch the server uses (Maintenance > Company)
 
-  const [pickedClient, setClientId] = useState("");
-  // Walk-in retail: when the business has exactly one Cash / Walk-in customer it is pre-selected (still changeable).
-  const clientId = pickedClient || (clients ? pickWalkInClient(clients) : "");
+  const [clientId, setClientId] = useState(""); // optional: empty = "Mteja / Customer"
   const [date, setDate] = useState(today());
-  const [source, setSource] = useState("Counter");
+  const source = "Counter"; // the "where was it sold" choice was removed from the screen
   const [taxRate, setTaxRate] = useState("0");
   const [invoiceDiscount, setInvoiceDiscount] = useState("0");
   const hardware = (settings?.app?.hardware ?? {}) as { paperWidth?: string; autoPrintReceipt?: boolean; printerSource?: string; receiptPrinter?: string };
@@ -90,10 +83,6 @@ export default function InvoiceEntry() {
   const lineTotal = (l: Line) => round2(Math.max(0, num(l.qty) * num(l.price) - num(l.discount)));
   const subtotal = round2(lines.reduce((n, l) => n + lineTotal(l), 0));
   const discount = round2(num(invoiceDiscount));
-  const taxable = round2(Math.max(0, subtotal - discount));
-  const tax = round2((taxable * num(taxRate)) / 100);
-  const total = round2(taxable + tax);
-  const balance = total;
 
   const addByCode = () => {
     const code = scan.trim().toLowerCase();
@@ -150,40 +139,42 @@ export default function InvoiceEntry() {
     }
   };
 
-  const placedOrder = placedId ? (myOrders ?? []).find((o) => o._id === placedId) : undefined;
-  const weka = async () => {
-    if (!clientId) { toast.error(tr("Chagua mteja.")); return; }
+  const DEFAULT_CUSTOMER = "Mteja / Customer";
+  async function finishOrder(mode: "send" | "print") {
+    if (busy) return;
     const used = lines.filter((l) => l.productId);
     if (!used.length) { toast.error(tr("Ongeza angalau bidhaa moja.")); return; }
-    if (lines.some((l) => !l.productId || !(num(l.qty) > 0))) { toast.error(tr("Kila mstari uwe na bidhaa na quantity zaidi ya sifuri.")); return; }
-    const customerName = (clients ?? []).find((c) => String(c._id) === clientId)?.name ?? "";
+    if (used.some((l) => !(num(l.qty) > 0))) { toast.error(tr("Quantity lazima iwe zaidi ya sifuri.")); return; }
+    const customerName = (clients ?? []).find((c) => String(c._id) === clientId)?.name ?? DEFAULT_CUSTOMER;
+    // Price reductions: the line's own discount, plus the invoice discount shared over the lines in proportion to their value.
+    const base = used.map((l) => { const gross = round2(num(l.qty) * (productById.get(l.productId)?.sellingPrice ?? 0)); return { gross, own: round2(num(l.discount)) }; });
+    if (base.some((b) => b.own < 0 || b.own > b.gross + 1e-8)) { toast.error(tr("Punguzo la mstari si sahihi.")); return; }
+    const netBase = round2(base.reduce((n, b) => n + b.gross - b.own, 0));
+    const shared = Math.min(round2(num(invoiceDiscount)), netBase);
+    let left = shared;
+    const effective = base.map((b, i) => {
+      const part = i === base.length - 1 ? left : netBase > 0 ? round2((shared * (b.gross - b.own)) / netBase) : 0;
+      left = round2(left - part);
+      return round2(b.own + part);
+    });
+    const priced = used.map((l, i) => ({ name: productById.get(l.productId)?.name ?? "", qty: num(l.qty), discount: effective[i], lineTotal: round2(base[i].gross - effective[i]) }));
+    const orderTotal = round2(priced.reduce((n, l) => n + l.lineTotal, 0));
     setBusy(true);
     try {
-      const id = await placeOrder({ customerName, tableNumber: tableNo.trim() || undefined, notes: notes.trim() || undefined, lines: lines.map((l) => ({ productId: l.productId as Id<"products">, qty: num(l.qty) })) });
-      setPlacedId(id); setLines([emptyLine()]); setNotes(""); setServicePoint(emptyServicePoint());
-      toast.success(tr("Oda imewekwa bila kupunguza stock. Sasa chagua Send au Print."));
-    } catch (e) { toast.error(errorText(e, "Imeshindikana kuweka oda.")); }
+      const res = await submitOrder({ clientKey: orderKeyRef.current, mode, customerName, tableNumber: tableNo.trim() || undefined, notes: notes.trim() || undefined, lines: used.map((l, i) => ({ productId: l.productId as Id<"products">, qty: num(l.qty), discount: effective[i] > 0 ? effective[i] : undefined })) });
+      toast.success(res.duplicate ? tr("Oda hii ilishachakatwa tayari. Stock haikupunguzwa tena.") : mode === "send" ? tr("Oda imetumwa kwa cashier. Stock imepunguzwa mara moja.") : tr("Oda imehifadhiwa. Stock imepunguzwa mara moja."));
+      orderKeyRef.current = crypto.randomUUID();
+      setLines([emptyLine()]); setNotes(""); setServicePoint(emptyServicePoint()); setClientId(""); setInvoiceDiscount("0");
+      if (mode === "print" && !res.duplicate) {
+        const ok = await printWaiterOrder({ customerName, waiterName: me?.name ?? me?.username ?? "", tableNumber: tableNo.trim() || undefined, total: orderTotal, lines: priced.map((l) => ({ productName: l.name, qty: l.qty, lineTotal: l.lineTotal })) }, qzPrinterFrom(hardware), hardware.paperWidth, branding);
+        if (!ok) toast.message(tr("Oda imehifadhiwa. Chapisha tena kupitia Bills (haipunguzi stock)."));
+      }
+    } catch (e) { toast.error(errorText(e, "Imeshindikana kuchakata oda.")); }
     finally { setBusy(false); }
-  };
-  const sendPlaced = async () => {
-    if (!placedId) return;
-    try { await sendToCashier({ orderId: placedId }); toast.success(tr("Oda imetumwa kwa cashier.")); setPlacedId(null); }
-    catch (e) { toast.error(errorText(e, "Imeshindikana kutuma oda.")); }
-  };
-  const printPlaced = async () => {
-    if (!placedId || !placedOrder) return;
-    const printed = await printWaiterOrder(placedOrder, qzPrinterFrom(hardware), hardware.paperWidth, branding);
-    if (!printed) return;
-    try {
-      await markPrinted({ orderId: placedId });
-      toast.success(tr("Oda imechapishwa kupitia QZ Tray."));
-    } catch (error) {
-      toast.error(errorText(error, tr("Oda imechapishwa, lakini hali yake haikuhifadhiwa.")));
-    }
-  };
+  }
 
   const submit = async () => {
-    if (!clientId) { toast.error(tr("Chagua mteja.")); return; }
+    if (!clientId) { toast.error(tr("Chagua mteja kwa invoice ya mkopo.")); return; }
     const used = lines.filter((l) => l.productId);
     if (!used.length) { toast.error(tr("Ongeza angalau bidhaa moja.")); return; }
     for (const l of lines) {
@@ -219,25 +210,13 @@ export default function InvoiceEntry() {
     <div className="mx-auto max-w-7xl space-y-5 p-5">
       <Button variant="outline" onClick={() => navigate("/sales")}>{tr("← Sales")}</Button>
       <section className="rounded-xl border p-5">
-        <h1 className="mb-1 text-2xl font-bold">{tr("Invoicing — uza bidhaa")}</h1>
-        <p className="mb-4 text-sm text-muted-foreground">{tr("Ongeza bidhaa nyingi kwenye invoice moja. Stock itapungua mara moja baada ya kuhifadhi.")}</p>
-        {!clients.length && (
-          <div className="mb-4 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-            
-            {tr("Hakuna mteja bado. Tengeneza mteja (mfano “Cash Customer”) kwanza.")} <Button size="sm" className="ml-2" onClick={() => navigate("/sales/clients")}>{tr("Add Client")}</Button>
-          </div>
-        )}
+        <h1 className="mb-1 text-2xl font-bold">{tr("Sales — uza bidhaa")}</h1>
+        <p className="mb-4 text-sm text-muted-foreground">{tr("Chagua bidhaa, kisha Send to cashier au Print. Mteja si lazima.")}</p>
         <div className="grid gap-4 md:grid-cols-3">
-          <label className="grid gap-1 text-sm">{tr("Mteja")}
+          <label className="grid gap-1 text-sm">{tr("Mteja / Customer (hiari)")}
             <select className={selectClass} value={clientId} onChange={(e) => setClientId(e.target.value)}>
-              <option value="">{tr("-- Chagua mteja --")}</option>
+              <option value="">{tr("Mteja / Customer")}</option>
               {clients.filter((c) => c.isActive).map((c) => <option key={c._id} value={c._id}>{c.name} ({c.code})</option>)}
-            </select>
-          </label>
-          <label className="grid gap-1 text-sm">{tr("Tarehe")}<Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
-          <label className="grid gap-1 text-sm">{tr("Chanzo cha mauzo")}
-            <select className={selectClass} value={source} onChange={(e) => setSource(e.target.value)}>
-              {["Counter", "Phone", "Online", "Delivery", "Other"].map((s) => <option key={s} value={s}>{tr(s)}</option>)}
             </select>
           </label>
           <label className="grid gap-1 text-sm md:col-span-2">{tr("Scan barcode / andika item code kisha Enter")}
@@ -264,7 +243,7 @@ export default function InvoiceEntry() {
                     <td className="p-2">{p?.unitId ? unitName.get(String(p.unitId)) ?? tr("Unit") : tr("Unit")}</td>
                     <td className={`p-2 tabular-nums ${over ? "font-semibold text-destructive" : ""}`}>{p ? fmt(p.currentQty, 4) : "—"}</td>
                     <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.qty} onChange={(e) => update(i, { qty: e.target.value })} /></td>
-                    <td className="p-2"><Input className="w-28" type="number" step="any" min="0" value={l.price} onChange={(e) => update(i, { price: e.target.value })} /></td>
+                    <td className="p-2 tabular-nums">{fmt(num(l.price))}</td>
                     <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.discount} onChange={(e) => update(i, { discount: e.target.value })} /></td>
                     <td className="p-2 text-right tabular-nums font-medium">{fmt(lineTotal(l))}</td>
                     <td className="p-2"><Button variant="outline" disabled={lines.length === 1} onClick={() => setLines((old) => old.filter((_, idx) => idx !== i))}>{tr("Ondoa")}</Button></td>
@@ -277,34 +256,27 @@ export default function InvoiceEntry() {
 
         <div className="mt-4 flex flex-wrap items-start justify-between gap-6">
           <Button variant="outline" onClick={() => setLines((old) => [...old, emptyLine()])}>{tr("＋ Add Line")}</Button>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="grid gap-1 text-sm">{tr("Discount ya invoice")}<Input type="number" step="any" min="0" value={invoiceDiscount} onChange={(e) => setInvoiceDiscount(e.target.value)} /></label>
-            <label className="grid gap-1 text-sm">{tr("Tax (%)")}<Input type="number" step="any" min="0" max="100" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></label>
-          </div>
+          <label className="grid gap-1 text-sm">{tr("Discount ya invoice")}<Input className="w-40" type="number" step="any" min="0" value={invoiceDiscount} onChange={(e) => setInvoiceDiscount(e.target.value)} /></label>
           <div className="min-w-56 space-y-1 text-right text-sm">
             <div>{tr("Subtotal:")} <b className="tabular-nums">{fmt(subtotal)}</b></div>
-            <div>{tr("Discount:")} <b className="tabular-nums">{fmt(discount)}</b></div>
-            <div>{tr("Tax:")} <b className="tabular-nums">{fmt(tax)}</b></div>
-            <div className="text-xl">{tr("Jumla:")} <b className="tabular-nums">{fmt(total)}</b></div>
-            <div className={balance > 0 ? "text-destructive" : ""}>{tr("Deni:")} <b className="tabular-nums">{fmt(balance)}</b></div>
+            <div>{tr("Discount:")} <b className="tabular-nums">{fmt(Math.min(discount, subtotal))}</b></div>
+            <div className="text-xl">{tr("Jumla:")} <b className="tabular-nums">{fmt(Math.max(0, round2(subtotal - discount)))}</b></div>
           </div>
         </div>
-        {waiterMode
-          ? <div className="mt-4 flex flex-wrap items-end gap-3">
-              <details className="text-sm"><summary className="cursor-pointer select-none py-2">{tr("Eneo la huduma (hiari)")}</summary><ServicePointFields value={servicePoint} onChange={setServicePoint} /></details>
-              <Button disabled={busy} onClick={() => void weka()}>{busy ? tr("Inaweka...") : tr("Weka Order")}</Button>
-            </div>
-          : <div className="mt-4"><Button disabled={busy} onClick={() => void submit()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi Invoice")}</Button></div>}
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          <details className="text-sm"><summary className="cursor-pointer select-none py-2">{tr("Eneo la huduma (hiari)")}</summary><ServicePointFields value={servicePoint} onChange={setServicePoint} /></details>
+          <Button disabled={busy} onClick={() => void finishOrder("send")}>{busy ? tr("Inachakata...") : tr("Send to cashier")}</Button>
+          <Button variant="outline" disabled={busy} onClick={() => void finishOrder("print")}><Printer className="mr-1 h-4 w-4" />{busy ? tr("Inachakata...") : tr("Print")}</Button>
+        </div>
+        <details className="mt-3 text-sm">
+          <summary className="cursor-pointer select-none py-2 text-muted-foreground">{tr("Invoice ya mkopo (mteja lazima)")}</summary>
+          <div className="flex flex-wrap items-end gap-3 pt-2">
+            <label className="grid gap-1 text-sm">{tr("Tarehe")}<Input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
+            <label className="grid gap-1 text-sm">{tr("Tax (%)")}<Input type="number" step="any" min="0" max="100" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></label>
+            <Button variant="outline" disabled={busy || !clientId} onClick={() => void submit()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi Invoice")}</Button>
+          </div>
+        </details>
       </section>
-
-      {waiterMode && placedId && <section className="space-y-3 rounded-xl border p-4">
-        <h2 className="font-semibold">{tr("Oda imewekwa")}{placedOrder ? ` — ${placedOrder.customerName}` : ""}</h2>
-        <p className="text-sm text-muted-foreground">{tr("Send na Print vinapunguza stock mara moja tu.")}</p>
-          {waiterOrderMode === "cashier"
-            ? <Button onClick={() => void sendPlaced()}>{tr("Send")}</Button>
-            : <Button variant="outline" disabled={!placedOrder} onClick={() => void printPlaced()}><Printer className="mr-1 h-4 w-4" />{tr("Print")}</Button>}
-          <Button variant="ghost" onClick={() => setPlacedId(null)}>{tr("Funga")}</Button>
-      </section>}
 
       {justSaved && <section className="space-y-2 rounded-xl border p-4">
         <div className="flex items-center justify-between gap-2 print:hidden"><h2 className="font-semibold">{tr("Invoice imehifadhiwa")}</h2><Button variant="outline" size="sm" onClick={() => setJustSaved(null)}>{tr("Funga")}</Button></div>

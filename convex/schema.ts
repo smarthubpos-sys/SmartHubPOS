@@ -928,6 +928,7 @@ export default defineSchema({
       productName: v.string(),
       qty: v.number(),
       unitPrice: v.number(),
+      discount: v.optional(v.number()), // price reduction given on this line (Sales screen); lineTotal = qty x unitPrice - discount
       lineTotal: v.number(),
     })),
     total: v.number(),
