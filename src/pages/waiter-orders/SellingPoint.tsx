@@ -60,7 +60,7 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
 
 
   const activeGroups = useMemo(() => (groups ?? []).filter((g) => g.isActive !== false), [groups]);
-  const shown = useMemo(() => filterProducts(products ?? [], { groupId, query }), [products, groupId, query]);
+  const shown = useMemo(() => filterProducts((products ?? []).filter((p) => p.onMenu !== false), { groupId, query }), [products, groupId, query]);
   const byId = useMemo(() => new Map((products ?? []).map((p) => [String(p._id), p])), [products]);
   const lines = Object.entries(cart).filter(([, q]) => q > 0).map(([id, qty]) => ({ id, qty, p: byId.get(id) })).filter((l) => !!l.p);
   const total = lines.reduce((s, l) => s + l.qty * (l.p?.sellingPrice ?? 0), 0);
@@ -124,7 +124,7 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
             if (e.key !== "Enter") return;
             e.preventDefault();
             const code = query.trim().toLowerCase();
-            const hit = code ? (products ?? []).find((p) => (p.barcode ?? "").toLowerCase() === code || (p.itemCode ?? "").toLowerCase() === code) : undefined;
+            const hit = code ? (products ?? []).find((p) => p.onMenu !== false && ((p.barcode ?? "").toLowerCase() === code || (p.itemCode ?? "").toLowerCase() === code)) : undefined;
             if (hit) { add(String(hit._id), 1); setQuery(""); } else if (code && shown.length !== 1) toast.error(tr("Bidhaa haijapatikana."));
             else if (shown.length === 1) { add(String(shown[0]._id), 1); setQuery(""); }
           }} />

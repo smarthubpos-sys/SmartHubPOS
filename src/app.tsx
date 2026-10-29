@@ -18,6 +18,7 @@ const AccountsPage = lazy(() => import("./pages/accounts/page.tsx"));
 const MaintenancePage = lazy(() => import("./pages/maintenance/page.tsx"));
 const BillsPage = lazy(() => import("./pages/bills/page.tsx"));
 const HRPage = lazy(() => import("./pages/hr/page.tsx"));
+const LeavePage = lazy(() => import("./pages/leave/page.tsx"));
 const NotificationsPage = lazy(() => import("./pages/notifications/page.tsx"));
 const HelpPage = lazy(() => import("./pages/help/page.tsx"));
 
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="/maintenance/*" element={<MaintenancePage />} />
             <Route path="/bills" element={<BillsPage />} />
             <Route path="/hr" element={<HRPage />} />
+            <Route path="/leave" element={<LeavePage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/help" element={<HelpPage />} />
           </Route>

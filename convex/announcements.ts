@@ -1,5 +1,5 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { isSuperAdmin, logAudit, requireActiveUser, requireSuperAdminUser } from "./access";
@@ -63,18 +63,18 @@ const fields = {
 /** One validation for create and edit, so an edited announcement obeys exactly the same rules. */
 async function clean(ctx: MutationCtx, a: { kind: "banner" | "message"; title: string; body: string; imageUrl?: string; linkUrl?: string; theme?: string; tenantId?: Id<"tenants">; startsAt?: string; endsAt?: string }) {
   const title = a.title.trim(); const body = a.body.trim();
-  if (!title) throw new Error("Weka kichwa cha tangazo.");
-  if (title.length > 80) throw new Error("Kichwa kisizidi herufi 80.");
-  if (body.length > 1000) throw new Error("Ujumbe usizidi herufi 1000.");
-  if (a.kind === "message" && !body) throw new Error("Andika ujumbe.");
+  if (!title) throw new ConvexError("Weka kichwa cha tangazo.");
+  if (title.length > 80) throw new ConvexError("Kichwa kisizidi herufi 80.");
+  if (body.length > 1000) throw new ConvexError("Ujumbe usizidi herufi 1000.");
+  if (a.kind === "message" && !body) throw new ConvexError("Andika ujumbe.");
   const imageUrl = a.kind === "banner" ? a.imageUrl?.trim() || undefined : undefined;
   const linkUrl = a.kind === "banner" ? a.linkUrl?.trim() || undefined : undefined;
-  if ((imageUrl && !URL_OK.test(imageUrl)) || (linkUrl && !URL_OK.test(linkUrl))) throw new Error("Kiungo kianze na https://");
+  if ((imageUrl && !URL_OK.test(imageUrl)) || (linkUrl && !URL_OK.test(linkUrl))) throw new ConvexError("Kiungo kianze na https://");
   const theme = a.theme && (THEMES as readonly string[]).includes(a.theme) ? a.theme : "blue";
   const startsAt = a.startsAt?.trim() || tzToday(); const endsAt = a.endsAt?.trim() || undefined;
-  if (!DATE.test(startsAt) || (endsAt && !DATE.test(endsAt))) throw new Error("Tarehe si sahihi.");
-  if (endsAt && endsAt < startsAt) throw new Error("Tarehe ya mwisho iwe baada ya ya kuanza.");
-  if (a.tenantId && !(await ctx.db.get("tenants", a.tenantId))) throw new Error("Biashara haipo");
+  if (!DATE.test(startsAt) || (endsAt && !DATE.test(endsAt))) throw new ConvexError("Tarehe si sahihi.");
+  if (endsAt && endsAt < startsAt) throw new ConvexError("Tarehe ya mwisho iwe baada ya ya kuanza.");
+  if (a.tenantId && !(await ctx.db.get("tenants", a.tenantId))) throw new ConvexError("Biashara haipo");
   return { kind: a.kind, title, body, imageUrl, linkUrl, theme, tenantId: a.tenantId, startsAt, endsAt };
 }
 
@@ -95,7 +95,7 @@ export const update = mutation({
   handler: async (ctx, { id, ...a }) => {
     const user = await requireSuperAdminUser(ctx);
     const existing = await ctx.db.get("announcements", id);
-    if (!existing) throw new Error("Tangazo halipo.");
+    if (!existing) throw new ConvexError("Tangazo halipo.");
     const row = await clean(ctx, a);
     // Optional fields that were emptied must really be removed (patch ignores undefined, so use replace-style patch values).
     await ctx.db.patch("announcements", id, { ...row, imageUrl: row.imageUrl ?? undefined, linkUrl: row.linkUrl ?? undefined, endsAt: row.endsAt ?? undefined, tenantId: row.tenantId ?? undefined });

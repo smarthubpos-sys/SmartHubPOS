@@ -1,6 +1,6 @@
 import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { businessRows, canAccessRecord, filterBusiness, filterScoped, getCompanySettings, requireActiveUser, scopedRows, requirePermission } from "./access";
 import type { UserLike } from "./access";
@@ -41,7 +41,7 @@ export const purchaseDocument = query({
   handler: async (ctx, a) => {
     const u = await requirePermission(ctx, "purchasing.view", "purchasing");
     const purchase = await ctx.db.get("purchases", a.purchaseId);
-    if (!purchase || !canAccessRecord(u, purchase)) throw new Error("Purchase invoice haipatikani.");
+    if (!purchase || !canAccessRecord(u, purchase)) throw new ConvexError("Purchase invoice haipatikani.");
     const supplier = await ctx.db.get("suppliers", purchase.supplierId);
     const lines = [];
     for (const l of await ctx.db.query("purchaseLines").withIndex("by_purchase", (q) => q.eq("purchaseId", purchase._id)).collect()) {
@@ -124,7 +124,7 @@ export const supplierLedger = query({
   handler: async (ctx, a) => {
     const u = await requirePermission(ctx, "purchasing.reports.view", "purchasing");
     const supplier = await ctx.db.get("suppliers", a.supplierId);
-    if (!supplier || !canAccessRecord(u, supplier)) throw new Error("Supplier hayupo kwenye scope yako.");
+    if (!supplier || !canAccessRecord(u, supplier)) throw new ConvexError("Supplier hayupo kwenye scope yako.");
     const { by } = await movementsOf(ctx, u);
     const list = (by.get(String(a.supplierId)) ?? []).sort((x, y) => x.date.localeCompare(y.date) || x.type.localeCompare(y.type));
     let opening = supplier.openingBalance ?? 0;

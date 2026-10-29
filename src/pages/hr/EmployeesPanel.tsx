@@ -25,11 +25,14 @@ export default function EmployeesPanel() {
   const registerOptions = useMutation(api.biometric.registerOptions);
   const finishRegistration = useMutation(api.biometric.finishRegistration);
   const removeCredential = useMutation(api.biometric.removeCredential);
+  const userLinks = useQuery(api.hr.userLinks);
+  const linkUser = useMutation(api.hr.linkUser);
   const { money } = useMoney();
   const { busy, run } = useSubmit();
   const [editing, setEditing] = useState<Employee | "new" | null>(null);
   const [f, setF] = useState(blank);
   const list = employees ?? [];
+  const accountOf = (id: string) => (userLinks ?? []).find((u) => u.employeeId && String(u.employeeId) === id);
   const credsOf = (id: string) => (credentials ?? []).filter((c) => String(c.employeeId) === id);
 
   function startNew() {
@@ -74,6 +77,12 @@ export default function EmployeesPanel() {
             <FormField label={tr("Phone")}><Input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} /></FormField>
             <FormField label={tr("Barua pepe")}><Input value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></FormField>
             {editing !== "new" && <>
+              <FormField label={tr("Akaunti ya kuingia (user)")} hint={tr("Inamwezesha kutumia Ruhusa / Ratiba yangu.")}>
+                <SelectBox value={String(accountOf(String(editing._id))?._id ?? "")} disabled={busy} onChange={(e) => void run(() => linkUser({ employeeId: editing._id, userId: (e.target.value || undefined) as never }), tr("Akaunti imeunganishwa."))}>
+                  <option value="">{tr("-- Hakuna --")}</option>
+                  {(userLinks ?? []).filter((u) => u.isActive && (!u.employeeId || String(u.employeeId) === String(editing._id))).map((u) => <option key={u._id} value={u._id}>{u.name} ({u.username})</option>)}
+                </SelectBox>
+              </FormField>
               <FormField label={tr("Namba ya mlipakodi (TIN)")}><Input value={f.taxId} onChange={(e) => setF({ ...f, taxId: e.target.value })} /></FormField>
               <FormField label={tr("Akaunti ya benki")}><Input value={f.bankAccount} onChange={(e) => setF({ ...f, bankAccount: e.target.value })} /></FormField>
               <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={f.isActive} onChange={(e) => setF({ ...f, isActive: e.target.checked })} />{tr("Anafanya kazi")}</label>
@@ -87,13 +96,14 @@ export default function EmployeesPanel() {
       )}
       <Panel title={tr("Employees")} actions={<Button size="sm" onClick={startNew}><Plus className="mr-1 h-4 w-4" />{tr("Mfanyakazi mpya")}</Button>}>
         {list.length === 0 ? <Empty>{tr("Bado hakuna mfanyakazi.")}</Empty> : (
-          <Table head={[tr("Msimbo"), tr("Jina"), tr("Position"), tr("Idara"), tr("Salary type"), tr("Basic salary"), tr("Alama ya kidole/uso"), tr("Hali"), ""]}>
+          <Table head={[tr("Msimbo"), tr("Jina"), tr("Position"), tr("Idara"), tr("Salary type"), tr("Basic salary"), tr("Akaunti ya kuingia (user)"), tr("Alama ya kidole/uso"), tr("Hali"), ""]}>
             {list.map((e) => {
               const creds = credsOf(String(e._id));
               return (
                 <tr key={e._id}>
                   <td className="whitespace-nowrap">{e.employeeCode}</td><td className="font-medium">{e.name}</td><td>{e.position}</td><td>{e.department}</td>
                   <td>{trValue(e.salaryType)}</td><td className="whitespace-nowrap">{money(e.basicSalary)}</td>
+                  <td className="text-xs">{accountOf(String(e._id))?.username ?? <span className="text-muted-foreground">—</span>}</td>
                   <td>
                     <div className="flex items-center gap-1.5">
                       {creds.length ? <Pill tone="green">{tr("Imesajiliwa ({0})", [creds.length])}</Pill> : <Pill>{tr("Haijasajiliwa")}</Pill>}

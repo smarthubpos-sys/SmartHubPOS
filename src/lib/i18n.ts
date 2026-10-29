@@ -19,8 +19,11 @@ import { PAYMENTS_DICT } from "./i18n-dict-payments.ts";
 import { PERIOD_REPORT_DICT } from "./i18n-dict-periodreport.ts";
 import { IMPORT_DICT } from "./i18n-dict-import.ts";
 import { SELLING_POINT_DICT } from "./i18n-dict-sellingpoint.ts";
+import { FRIENDLY_DICT } from "./i18n-dict-friendly.ts";
+import { SCHEDULE_DICT } from "./i18n-dict-schedule.ts";
+import { LEAVE_DICT } from "./i18n-dict-leave.ts";
 
-const DICT: Record<string, { sw: string; en: string }> = { ...SERVER_DICT, ...UI_DICT, ...EXTRA_DICT, ...ACCESS_DICT, ...SUPERADMIN_DICT, ...INVOICING_DICT, ...DEPT_DICT, ...PREPORT_DICT, ...PAYMENTS_DICT, ...PERIOD_REPORT_DICT, ...IMPORT_DICT, ...SELLING_POINT_DICT };
+const DICT: Record<string, { sw: string; en: string }> = { ...SERVER_DICT, ...UI_DICT, ...EXTRA_DICT, ...ACCESS_DICT, ...SUPERADMIN_DICT, ...INVOICING_DICT, ...DEPT_DICT, ...PREPORT_DICT, ...PAYMENTS_DICT, ...PERIOD_REPORT_DICT, ...IMPORT_DICT, ...SELLING_POINT_DICT, ...SCHEDULE_DICT, ...LEAVE_DICT, ...FRIENDLY_DICT };
 
 export type Lang = "sw" | "en";
 const STORAGE_KEY = "smarthub.lang";
@@ -85,18 +88,40 @@ export function trMessage(message: string): string {
   return clean;
 }
 
-/** Convex wraps server errors ("[CONVEX M(x)] ... Uncaught Error: <message>\n at handler..."): extract the message. */
+/** The untranslated text of an error: ConvexError carries it in `data`; a plain Error has it in `message` (wrapped by Convex). */
+export function rawErrorText(e: unknown): string {
+  const payload = (e as { data?: unknown } | null)?.data;
+  if (typeof payload === "string" && payload.trim()) return payload.trim();
+  if (!(e instanceof Error) || !e.message) return typeof e === "string" ? e : "";
+  let msg = e.message;
+  const uncaught = /Uncaught (?:Convex)?Error:/.exec(msg);
+  if (uncaught) msg = msg.slice(uncaught.index + uncaught[0].length);
+  return msg.split("\n")[0].replace(/^\s*(Server Error\s*)?/, "").trim();
+}
+
+/**
+ * What kind of problem an error is, so the screen can talk to the person properly:
+ *  - "signin"     : not signed in / session ended -> sign in again
+ *  - "permission" : signed in but this account is not allowed (role, menu, office, subscription...) -> NOT a system fault
+ *  - null         : anything else (a mistake in what was typed, or a real fault)
+ */
+export function errorKind(e: unknown): "signin" | "permission" | null {
+  const raw = rawErrorText(e) || (e instanceof Error ? e.message : "");
+  if (/^\s*Unauthenticated\b/i.test(raw) || /\bUnauthenticated\b/.test(raw)) return "signin";
+  if (/\bForbidden\s*:/i.test(raw) || /^\s*Huna ruhusa\b/i.test(raw)) return "permission";
+  return null;
+}
+
+/** Convex wraps server errors ("[CONVEX M(x)] ... Uncaught Error: <message>\n at handler..."): extract the message and show it in the system language. */
 export function errorText(e: unknown, fallback?: string): string {
   const payload = (e as { data?: unknown } | null)?.data; // ConvexError carries its text in `data` (plain Error text is hidden in production)
   if (typeof payload === "string" && payload.trim()) return trMessage(payload.trim());
   if (!(e instanceof Error) || !e.message) return fallback ? tr(fallback) : "";
-  let msg = e.message;
+  const msg0 = e.message;
   // The screen is newer than the server: say so (with the function name) instead of a vague "Server Error".
-  const missing = /Could not find public function for '([^']+)'/.exec(msg);
+  const missing = /Could not find public function for '([^']+)'/.exec(msg0);
   if (missing) return tr("Seva haijasasishwa: kazi '{0}' haipo kwenye mfumo huu. Wasiliana na msimamizi wa mfumo.", [missing[1]]);
-  const uncaught = msg.indexOf("Uncaught Error:");
-  if (uncaught >= 0) msg = msg.slice(uncaught + "Uncaught Error:".length);
-  msg = msg.split("\n")[0].replace(/^\s*(Server Error\s*)?/, "").trim();
+  const msg = rawErrorText(e);
   if (!msg || /^\[CONVEX/.test(msg) || msg === "Server Error") return fallback ? tr(fallback) : tr("Hitilafu imetokea.");
   return trMessage(msg);
 }

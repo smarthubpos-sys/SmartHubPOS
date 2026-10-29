@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { tr } from "@/lib/i18n.ts";
+import { errorText, tr } from "@/lib/i18n.ts";
 import { printElement, readPaper, savePaper, type Paper } from "@/lib/print-area.ts";
 
 import { fmt, num, round2, today, type Row } from "./report-utils.ts";
@@ -53,7 +53,7 @@ export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { t
       const result = await sendReport({ title, rows: rows.slice(0, 500) });
       toast.success(`Ripoti imetumwa kwa wapokeaji ${result.recipients}.`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Imeshindikana kutuma ripoti kwa email.");
+      toast.error(errorText(error, "Imeshindikana kutuma ripoti kwa email."));
     } finally { setSending(false); }
   };
   // Row keys are written in Kiswahili but callers pass translated names, so match either form (otherwise totals vanish in English).

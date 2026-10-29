@@ -11,7 +11,7 @@ async function setup() {
   const t = convexTest(schema, modules);
   const ids = await t.run(async (ctx) => {
     const now = new Date().toISOString();
-    const mk = async (code: string) => ctx.db.insert("tenants", { name: code, code, isActive: true, createdByToken: code, createdAt: now, modules: ["waiterOrders", "stock"] });
+    const mk = async (code: string) => ctx.db.insert("tenants", { name: code, code, isActive: true, createdByToken: code, createdAt: now, modules: ["sales", "waiterOrders", "stock"] });
     const ta = await mk("A"), tb = await mk("B");
     const user = (tenantId: Id<"tenants">, username: string, role: string) => ctx.db.insert("users", { name: username, username, role, tenantId, isActive: true });
     const cashierA = await user(ta, "cashA", "cashier"), waiterA = await user(ta, "asha", "waiter"), waiterA2 = await user(ta, "neema", "waitress");

@@ -1,5 +1,5 @@
 import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
 
 /** Super Admin may open any customer of the selected business, whatever department it belongs to. */
@@ -69,17 +69,17 @@ export const upsert = mutation({
     // with no opening balance and no credit; credit terms and editing existing customers stay with managers.
     const isMgr = await isManagerRole(ctx, await requireActiveUser(ctx));
     const user = isMgr ? await requireManager(ctx) : await requirePermission(ctx, "sales.manage", "sales");
-    if (!isMgr && args.id) throw new Error("Forbidden: only a manager can edit an existing customer.");
+    if (!isMgr && args.id) throw new ConvexError("Forbidden: only a manager can edit an existing customer.");
     if (!isMgr) { args = { ...args, openingBalance: 0, creditLimit: undefined, creditPolicy: "block", isActive: true }; }
     const scope = await resolveWriteScope(ctx, user);
     const { id, ...rest } = args;
     const name = rest.name.trim(), code = rest.code.trim();
-    if (!name) throw new Error("Weka jina la mteja.");
-    if (!code) throw new Error("Weka code ya mteja.");
+    if (!name) throw new ConvexError("Weka jina la mteja.");
+    if (!code) throw new ConvexError("Weka code ya mteja.");
     const data = { ...rest, name, code };
     // The record keeps the business/department it was created in; a new one uses the user's scope.
     const existingRecord = id ? await ctx.db.get("clients", id) : null;
-    if (id && !(isSuperAdmin(user) ? inSameBusiness(user, existingRecord) : canAccessRecord(user, existingRecord))) throw new Error("Forbidden: record is outside your office/branch");
+    if (id && !(isSuperAdmin(user) ? inSameBusiness(user, existingRecord) : canAccessRecord(user, existingRecord))) throw new ConvexError("Forbidden: record is outside your office/branch");
     const target = existingRecord ? { tenantId: existingRecord.tenantId, branchId: existingRecord.branchId } : scope;
     // Client codes are unique only inside the same tenant + branch (checked for new AND edited customers).
     // A different business (or department) must be free to reuse the same code/phone.
@@ -87,7 +87,7 @@ export const upsert = mutation({
       .withIndex("by_code", (q) => q.eq("code", code))
       .collect();
     const clash = sameCode.find((client) => client._id !== id && client.tenantId === target.tenantId && client.branchId === target.branchId);
-    if (clash) throw new Error(`Client code ${code} already exists in this branch (${clash.name})`);
+    if (clash) throw new ConvexError(`Client code ${code} already exists in this branch (${clash.name})`);
     if (id) {
       await ctx.db.patch("clients", id, data);
       await logAudit(ctx, user, { action: "update_client", module: "sales", referenceId: String(id), referenceType: "client", details: `${code} ${name}` });

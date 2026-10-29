@@ -1,3 +1,4 @@
+import { ConvexError } from "convex/values";
 import { convexAuth } from "@convex-dev/auth/server";
 import { Password } from "@convex-dev/auth/providers/Password";
 import { ConvexCredentials } from "@convex-dev/auth/providers/ConvexCredentials";
@@ -16,7 +17,7 @@ const INTERNAL_LOGIN_DOMAIN = "login.smarthub.invalid";
 function normalizeUsername(value: unknown) {
   const username = String(value ?? "").trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) {
-    throw new Error("Jina la mtumiaji liwe herufi/namba 3–32, bila nafasi.");
+    throw new ConvexError("Jina la mtumiaji liwe herufi/namba 3–32, bila nafasi.");
   }
   return username;
 }
@@ -81,10 +82,10 @@ export const {
         if (params.flow === "signUp") {
           const initialAdmin = (process.env.SUPER_ADMIN_USERNAME ?? "").trim().toLowerCase();
           if (!initialAdmin) {
-            throw new Error("Msimamizi lazima aweke SUPER_ADMIN_USERNAME kwenye Convex kwanza.");
+            throw new ConvexError("Msimamizi lazima aweke SUPER_ADMIN_USERNAME kwenye Convex kwanza.");
           }
           if (username !== initialAdmin) {
-            throw new Error("Usajili umefungwa. Wasiliana na Super Admin.");
+            throw new ConvexError("Usajili umefungwa. Wasiliana na Super Admin.");
           }
         }
         return {
@@ -95,7 +96,7 @@ export const {
       },
       validatePasswordRequirements(password) {
         if (password.length < 10) {
-          throw new Error("Nenosiri lazima liwe na angalau herufi 10.");
+          throw new ConvexError("Nenosiri lazima liwe na angalau herufi 10.");
         }
       },
     }),

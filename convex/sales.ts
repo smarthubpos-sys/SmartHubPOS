@@ -1,6 +1,6 @@
 import { surfaceError } from "./surfaceError";
 import { mutation, query, type MutationCtx } from "./_generated/server";
-import { v, type Infer } from "convex/values";
+import { v, type Infer, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import type { UserLike } from "./access";
@@ -114,18 +114,18 @@ export const createInvoice = mutation({
     // Idempotency: a retried / double-clicked submit with the same requestKey returns the invoice already made instead of selling twice.
     const requestKey = args.requestKey?.trim() || undefined;
     if (requestKey) {
-      if (requestKey.length > 100) throw new Error("requestKey ni ndefu mno.");
+      if (requestKey.length > 100) throw new ConvexError("requestKey ni ndefu mno.");
       const prior = (await ctx.db.query("invoices").withIndex("by_tenant_request_key", (q) => q.eq("tenantId", scope.tenantId).eq("requestKey", requestKey)).collect())
         .find((i) => i.branchId === scope.branchId && i.createdBy === user._id);
       if (prior) return { invoiceId: prior._id, invoiceNo: prior.invoiceNo, subtotal: prior.subtotal, taxAmount: prior.taxAmount, total: prior.total, amountPaid: prior.amountPaid, outstanding: prior.outstanding, creditWarning: false, duplicate: true };
     }
-    if (!args.lines.length) throw new Error("Invoice lazima iwe na angalau bidhaa moja.");
+    if (!args.lines.length) throw new ConvexError("Invoice lazima iwe na angalau bidhaa moja.");
     assertDate(args.invoiceDate, "Tarehe ya invoice");
     assertFinite(args.discount, "Discount ya invoice"); assertFinite(args.taxRate, "Tax rate"); assertFinite(args.paymentAmount, "Kiasi kilicholipwa");
     const client = await ctx.db.get("clients", args.clientId);
     const manager = await isManagerRole(ctx, user);
     const clientVisible = isSuperAdmin(user) ? sameBusiness(user, client) : canAccessRecord(user, client) && (manager || client?.createdByUser === undefined || client?.createdByUser === user._id);
-    if (!clientVisible) throw new Error("Mteja hayupo kwenye ofisi/branch yako au si mteja wako.");
+    if (!clientVisible) throw new ConvexError("Mteja hayupo kwenye ofisi/branch yako au si mteja wako.");
     const company = await getCompanySettings(ctx, user);
     const allowNegativeStock = !!company?.allowNegativeStock;
     const invoicePrefix = (company?.invoicePrefix ?? "INV-") || "INV-";
@@ -136,18 +136,18 @@ export const createInvoice = mutation({
     const prepared: Array<{ productId: Id<"products">; qty: number; unitPrice: number; discount: number; lineTotal: number; cost: number }> = [];
     let subtotal = 0;
     for (const line of args.lines) {
-      if (!Number.isFinite(line.qty) || line.qty <= 0 || !Number.isFinite(line.unitPrice) || line.unitPrice < 0) throw new Error("Kiasi au bei si sahihi.");
+      if (!Number.isFinite(line.qty) || line.qty <= 0 || !Number.isFinite(line.unitPrice) || line.unitPrice < 0) throw new ConvexError("Kiasi au bei si sahihi.");
       const product = await ctx.db.get("products", line.productId);
       // A product is sellable in the user's own department, or when it was saved for "all departments" (no branch) in this business.
       const productAllowed = !!product && product.isActive && (canAccessRecord(user, product) || (product.branchId === undefined && sameBusiness(user, product)));
-      if (!product || !productAllowed) throw new Error("Bidhaa haipatikani kwenye branch hii.");
-      if (!allowNegativeStock && product.currentQty + 1e-8 < (requested.get(String(line.productId)) ?? line.qty)) throw new Error(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, unayouza: ${requested.get(String(line.productId))}`);
-      assertFinite(line.discount, "Discount"); const discount = money(line.discount ?? 0); const gross = money(line.qty * line.unitPrice); if (discount < 0 || discount > gross) throw new Error("Discount si sahihi.");
+      if (!product || !productAllowed) throw new ConvexError("Bidhaa haipatikani kwenye branch hii.");
+      if (!allowNegativeStock && product.currentQty + 1e-8 < (requested.get(String(line.productId)) ?? line.qty)) throw new ConvexError(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, unayouza: ${requested.get(String(line.productId))}`);
+      assertFinite(line.discount, "Discount"); const discount = money(line.discount ?? 0); const gross = money(line.qty * line.unitPrice); if (discount < 0 || discount > gross) throw new ConvexError("Discount si sahihi.");
       const lineTotal = money(gross - discount); subtotal += lineTotal; prepared.push({ productId: line.productId, qty: line.qty, unitPrice: line.unitPrice, discount, lineTotal, cost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0 });
     }
-    subtotal = money(subtotal); const discount = money(args.discount ?? 0); if (discount < 0 || discount > subtotal) throw new Error("Discount ya invoice si sahihi.");
-    const taxable = money(subtotal - discount); const taxRate = args.taxRate ?? 0; if (taxRate < 0 || taxRate > 100) throw new Error("Tax rate lazima iwe kati ya 0 na 100.");
-    const taxAmount = money(taxable * taxRate / 100); const total = money(taxable + taxAmount); const paid = money(args.paymentAmount ?? 0); if (paid !== 0 && normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user))) throw new Error("Malipo ya invoice yafanywe na cashier kupitia Cashier â€” Pokea Malipo."); if (paid < 0 || paid > total) throw new Error("Kiasi kilicholipwa si sahihi.");
+    subtotal = money(subtotal); const discount = money(args.discount ?? 0); if (discount < 0 || discount > subtotal) throw new ConvexError("Discount ya invoice si sahihi.");
+    const taxable = money(subtotal - discount); const taxRate = args.taxRate ?? 0; if (taxRate < 0 || taxRate > 100) throw new ConvexError("Tax rate lazima iwe kati ya 0 na 100.");
+    const taxAmount = money(taxable * taxRate / 100); const total = money(taxable + taxAmount); const paid = money(args.paymentAmount ?? 0); if (paid !== 0 && normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user))) throw new ConvexError("Malipo ya invoice yafanywe na cashier kupitia Cashier — Pokea Malipo."); if (paid < 0 || paid > total) throw new ConvexError("Kiasi kilicholipwa si sahihi.");
     // Credit limit of the customer (Sales > Clients): what he already owes + this invoice's unpaid part must stay inside it.
     const newDebt = money(total - paid);
     let creditWarning = false;
@@ -158,8 +158,8 @@ export const createInvoice = mutation({
         const exposure = money((client.openingBalance ?? 0) + open + newDebt);
         if (exposure > limit + 1e-8) {
           const info = `Deni la mteja lingekuwa ${exposure}, kikomo cha mkopo ni ${limit}.`;
-          if (client.creditPolicy === "block") throw new Error(`Mteja amefikia kikomo cha mkopo. ${info} Lipa sehemu ya deni kwanza.`);
-          if (client.creditPolicy === "require_approval" && !(await isManagerRole(ctx, user))) throw new Error(`Invoice hii inahitaji idhini ya meneja. ${info}`);
+          if (client.creditPolicy === "block") throw new ConvexError(`Mteja amefikia kikomo cha mkopo. ${info} Lipa sehemu ya deni kwanza.`);
+          if (client.creditPolicy === "require_approval" && !(await isManagerRole(ctx, user))) throw new ConvexError(`Invoice hii inahitaji idhini ya meneja. ${info}`);
           creditWarning = true;
         }
       }
@@ -178,7 +178,7 @@ export const createInvoice = mutation({
     await bumpStats(ctx, scope, { receivable: money(total - paid), date: args.invoiceDate, sales: total, collected: paid, invoices: 1 });
     for (const line of prepared) {
       await ctx.db.insert("invoiceLines", { invoiceId, productId: line.productId, qty: line.qty, qtyStr: String(line.qty), unitPrice: line.unitPrice, unitPriceStr: String(line.unitPrice), lineTotal: line.lineTotal, lineTotalStr: String(line.lineTotal), costAtSale: line.cost, discount: line.discount });
-      const product = await ctx.db.get("products", line.productId); if (!product) throw new Error("Bidhaa haipatikani."); const balance = product.currentQty - line.qty;
+      const product = await ctx.db.get("products", line.productId); if (!product) throw new ConvexError("Bidhaa haipatikani."); const balance = product.currentQty - line.qty;
       await ctx.db.patch("products", line.productId, { currentQty: balance });
       await ctx.db.insert("stockMovements", { ...scope, movementDate: args.invoiceDate, productId: line.productId, movementType: "sale", referenceId: String(invoiceId), referenceType: "invoice", qtyIn: 0, qtyOut: line.qty, runningBalance: balance, unitCost: line.cost, clientId: args.clientId, createdBy: user._id });
     }
@@ -221,7 +221,7 @@ export const voidInvoice = mutation({
     const user = await requireActiveUser(ctx, "sales");
 
     if (!(await roleHasPermission(ctx, user, "sales.void"))) {
-      throw new Error(
+      throw new ConvexError(
         "Forbidden: huna ruhusa ya kufuta / kubatilisha oda. Muombe msimamizi akupe ruhusa (Role Management au User Settings).",
       );
     }
@@ -233,15 +233,15 @@ export const voidInvoice = mutation({
       !canAccessRecord(user, invoice) ||
       (isOwnDataOnly(user) && invoice.createdBy !== user._id)
     ) {
-      throw new Error("Invoice haipatikani.");
+      throw new ConvexError("Invoice haipatikani.");
     }
 
     if (invoice.status !== "posted") {
-      throw new Error("Invoice hii tayari imebatilishwa.");
+      throw new ConvexError("Invoice hii tayari imebatilishwa.");
     }
 
     if (invoice.total <= 0) {
-      throw new Error(
+      throw new ConvexError(
         "Invoice hii imerudishwa yote kupitia marejesho; haihitaji kubatilishwa.",
       );
     }
@@ -258,12 +258,12 @@ export const voidInvoice = mutation({
     ];
 
     if (!allowedReasons.includes(reason)) {
-      throw new Error("Chagua sababu halali ya kubatilisha invoice.");
+      throw new ConvexError("Chagua sababu halali ya kubatilisha invoice.");
     }
 
     const reasonDetails = a.reasonDetails?.trim() ?? "";
     if (reason === "Sababu nyingine" && !reasonDetails) {
-      throw new Error("Eleza sababu nyingine kabla ya kubatilisha invoice.");
+      throw new ConvexError("Eleza sababu nyingine kabla ya kubatilisha invoice.");
     }
     const cancellationReason =
       reason === "Sababu nyingine" ? `${reason}: ${reasonDetails}` : reason;
@@ -362,16 +362,16 @@ export const returnItems = mutation({
   },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "sales");
-    if (!(await isManagerRole(ctx, user))) throw new Error("Forbidden: ni meneja pekee anayeweza kupokea marejesho ya bidhaa.");
+    if (!(await isManagerRole(ctx, user))) throw new ConvexError("Forbidden: ni meneja pekee anayeweza kupokea marejesho ya bidhaa.");
     const invoice = await ctx.db.get("invoices", a.invoiceId);
-    if (!invoice || !canAccessRecord(user, invoice)) throw new Error("Invoice haipatikani.");
-    if (invoice.status !== "posted") throw new Error("Invoice hii imebatilishwa; haiwezi kupokea marejesho.");
+    if (!invoice || !canAccessRecord(user, invoice)) throw new ConvexError("Invoice haipatikani.");
+    if (invoice.status !== "posted") throw new ConvexError("Invoice hii imebatilishwa; haiwezi kupokea marejesho.");
     const today = new Date().toISOString().slice(0, 10);
     const returnDate = a.returnDate ?? today;
     assertDate(returnDate, "Tarehe ya marejesho");
     const wanted = a.lines.filter((l) => l.qty !== 0);
-    if (!wanted.length) throw new Error("Weka kiasi cha angalau bidhaa moja inayorudishwa.");
-    if (new Set(wanted.map((l) => String(l.invoiceLineId))).size !== wanted.length) throw new Error("Mstari mmoja umejirudia.");
+    if (!wanted.length) throw new ConvexError("Weka kiasi cha angalau bidhaa moja inayorudishwa.");
+    if (new Set(wanted.map((l) => String(l.invoiceLineId))).size !== wanted.length) throw new ConvexError("Mstari mmoja umejirudia.");
     const scope = { tenantId: invoice.tenantId, branchId: invoice.branchId };
     const allLines = await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
     const byId = new Map(allLines.map((l) => [String(l._id), l]));
@@ -381,10 +381,10 @@ export const returnItems = mutation({
     const picked: Array<{ line: typeof allLines[number]; qty: number; gross: number; net: number; cost: number }> = [];
     for (const w of wanted) {
       const line = byId.get(String(w.invoiceLineId));
-      if (!line) throw new Error("Mstari huo si wa invoice hii.");
-      if (!Number.isFinite(w.qty) || w.qty <= 0) throw new Error("Kiasi cha kurudisha lazima kiwe zaidi ya sifuri.");
+      if (!line) throw new ConvexError("Mstari huo si wa invoice hii.");
+      if (!Number.isFinite(w.qty) || w.qty <= 0) throw new ConvexError("Kiasi cha kurudisha lazima kiwe zaidi ya sifuri.");
       const remaining = line.qty - (line.returnedQty ?? 0);
-      if (w.qty > remaining + 1e-8) throw new Error(`Huwezi kurudisha ${w.qty}; kilichobaki kurudishwa ni ${Math.max(0, remaining)}.`);
+      if (w.qty > remaining + 1e-8) throw new ConvexError(`Huwezi kurudisha ${w.qty}; kilichobaki kurudishwa ni ${Math.max(0, remaining)}.`);
       const gross = money((w.qty / line.qty) * line.lineTotal);
       const net = money(gross * factor);
       picked.push({ line, qty: w.qty, gross, net, cost: roundMoney(w.qty * line.costAtSale) });
@@ -398,12 +398,12 @@ export const returnItems = mutation({
     const taxReturned = fully ? invoice.taxAmount : base > 0 ? money(netReturned * invoice.taxAmount / base) : 0;
     const total = money(netReturned + taxReturned);
     const costReturned = roundMoney(picked.reduce((n, x) => n + x.cost, 0));
-    if (total <= 0 && costReturned <= 0) throw new Error("Thamani ya marejesho ni sifuri.");
+    if (total <= 0 && costReturned <= 0) throw new ConvexError("Thamani ya marejesho ni sifuri.");
 
     // 2. What the customer still owes is reduced first; only the rest is paid back, from the method chosen for the refund.
     const credit = money(Math.min(invoice.outstanding, total));
     const refund = money(total - credit);
-    if (refund > invoice.amountPaid + 1e-8) throw new Error("Kiasi cha kurudisha kimezidi kilichowahi kulipwa kwenye invoice hii.");
+    if (refund > invoice.amountPaid + 1e-8) throw new ConvexError("Kiasi cha kurudisha kimezidi kilichowahi kulipwa kwenye invoice hii.");
     const payout = refund > 0 ? (await normaliseSplits(ctx, user, [{ method: a.refundMethod ?? "cash", methodId: a.refundMethodId, amount: refund }])).splits[0] : null;
 
     // 3. Return record + number.
@@ -461,16 +461,16 @@ export async function applyCustomerPayment(ctx: MutationCtx, args: PaymentArgs) 
   const user = await requireActiveUser(ctx, "sales");
   assertDate(args.paymentDate, "Tarehe ya malipo");
   const role = normalizeRole(user.role);
-  if (role !== "cashier" && !(await isManagerRole(ctx, user))) throw new Error("Forbidden: cashier permission required to receive customer payments");
+  if (role !== "cashier" && !(await isManagerRole(ctx, user))) throw new ConvexError("Forbidden: cashier permission required to receive customer payments");
   const scope = await resolveWriteScope(ctx, user); const invoice = await ctx.db.get("invoices", args.invoiceId);
-  if (!canAccessRecord(user, invoice) || !invoice || invoice.status !== "posted") throw new Error("Invoice haipatikani au haijapostiwa.");
-  if (isOwnDataOnly(user) && invoice.createdBy !== user._id) throw new Error("Invoice haipatikani au haijapostiwa.");
+  if (!canAccessRecord(user, invoice) || !invoice || invoice.status !== "posted") throw new ConvexError("Invoice haipatikani au haijapostiwa.");
+  if (isOwnDataOnly(user) && invoice.createdBy !== user._id) throw new ConvexError("Invoice haipatikani au haijapostiwa.");
   const { splits, total: amount } = await normaliseSplits(ctx, user, args.splits ?? [{ method: args.paymentMethod ?? "cash", amount: args.amount ?? NaN, reference: args.reference }]);
-  if (amount <= 0 || amount > invoice.outstanding + 1e-8) throw new Error("Malipo lazima yawe zaidi ya sifuri na yasizidi deni.");
-  const client = await ctx.db.get("clients", invoice.clientId); if (!(isSuperAdmin(user) ? sameBusiness(user, client) : canAccessRecord(user, client))) throw new Error("Mteja hayupo kwenye branch yako.");
+  if (amount <= 0 || amount > invoice.outstanding + 1e-8) throw new ConvexError("Malipo lazima yawe zaidi ya sifuri na yasizidi deni.");
+  const client = await ctx.db.get("clients", invoice.clientId); if (!(isSuperAdmin(user) ? sameBusiness(user, client) : canAccessRecord(user, client))) throw new ConvexError("Mteja hayupo kwenye branch yako.");
   const refs = splits.map((s) => s.reference).filter((r): r is string => !!r);
-  if (new Set(refs).size !== refs.length) throw new Error("Reference moja imetumika mara mbili kwenye risiti hii.");
-  if (refs.length) { const prior = await ctx.db.query("customerPayments").withIndex("by_client", q => q.eq("clientId", invoice.clientId)).collect(); if (prior.some(p => p.reference && refs.includes(p.reference) && p.tenantId === scope.tenantId && p.branchId === scope.branchId)) throw new Error("Reference ya malipo imeshatumika; ombi linalofanana limezuiwa."); }
+  if (new Set(refs).size !== refs.length) throw new ConvexError("Reference moja imetumika mara mbili kwenye risiti hii.");
+  if (refs.length) { const prior = await ctx.db.query("customerPayments").withIndex("by_client", q => q.eq("clientId", invoice.clientId)).collect(); if (prior.some(p => p.reference && refs.includes(p.reference) && p.tenantId === scope.tenantId && p.branchId === scope.branchId)) throw new ConvexError("Reference ya malipo imeshatumika; ombi linalofanana limezuiwa."); }
   const receiptNo = `RC-${Date.now().toString(36).toUpperCase()}`;
   const receivable = await getSystemAccount(ctx, scope, "1100", "Accounts receivable", "asset");
   for (const s of splits) {
@@ -500,15 +500,15 @@ export const settleInvoices = mutation({
   handler: async (ctx, args) => {
     try {
       const user = await requireActiveUser(ctx, "sales");
-      if (normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user))) throw new Error("Forbidden: cashier permission required to receive customer payments");
-      if (args.allocations.length === 0) throw new Error("Chagua angalau invoice moja.");
-      if (args.allocations.length > 50) throw new Error("Invoice nyingi mno kwa mara moja (kikomo 50).");
-      if (new Set(args.allocations.map((a) => String(a.invoiceId))).size !== args.allocations.length) throw new Error("Invoice moja imechaguliwa mara mbili.");
+      if (normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user))) throw new ConvexError("Forbidden: cashier permission required to receive customer payments");
+      if (args.allocations.length === 0) throw new ConvexError("Chagua angalau invoice moja.");
+      if (args.allocations.length > 50) throw new ConvexError("Invoice nyingi mno kwa mara moja (kikomo 50).");
+      if (new Set(args.allocations.map((a) => String(a.invoiceId))).size !== args.allocations.length) throw new ConvexError("Invoice moja imechaguliwa mara mbili.");
       const results = [];
       let total = 0;
       for (const a of args.allocations) {
         const inv = await ctx.db.get("invoices", a.invoiceId);
-        if (!inv || inv.createdBy !== args.staffId) throw new Error("Invoice hii si ya mhudumu aliyechaguliwa.");
+        if (!inv || inv.createdBy !== args.staffId) throw new ConvexError("Invoice hii si ya mhudumu aliyechaguliwa.");
         const r = await applyCustomerPayment(ctx, { invoiceId: a.invoiceId, splits: a.splits, paymentDate: args.paymentDate, notes: args.notes }); // throws -> everything rolls back
         total = roundMoney(total + r.amount);
         results.push({ invoiceId: a.invoiceId, invoiceNo: inv.invoiceNo, amount: r.amount, outstanding: r.outstanding, receiptNo: r.receiptNo });

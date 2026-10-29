@@ -17,6 +17,7 @@ import {
   Bell,
   LifeBuoy,
   Wallet,
+  CalendarClock,
 } from "lucide-react";
 import { tr } from "@/lib/i18n.ts";
 import { isSellingStaffRole, isSuperAdminRole, showSellingPointInMenu } from "@/lib/selling-point-access.ts";
@@ -46,6 +47,7 @@ const groups = [
     items: [
       { label: tr("Payroll"), icon: Users, path: "/payroll", module: "payroll" },
       { label: tr("HR"), icon: UserCog, path: "/hr", module: "hr" },
+      { label: tr("Leave / Ruhusa"), icon: CalendarClock, path: "/leave", module: "leave" },
     ],
   },
   {
@@ -91,6 +93,11 @@ export default function Sidebar({
         }
         if (item.module === "cashier") {
           return !superAdmin && !sellingStaff && permissions.includes("waiterOrders.manage") && tenant?.waiterOrdersEnabled === true && (!modules || modules.includes("waiterOrders"));
+        }
+        if (item.module === "leave") {
+          if (superAdmin) return true;
+          if (modules && !modules.includes("leave")) return false;
+          return permissions.includes("leave.request") || permissions.includes("leave.review") || permissions.includes("system.manager");
         }
         if (sellingStaff && item.module === "dashboard") return false;
         if (superAdmin) return true;

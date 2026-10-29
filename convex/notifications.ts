@@ -1,10 +1,13 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { isManagerRole, isSuperAdmin, requireActiveUser, roleHasPermission, scopedRows } from "./access";
+import { businessRows, isManagerRole, isSuperAdmin, requireActiveUser, roleHasPermission, scopedRows } from "./access";
 import { announcementApplies } from "./announcements";
 import { planStatus, tzToday } from "./plans";
 import { effectiveModules } from "./permissions";
+import { addDaysIso, businessNow, dayRate, dueOn, leaveDates, monthBounds, scheduledDays, toMinutes } from "./attendanceMath";
+import type { DaySchedule } from "./attendanceMath";
+import { loadClosedDays, loadRule } from "./schedules";
 
 /**
  * Alerts are computed from live data (stock, bills, leave, payroll, support), so they are always current.
@@ -34,14 +37,63 @@ export const feed = query({
       else if (b.dueDate <= soon) items.push({ key: `billsoon:${b._id}`, code: "bill_due_soon", level: "warning", params: { vendor: b.vendor, bill: b.billNumber, amount: due, due: b.dueDate }, link: "/accounts/expenses", at: b.dueDate });
     }
     if (manager) {
-      const emps = new Map((await scopedRows(ctx, user, "employees")).map((e) => [String(e._id), e.name]));
-      for (const l of (await scopedRows(ctx, user, "leaveRequests")).filter((l) => l.status === "pending"))
-        items.push({ key: `leave:${l._id}`, code: "leave_pending", level: "info", params: { name: emps.get(String(l.employeeId)) ?? "-", from: l.startDate, to: l.endDate }, link: "/hr", at: l.startDate });
       for (const p of (await scopedRows(ctx, user, "payrollPeriods")).filter((p) => p.status === "draft"))
         items.push({ key: `payroll:${p._id}`, code: "payroll_draft", level: "info", params: { name: p.name }, link: "/payroll/process", at: p.endDate });
+      // Staff attendance: late today, not signed in yet, and confirmed absences of the last 3 days (a whole day's pay is deducted).
+      const staff = (await scopedRows(ctx, user, "employees")).filter((e) => e.isActive);
+      if (staff.length > 0) {
+        const nowB = businessNow();
+        const from = addDaysIso(nowB.date, -3);
+        const rule = await loadRule(ctx, user.tenantId);
+        const closed = await loadClosedDays(ctx, user.tenantId);
+        const month = monthBounds(nowB.date);
+        const schedules = new Map<string, DaySchedule[]>();
+        for (const row of await scopedRows(ctx, user, "workSchedules")) schedules.set(String(row.employeeId), [...(schedules.get(String(row.employeeId)) ?? []), { weekday: row.weekday, isOff: row.isOff, startTime: row.startTime, endTime: row.endTime }]);
+        const approved = (await scopedRows(ctx, user, "leaveRequests")).filter((l) => l.status === "approved" && l.endDate >= from && l.startDate <= nowB.date);
+        for (const e of staff) {
+          const schedule = schedules.get(String(e._id)) ?? [];
+          if (schedule.length === 0) continue;
+          const rows = await ctx.db.query("attendance").withIndex("by_employee_date", (q) => q.eq("employeeId", e._id).gte("date", from).lte("date", nowB.date)).collect();
+          const onLeave = leaveDates(approved.filter((l) => l.employeeId === e._id), from, nowB.date);
+          const dayPay = rule.absentEnabled && e.salaryType === "monthly" ? dayRate(e.basicSalary, scheduledDays(schedule, month.start, month.end, closed)) : 0;
+          for (let d = from; d <= nowB.date; d = addDaysIso(d, 1)) {
+            const due = dueOn(schedule, d, closed);
+            if (!due || due === "off" || onLeave.has(d)) continue;
+            const rec = rows.find((r) => r.date === d);
+            if (rec?.signInTime) {
+              if ((rec.lateMinutes ?? 0) > 0 && !rec.lateWaived) items.push({ key: `late:${rec._id}`, code: "staff_late", level: "warning", params: { name: e.name, minutes: rec.lateMinutes ?? 0, amount: rec.lateDeduction ?? 0, start: due.startTime, time: rec.signInTime, date: d }, link: "/payroll/reports/attendance", at: d });
+            } else if (d < nowB.date) {
+              items.push({ key: `absent:${e._id}:${d}`, code: "staff_absent", level: "danger", params: { name: e.name, date: d, amount: dayPay }, link: "/payroll/reports/attendance", at: d });
+            } else if (nowB.minutes > toMinutes(due.startTime)) {
+              items.push({ key: `notin:${e._id}:${d}`, code: "staff_not_in", level: "warning", params: { name: e.name, start: due.startTime, amount: dayPay }, link: "/payroll/sign-in", at: d });
+            }
+          }
+        }
+      }
       for (const t of (await scopedRows(ctx, user, "supportTickets")).filter((t) => t.status === "open"))
         items.push({ key: `ticket:${t._id}`, code: "ticket_open", level: "info", params: { subject: t.subject, name: t.createdByName }, link: "/help", at: t.createdAt.slice(0, 10) });
     }
+    // Leave / permission requests: managers get every one of their business, HR reviewers the ones sent to HR (never their own).
+    // The requester is told when his request has been decided.
+    const tenantForLeave = user.tenantId ? await ctx.db.get("tenants", user.tenantId as Id<"tenants">) : null;
+    const leaveModules = isSuperAdmin(user) ? null : effectiveModules(tenantForLeave?.modules, user.menuAccess);
+    const leaveLink = !leaveModules || leaveModules.includes("leave") ? "/leave" : "/hr";
+    const reviewsHr = manager || (await roleHasPermission(ctx, user, "leave.review"));
+    if (reviewsHr && user.tenantId) {
+      const emps = new Map((await scopedRows(ctx, user, "employees")).map((e) => [String(e._id), e.name]));
+      for (const l of await businessRows(ctx, user, "leaveRequests")) {
+        if (l.status !== "pending" || l.createdBy === user._id || (!manager && l.target === "manager")) continue;
+        items.push({ key: `leave:${l._id}`, code: l.lateRequest ? "leave_pending_late" : "leave_pending", level: l.lateRequest ? "warning" : "info", params: { name: emps.get(String(l.employeeId)) ?? "-", from: l.startDate, to: l.endDate }, link: leaveLink, at: l.startDate });
+      }
+    }
+    if (user.employeeId) {
+      const since = new Date(Date.now() - 14 * 86400000).toISOString();
+      for (const l of await ctx.db.query("leaveRequests").withIndex("by_employee", (q) => q.eq("employeeId", user.employeeId as Id<"employees">)).collect()) {
+        if ((l.status !== "approved" && l.status !== "rejected") || !l.decidedAt || l.decidedAt < since) continue;
+        items.push({ key: `leavedec:${l._id}:${l.decidedAt}`, code: l.status === "approved" ? "leave_approved" : "leave_rejected", level: l.status === "approved" ? "info" : "warning", params: { from: l.startDate, to: l.endDate, note: l.decisionNote ?? "" }, link: leaveModules && !leaveModules.includes("leave") ? "/notifications" : "/leave", at: l.decidedAt.slice(0, 10) });
+      }
+    }
+
     // A waiter / waitress is told when the cashier has received (printed) one of his orders.
     const roleName = String(user.role ?? "").toLowerCase();
     if (roleName === "waiter" || roleName === "waitress") {

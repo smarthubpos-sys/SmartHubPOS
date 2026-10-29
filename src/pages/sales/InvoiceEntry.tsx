@@ -72,7 +72,7 @@ export default function InvoiceEntry() {
   const addByCode = () => {
     const code = scan.trim().toLowerCase();
     if (!code) return;
-    const p = products.find((x) => (x.barcode ?? "").toLowerCase() === code || x.itemCode.toLowerCase() === code);
+    const p = products.find((x) => x.onMenu !== false && ((x.barcode ?? "").toLowerCase() === code || x.itemCode.toLowerCase() === code));
     if (!p) { toast.error(tr("Bidhaa yenye barcode/code “{0}” haijapatikana.", [scan])); return; }
     setLines((old) => {
       const idx = old.findIndex((l) => l.productId === p._id);
@@ -190,7 +190,7 @@ export default function InvoiceEntry() {
                     <td className="p-2">
                       <select className="h-10 min-w-52 rounded-md border bg-background px-2" value={l.productId} onChange={(e) => choose(i, e.target.value)}>
                         <option value="">{tr("-- Chagua bidhaa --")}</option>
-                        {products.map((x) => <option key={x._id} value={x._id}>{x.name} ({fmt(x.currentQty, 2)})</option>)}
+                        {products.filter((x) => x.onMenu !== false || x._id === l.productId).map((x) => <option key={x._id} value={x._id}>{x.name} ({fmt(x.currentQty, 2)})</option>)}
                       </select>
                     </td>
                     <td className="p-2">{p?.unitId ? unitName.get(String(p.unitId)) ?? tr("Unit") : tr("Unit")}</td>

@@ -1,5 +1,5 @@
 import { query } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { requirePermission, resolveWriteScope } from "./access";
 
@@ -8,10 +8,10 @@ const isWaiterRole = (role?: string) => ["waiter", "waitress"].includes(String(r
 
 /** Cashier / manager only: a waiter's own data stays behind the waiter's personal views. */
 async function reviewer(ctx: Parameters<typeof requirePermission>[0]) {
-  const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
-  if (isWaiterRole(user.role)) throw new Error("Huna ruhusa ya kuona orodha ya wahudumu.");
+  const user = await requirePermission(ctx, "sales.view", "sales");
+  if (isWaiterRole(user.role)) throw new ConvexError("Huna ruhusa ya kuona orodha ya wahudumu.");
   const scope = await resolveWriteScope(ctx, user);
-  if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
+  if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
   return { user, tenantId: scope.tenantId, branchId: scope.branchId };
 }
 
@@ -35,9 +35,9 @@ export const summary = query({
   args: { waiterId: v.id("users"), from: v.string(), to: v.string() },
   handler: async (ctx, args) => {
     const { tenantId, branchId } = await reviewer(ctx);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.from) || !/^\d{4}-\d{2}-\d{2}$/.test(args.to) || args.from > args.to) throw new Error("Tarehe si sahihi.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.from) || !/^\d{4}-\d{2}-\d{2}$/.test(args.to) || args.from > args.to) throw new ConvexError("Tarehe si sahihi.");
     const waiter = await ctx.db.get("users", args.waiterId);
-    if (!waiter || waiter.tenantId !== tenantId || waiter.branchId !== branchId || !isWaiterRole(waiter.role)) throw new Error("Mhudumu hayupo kwenye biashara au tawi lako.");
+    if (!waiter || waiter.tenantId !== tenantId || waiter.branchId !== branchId || !isWaiterRole(waiter.role)) throw new ConvexError("Mhudumu hayupo kwenye biashara au tawi lako.");
 
     const invoices = await ctx.db.query("invoices")
       .withIndex("by_tenant_user_date", (q) => q.eq("tenantId", tenantId).eq("createdBy", waiter._id).gte("invoiceDate", args.from).lte("invoiceDate", args.to))
@@ -80,7 +80,7 @@ export const summary = query({
 async function waiterInScope(ctx: Parameters<typeof requirePermission>[0], waiterId: Id<"users">) {
   const { tenantId, branchId } = await reviewer(ctx);
   const waiter = await ctx.db.get("users", waiterId);
-  if (!waiter || waiter.tenantId !== tenantId || waiter.branchId !== branchId || !isWaiterRole(waiter.role)) throw new Error("Mhudumu hayupo kwenye biashara au tawi lako.");
+  if (!waiter || waiter.tenantId !== tenantId || waiter.branchId !== branchId || !isWaiterRole(waiter.role)) throw new ConvexError("Mhudumu hayupo kwenye biashara au tawi lako.");
   return { tenantId, branchId, waiter };
 }
 
@@ -89,7 +89,7 @@ export const invoices = query({
   args: { waiterId: v.id("users"), from: v.string(), to: v.string(), search: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const { tenantId, branchId, waiter } = await waiterInScope(ctx, args.waiterId);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.from) || !/^\d{4}-\d{2}-\d{2}$/.test(args.to) || args.from > args.to) throw new Error("Tarehe si sahihi.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.from) || !/^\d{4}-\d{2}-\d{2}$/.test(args.to) || args.from > args.to) throw new ConvexError("Tarehe si sahihi.");
     const rows = (await ctx.db.query("invoices")
       .withIndex("by_tenant_user_date", (q) => q.eq("tenantId", tenantId).eq("createdBy", waiter._id).gte("invoiceDate", args.from).lte("invoiceDate", args.to))
       .order("desc").take(300)).filter((i) => i.branchId === branchId);
@@ -111,9 +111,9 @@ export const invoicePayments = query({
   handler: async (ctx, args) => {
     const { tenantId, branchId } = await reviewer(ctx);
     const inv = await ctx.db.get("invoices", args.invoiceId);
-    if (!inv || inv.tenantId !== tenantId || inv.branchId !== branchId) throw new Error("Invoice haipo kwenye biashara au tawi lako.");
+    if (!inv || inv.tenantId !== tenantId || inv.branchId !== branchId) throw new ConvexError("Invoice haipo kwenye biashara au tawi lako.");
     const creator = await ctx.db.get("users", inv.createdBy);
-    if (!creator || !isWaiterRole(creator.role)) throw new Error("Invoice hii si ya mhudumu.");
+    if (!creator || !isWaiterRole(creator.role)) throw new ConvexError("Invoice hii si ya mhudumu.");
     const pays = await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", inv._id)).collect();
     return pays.filter((p) => !p.voided).map((p) => ({ _id: p._id, date: p.paymentDate, method: p.paymentMethod, amount: p.amount, receiptNo: p.receiptNo ?? "" })).sort((a, b) => a.date.localeCompare(b.date));
   },
@@ -130,7 +130,7 @@ export const byStaffCode = query({
     const { tenantId, branchId } = await reviewer(ctx);
     const code = args.code.trim().toUpperCase();
     if (!code) return null;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.from) || !/^\d{4}-\d{2}-\d{2}$/.test(args.to) || args.from > args.to) throw new Error("Tarehe si sahihi.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.from) || !/^\d{4}-\d{2}-\d{2}$/.test(args.to) || args.from > args.to) throw new ConvexError("Tarehe si sahihi.");
     const people = await ctx.db.query("users").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", branchId)).collect();
     const staff = people.find((u) => u.isActive !== false && (u.staffCode ?? "").toUpperCase() === code);
     if (!staff) return null;

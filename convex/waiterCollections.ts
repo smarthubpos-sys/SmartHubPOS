@@ -1,5 +1,5 @@
 import { mutation, query, type MutationCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { logAudit, normalizeRole, requirePermission, resolveWriteScope } from "./access";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
@@ -19,9 +19,9 @@ const remainingOf = (o: Doc<"waiterOrders">) => Math.max(0, r2(o.total - (o.paid
 
 async function cashierScope(ctx: Parameters<typeof requirePermission>[0]) {
   const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
-  if (isWaiter(user.role) || ["super_admin", "superadmin"].includes(String(user.role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_"))) throw new Error("Cashier pekee ndiye anayepokea fedha za wahudumu.");
+  if (isWaiter(user.role) || ["super_admin", "superadmin"].includes(String(user.role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_"))) throw new ConvexError("Cashier pekee ndiye anayepokea fedha za wahudumu.");
   const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
-  if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
+  if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
   return { user, tenantId: scope.tenantId, branchId: scope.branchId };
 }
 const inScope = (branchId: Id<"branches"> | undefined, o: Doc<"waiterOrders">) => !branchId || o.branchId === branchId;
@@ -118,20 +118,20 @@ export const collect = mutation({
     try {
       const { user, tenantId, branchId } = await cashierScope(ctx);
       const ids = [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[];
-      if (!ids.length) throw new Error("Chagua angalau oda moja.");
+      if (!ids.length) throw new ConvexError("Chagua angalau oda moja.");
       const orders: Doc<"waiterOrders">[] = [];
       for (const id of ids) {
         const o = await ctx.db.get("waiterOrders", id);
-        if (!o || o.tenantId !== tenantId || !inScope(branchId, o)) throw new Error("Oda haipo kwenye biashara au tawi lako.");
-        if (o.waiterId !== args.staffId) throw new Error("Oda zote lazima ziwe za mhudumu mmoja.");
-        if (!collectable(o)) throw new Error("Oda moja tayari imelipwa au haiwezi kulipwa.");
+        if (!o || o.tenantId !== tenantId || !inScope(branchId, o)) throw new ConvexError("Oda haipo kwenye biashara au tawi lako.");
+        if (o.waiterId !== args.staffId) throw new ConvexError("Oda zote lazima ziwe za mhudumu mmoja.");
+        if (!collectable(o)) throw new ConvexError("Oda moja tayari imelipwa au haiwezi kulipwa.");
         orders.push(o);
       }
       orders.sort((x, y) => x.createdAt.localeCompare(y.createdAt)); // oldest order is paid first
       const due = r2(orders.reduce((s, o) => s + remainingOf(o), 0));
       const { splits, total: paid } = await normaliseSplits(ctx, user, args.splits);
-      if (paid <= 0.005) throw new Error("Weka kiasi kilichopokelewa (zaidi ya sifuri).");
-      if (paid - due > 0.005) throw new Error(`Kiasi kilichopokelewa (${paid}) kimezidi deni la oda (${due}).`);
+      if (paid <= 0.005) throw new ConvexError("Weka kiasi kilichopokelewa (zaidi ya sifuri).");
+      if (paid - due > 0.005) throw new ConvexError(`Kiasi kilichopokelewa (${paid}) kimezidi deni la oda (${due}).`);
       const alloc = new Map<string, number>();
       let left = paid;
       for (const o of orders) {
@@ -181,34 +181,34 @@ export const counterSale = mutation({
   handler: async (ctx, args) => {
     try {
       const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
-      if (isWaiter(user.role) || [ "super_admin", "superadmin" ].includes(normalizeRole(user.role))) throw new Error("Mauzo ya counter ni ya cashier pekee.");
+      if (isWaiter(user.role) || [ "super_admin", "superadmin" ].includes(normalizeRole(user.role))) throw new ConvexError("Mauzo ya counter ni ya cashier pekee.");
       const scope = await resolveWriteScope(ctx, user);
-      if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
+      if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
       const tenantId = scope.tenantId;
       const key = args.clientKey.trim();
-      if (key.length < 8 || key.length > 80) throw new Error("Ombi si sahihi. Fungua ukurasa upya.");
+      if (key.length < 8 || key.length > 80) throw new ConvexError("Ombi si sahihi. Fungua ukurasa upya.");
       const existing = await ctx.db.query("waiterOrders").withIndex("by_client_key", (q) => q.eq("waiterId", user._id).eq("clientKey", key)).first();
       if (existing) return { orderId: existing._id, collectionId: existing.collectionId ?? null, total: existing.total, duplicate: true };
       const settings = await ctx.db.query("tenantSettings").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).first();
-      if (!waiterOrdersAllowedFor(user.role, settings)) throw new Error("Selling Point imezimwa kwa biashara hii.");
-      if (args.lines.length === 0) throw new Error("Ongeza angalau bidhaa moja.");
+      if (!waiterOrdersAllowedFor(user.role, settings)) throw new ConvexError("Selling Point imezimwa kwa biashara hii.");
+      if (args.lines.length === 0) throw new ConvexError("Ongeza angalau bidhaa moja.");
 
       const merged = new Map<string, number>(); // the same product tapped many times = one line
       for (const l of args.lines) {
-        if (!Number.isFinite(l.qty) || l.qty <= 0) throw new Error("Kiasi cha bidhaa lazima kiwe zaidi ya sifuri.");
+        if (!Number.isFinite(l.qty) || l.qty <= 0) throw new ConvexError("Kiasi cha bidhaa lazima kiwe zaidi ya sifuri.");
         merged.set(String(l.productId), (merged.get(String(l.productId)) ?? 0) + l.qty);
       }
       const lines = [];
       for (const [pid, qty] of merged) {
         const product = await ctx.db.get("products", pid as Id<"products">);
-        if (!product || product.isActive === false) throw new Error("Bidhaa haipo au haifanyi kazi.");
-        if (product.tenantId !== tenantId || (scope.branchId && product.branchId && product.branchId !== scope.branchId)) throw new Error("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
-        if (!Number.isFinite(product.sellingPrice) || product.sellingPrice < 0) throw new Error("Bei ya bidhaa si sahihi.");
+        if (!product || product.isActive === false) throw new ConvexError("Bidhaa haipo au haifanyi kazi.");
+        if (product.tenantId !== tenantId || (scope.branchId && product.branchId && product.branchId !== scope.branchId)) throw new ConvexError("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
+        if (!Number.isFinite(product.sellingPrice) || product.sellingPrice < 0) throw new ConvexError("Bei ya bidhaa si sahihi.");
         lines.push({ productId: product._id, productName: product.name, qty, unitPrice: product.sellingPrice, lineTotal: r2(qty * product.sellingPrice) });
       }
       const total = r2(lines.reduce((n, l) => n + l.lineTotal, 0));
       const { splits, total: paid } = await normaliseSplits(ctx, user, args.splits);
-      if (Math.abs(paid - total) > 0.005) throw new Error(`Kiasi kilichopokelewa (${paid}) lazima kilingane na jumla ya mauzo (${total}).`);
+      if (Math.abs(paid - total) > 0.005) throw new ConvexError(`Kiasi kilichopokelewa (${paid}) lazima kilingane na jumla ya mauzo (${total}).`);
 
       const now = new Date().toISOString();
       const date = eatDay(now);
@@ -257,7 +257,7 @@ export const bookMissingJournals = mutation({
     try {
       const user = await requirePermission(ctx, "accounts.manage", "accounts");
       const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
-      if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
+      if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
       const tenantId = scope.tenantId;
       const rows = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).take(300);
       let booked = 0, skipped = 0;

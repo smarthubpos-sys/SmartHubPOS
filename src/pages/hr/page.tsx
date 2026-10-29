@@ -10,11 +10,8 @@ import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, Stat, Table } fro
 import EmployeesPanel from "@/pages/hr/EmployeesPanel.tsx";
 import { formatDate, localDate } from "@/lib/format.ts";
 import { tr, trValue } from "@/lib/i18n.ts";
-
-const LEAVE = ["annual", "sick", "maternity", "paternity", "unpaid", "other"];
-const leaveLabel = (k: string) => ({ annual: tr("Likizo ya mwaka"), sick: tr("Likizo ya ugonjwa"), maternity: tr("Likizo ya uzazi"), paternity: tr("Likizo ya baba"), unpaid: tr("Likizo bila malipo"), other: tr("Nyingine") } as Record<string, string>)[k] ?? k;
-const statusTone = (s: string) => (s === "approved" ? "green" : s === "pending" ? "amber" : s === "rejected" ? "rose" : "gray") as "green" | "amber" | "rose" | "gray";
-const statusLabel = (s: string) => ({ approved: tr("Imekubaliwa"), pending: tr("Inasubiri"), rejected: tr("Imekataliwa"), cancelled: tr("Imeghairiwa") } as Record<string, string>)[s] ?? s;
+import { LEAVE_TYPES as LEAVE, leaveLabel, targetLabel } from "@/pages/leave/leave-utils.ts";
+import { StagePill } from "@/pages/leave/shared.tsx";
 const tip = { contentStyle: { borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)", fontSize: 12 } };
 
 type Tab = "overview" | "employees" | "leave" | "attendance";
@@ -69,13 +66,14 @@ function Leave() {
       </Panel>
       <Panel title={tr("Maombi ya likizo")}>
         {!leaves || leaves.length === 0 ? <Empty>{tr("Hakuna maombi ya likizo.")}</Empty> : (
-          <Table head={[tr("Mfanyakazi"), tr("Aina ya likizo"), tr("Kuanzia"), tr("Hadi"), tr("Siku"), tr("Sababu (hiari)"), tr("Hali"), ""]}>
+          <Table head={[tr("Mfanyakazi"), tr("Aina ya likizo"), tr("Kuanzia"), tr("Hadi"), tr("Siku"), tr("Sababu (hiari)"), tr("Imetumwa kwa"), tr("Hali"), ""]}>
             {leaves.map((l) => (
               <tr key={l._id}>
-                <td className="font-medium">{l.employeeName}</td><td>{leaveLabel(l.leaveType)}</td><td className="whitespace-nowrap">{formatDate(l.startDate)}</td><td className="whitespace-nowrap">{formatDate(l.endDate)}</td><td>{l.days}</td><td className="text-xs text-muted-foreground">{l.reason}</td>
-                <td><Pill tone={statusTone(l.status)}>{statusLabel(l.status)}</Pill></td>
+                <td className="font-medium">{l.employeeName}</td><td>{leaveLabel(l.leaveType)}</td><td className="whitespace-nowrap">{formatDate(l.startDate)}</td><td className="whitespace-nowrap">{formatDate(l.endDate)}</td><td>{l.days}</td><td className="text-xs text-muted-foreground">{l.reason}{l.decisionNote ? ` — ${l.decisionNote}` : ""}</td>
+                <td className="whitespace-nowrap text-xs">{l.target ? targetLabel(l.target) : "—"}{l.lateRequest && <> <Pill tone="amber">{tr("Imechelewa kuombwa")}</Pill></>}</td>
+                <td><StagePill stage={l.status === "pending" ? ((l as { viewedAt?: string }).viewedAt ? "viewed" : (l as { receivedAt?: string }).receivedAt ? "received" : "sent") : l.status} /></td>
                 <td className="whitespace-nowrap text-right">
-                  {l.status === "pending" && <><Button size="sm" disabled={busy} onClick={() => void run(() => decide({ id: l._id, approve: true }), tr("Likizo imekubaliwa."))}>{tr("Kubali")}</Button>{" "}<Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => decide({ id: l._id, approve: false }), tr("Likizo imekataliwa."))}>{tr("Kataa")}</Button></>}
+                  {l.status === "pending" && <><Button size="sm" disabled={busy} onClick={() => void run(() => decide({ id: l._id, approve: true }), tr("Likizo imekubaliwa."))}>{tr("Kubali")}</Button>{" "}<Button size="sm" variant="outline" disabled={busy} onClick={() => { const note = window.prompt(tr("Andika sababu ya kukataa ombi."))?.trim(); if (note && note.length >= 3) void run(() => decide({ id: l._id, approve: false, note }), tr("Likizo imekataliwa.")); }}>{tr("Kataa")}</Button></>}
                   {["pending", "approved"].includes(l.status) && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(() => cancel({ id: l._id }), tr("Ombi limeghairiwa."))}>{tr("Futa")}</Button>}
                 </td>
               </tr>

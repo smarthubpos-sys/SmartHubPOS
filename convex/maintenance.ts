@@ -2,7 +2,7 @@ import { action, internalMutation, internalQuery, mutation, query } from "./_gen
 import type { QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { hashStaffPin, PIN_PATTERN, pinLookupKey } from "./pinCrypto";
 import { surfaceError } from "./surfaceError";
 import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
@@ -102,8 +102,8 @@ export const saveCompany = mutation({
   handler: async (ctx, args) => {
     const user = await requirePermission(ctx, "maintenance.company");
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
-    if (args.decimalPlaces !== undefined && (args.decimalPlaces < 0 || args.decimalPlaces > 6)) throw new Error("Decimal places lazima iwe 0–6.");
-    if (args.taxRate !== undefined && (args.taxRate < 0 || args.taxRate > 100)) throw new Error("Tax rate lazima iwe 0–100.");
+    if (args.decimalPlaces !== undefined && (args.decimalPlaces < 0 || args.decimalPlaces > 6)) throw new ConvexError("Decimal places lazima iwe 0–6.");
+    if (args.taxRate !== undefined && (args.taxRate < 0 || args.taxRate > 100)) throw new ConvexError("Tax rate lazima iwe 0–100.");
     const patch = Object.fromEntries(Object.entries(args).filter(([, val]) => val !== undefined));
     const existing = (await scopedRows(ctx, user, "companySettings")).find((r) => r.branchId === scope.branchId); // the row of THIS scope (business-wide, or the chosen department), never another department's
     let id;
@@ -124,24 +124,24 @@ export const saveSetting = mutation({
   args: { key: v.string(), value: settingValue },
   handler: async (ctx, args) => {
     const permission = SETTING_KEYS[args.key];
-    if (!permission) throw new Error("Setting key haitambuliki.");
+    if (!permission) throw new ConvexError("Setting key haitambuliki.");
     const user = await requirePermission(ctx, permission);
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
     const value = args.value ?? {};
     if (args.key === "security") {
       const s: { minPasswordLength?: unknown; sessionTimeoutMinutes?: unknown } = typeof value === "object" && value !== null ? value : {};
-      if (!(typeof s.minPasswordLength === "number" && s.minPasswordLength >= 8 && s.minPasswordLength <= 64)) throw new Error("Urefu wa password uwe 8–64.");
-      if (!(typeof s.sessionTimeoutMinutes === "number" && s.sessionTimeoutMinutes >= 0 && s.sessionTimeoutMinutes <= 1440)) throw new Error("Session timeout iwe 0–1440 dakika (0 = imezimwa).");
+      if (!(typeof s.minPasswordLength === "number" && s.minPasswordLength >= 8 && s.minPasswordLength <= 64)) throw new ConvexError("Urefu wa password uwe 8–64.");
+      if (!(typeof s.sessionTimeoutMinutes === "number" && s.sessionTimeoutMinutes >= 0 && s.sessionTimeoutMinutes <= 1440)) throw new ConvexError("Session timeout iwe 0–1440 dakika (0 = imezimwa).");
     }
     if (args.key === "system" && typeof value === "object" && value !== null) { // receipt footer and payment details: plain text, bounded length
       const limits: Record<string, number> = { receiptFooter: 500, mobileMoneyProvider: 40, mobileMoneyNumber: 30, bankName: 60, bankAccountName: 80, bankAccountNumber: 40, paymentInstructions: 300 };
       for (const [field, max] of Object.entries(limits)) {
         const x = (value as Record<string, unknown>)[field];
         if (x === undefined) continue;
-        if (typeof x !== "string" || x.length > max) throw new Error(`Maandishi ya "${field}" si sahihi au ni marefu kuliko herufi ${max}.`);
+        if (typeof x !== "string" || x.length > max) throw new ConvexError(`Maandishi ya "${field}" si sahihi au ni marefu kuliko herufi ${max}.`);
       }
     }
-    if (args.key === "language" && !["sw", "en"].includes(String((typeof value === "object" && value !== null ? (value as { language?: unknown }).language : undefined)))) throw new Error("Lugha lazima iwe sw au en.");
+    if (args.key === "language" && !["sw", "en"].includes(String((typeof value === "object" && value !== null ? (value as { language?: unknown }).language : undefined)))) throw new ConvexError("Lugha lazima iwe sw au en.");
     const rows = (await ctx.db.query("appSettings").withIndex("by_key", (q) => q.eq("key", args.key)).collect())
       .filter((r) => r.tenantId === scope.tenantId && r.branchId === scope.branchId);
     const doc = { value: JSON.stringify(value), updatedAt: new Date().toISOString(), updatedBy: user._id };
@@ -169,11 +169,11 @@ export const createPeriod = mutation({
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.periods");
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
-    if (!a.name.trim()) throw new Error("Jina la period linahitajika.");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(a.startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(a.endDate)) throw new Error("Tarehe si sahihi.");
-    if (a.endDate < a.startDate) throw new Error("Tarehe ya mwisho lazima iwe baada ya ya mwanzo.");
+    if (!a.name.trim()) throw new ConvexError("Jina la period linahitajika.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(a.startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(a.endDate)) throw new ConvexError("Tarehe si sahihi.");
+    if (a.endDate < a.startDate) throw new ConvexError("Tarehe ya mwisho lazima iwe baada ya ya mwanzo.");
     const overlap = (await scopedRows(ctx, user, "financialPeriods")).find((p) => a.startDate <= p.endDate && a.endDate >= p.startDate);
-    if (overlap) throw new Error(`Period inagongana na "${overlap.name}".`);
+    if (overlap) throw new ConvexError(`Period inagongana na "${overlap.name}".`);
     const id = await ctx.db.insert("financialPeriods", { ...scope, name: a.name.trim(), startDate: a.startDate, endDate: a.endDate, status: "open" });
     await logAudit(ctx, user, { action: "create_period", module: "maintenance", referenceId: String(id), details: a.name });
     return id;
@@ -186,7 +186,7 @@ export const generateYear = mutation({
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.periods");
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
-    if (a.year < 2000 || a.year > 2100 || a.startMonth < 1 || a.startMonth > 12) throw new Error("Mwaka au mwezi si sahihi.");
+    if (a.year < 2000 || a.year > 2100 || a.startMonth < 1 || a.startMonth > 12) throw new ConvexError("Mwaka au mwezi si sahihi.");
     const existing = (await scopedRows(ctx, user, "financialPeriods"));
     let created = 0;
     for (let i = 0; i < 12; i++) {
@@ -208,9 +208,9 @@ export const setPeriodStatus = mutation({
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.periods");
     const period = await ctx.db.get("financialPeriods", a.id);
-    if (!period) throw new Error("Period haipo.");
-    if (!isSuperAdmin(user) && (!user.tenantId || period.tenantId !== user.tenantId)) throw new Error("Forbidden: period nje ya ofisi yako.");
-    if (period.status === "locked" && !isSuperAdmin(user)) throw new Error("Period iliyofungwa (locked) inafunguliwa na Super Admin tu.");
+    if (!period) throw new ConvexError("Period haipo.");
+    if (!isSuperAdmin(user) && (!user.tenantId || period.tenantId !== user.tenantId)) throw new ConvexError("Forbidden: period nje ya ofisi yako.");
+    if (period.status === "locked" && !isSuperAdmin(user)) throw new ConvexError("Period iliyofungwa (locked) inafunguliwa na Super Admin tu.");
     await ctx.db.patch("financialPeriods", a.id, a.status === "open"
       ? { status: "open", closedBy: undefined, closedAt: undefined }
       : { status: a.status, closedBy: user._id, closedAt: new Date().toISOString() });
@@ -225,8 +225,8 @@ export const deletePeriod = mutation({
     const user = await requirePermission(ctx, "maintenance.periods");
     const period = await ctx.db.get("financialPeriods", a.id);
     if (!period) return false;
-    if (!isSuperAdmin(user) && (!user.tenantId || period.tenantId !== user.tenantId)) throw new Error("Forbidden: period nje ya ofisi yako.");
-    if (period.status !== "open") throw new Error("Futa period iliyo 'open' tu.");
+    if (!isSuperAdmin(user) && (!user.tenantId || period.tenantId !== user.tenantId)) throw new ConvexError("Forbidden: period nje ya ofisi yako.");
+    if (period.status !== "open") throw new ConvexError("Futa period iliyo 'open' tu.");
     await ctx.db.delete("financialPeriods", a.id);
     await logAudit(ctx, user, { action: "delete_period", module: "maintenance", details: period.name });
     return true;
@@ -270,11 +270,11 @@ export const saveRole = mutation({
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.roles");
     const name = normalizeRole(a.name);
-    if (!/^[a-z][a-z0-9_]{1,30}$/.test(name)) throw new Error("Jina la role: herufi ndogo/namba/underscore (2–31), likianza na herufi.");
-    if (["super_admin", "superadmin"].includes(name)) throw new Error("Role ya Super Admin imehifadhiwa na haiwezi kubadilishwa.");
-    if (!a.displayName.trim()) throw new Error("Display name inahitajika.");
+    if (!/^[a-z][a-z0-9_]{1,30}$/.test(name)) throw new ConvexError("Jina la role: herufi ndogo/namba/underscore (2–31), likianza na herufi.");
+    if (["super_admin", "superadmin"].includes(name)) throw new ConvexError("Role ya Super Admin imehifadhiwa na haiwezi kubadilishwa.");
+    if (!a.displayName.trim()) throw new ConvexError("Display name inahitajika.");
     const bad = a.permissions.filter((p) => !ALL_PERMISSION_KEYS.includes(p));
-    if (bad.length) throw new Error(`Permission zisizojulikana: ${bad.join(", ")}`);
+    if (bad.length) throw new ConvexError(`Permission zisizojulikana: ${bad.join(", ")}`);
     const permissions = [...new Set(a.permissions)];
     const existing = await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", name)).first();
     const isSystem = SYSTEM_ROLES.some((r) => r.name === name);
@@ -292,7 +292,7 @@ export const deleteRole = mutation({
     const user = await requirePermission(ctx, "maintenance.roles");
     const name = normalizeRole(a.name);
     const inUse = (await ctx.db.query("users").collect()).some((u) => u.tokenIdentifier === undefined && normalizeRole(u.role) === name);
-    if (inUse) throw new Error("Role hii inatumika na watumiaji. Wabadilishie role kwanza.");
+    if (inUse) throw new ConvexError("Role hii inatumika na watumiaji. Wabadilishie role kwanza.");
     const existing = await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", name)).first();
     if (!existing) return false;
     await ctx.db.delete("roles", existing._id); // for system roles this resets them to built-in defaults
@@ -308,14 +308,14 @@ export const deleteRole = mutation({
 function assertSuperAdminKeysUnchanged(actor: Parameters<typeof isSuperAdmin>[0], before: string[] | undefined, after: string[] | undefined) {
   if (isSuperAdmin(actor)) return;
   const only = (keys: string[] | undefined) => (keys ?? []).filter((k) => SUPER_ADMIN_ONLY_PERMISSIONS.includes(k)).sort().join(",");
-  if (only(before) !== only(after)) throw new Error("Ruhusa ya kubadili / kufuta stock inatolewa na kuondolewa na Super Admin pekee.");
+  if (only(before) !== only(after)) throw new ConvexError("Ruhusa ya kubadili / kufuta stock inatolewa na kuondolewa na Super Admin pekee.");
 }
 
 /** Keeps only permissions that may be given to a single user (unknown keys are refused, not silently dropped). */
 function cleanExtraPermissions(keys: string[]) {
   const ok = USER_GRANTABLE_PERMISSIONS.map((g) => g.key);
   const bad = keys.filter((k) => !ok.includes(k));
-  if (bad.length) throw new Error(`Ruhusa isiyojulikana kwa mtumiaji: ${bad.join(", ")}`);
+  if (bad.length) throw new ConvexError(`Ruhusa isiyojulikana kwa mtumiaji: ${bad.join(", ")}`);
   return [...new Set(keys)];
 }
 
@@ -421,7 +421,7 @@ export const assertPinFree = internalQuery({
   handler: async (ctx, a) => {
     const rows = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", a.lookup)).take(300);
     if (rows.some((u) => u.tenantId === a.tenantId && u.tokenIdentifier === undefined && u.isActive !== false && (!a.exceptUserId || u._id !== a.exceptUserId))) {
-      throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye biashara hii. Chagua PIN nyingine.");
+      throw new ConvexError("PIN hii tayari inatumika na mtu mwingine kwenye biashara hii. Chagua PIN nyingine.");
     }
     return true;
   },
@@ -455,7 +455,7 @@ const FLOATING_ROLES = ["super_admin", "superadmin", "admin", "administrator", "
 async function assertBranchesBelong(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, ids: Id<"branches">[]) {
   for (const id of ids) {
     const branch = await ctx.db.get("branches", id);
-    if (!branch || (tenantId && branch.tenantId !== tenantId)) throw new Error("Branch haihusiani na ofisi iliyochaguliwa.");
+    if (!branch || (tenantId && branch.tenantId !== tenantId)) throw new ConvexError("Branch haihusiani na ofisi iliyochaguliwa.");
   }
 }
 
@@ -473,33 +473,33 @@ async function assertDepartmentRules(
 ) {
   const limit = departmentLimit(actor);
   if (limit) {
-    if (existing && !insideLimit(departmentScope(existing), limit)) throw new Error("Akaunti yako imefungwa kwenye idara moja (au idara chache ulizopewa); huwezi kusimamia watumiaji wa idara nyingine.");
-    if (!insideLimit(next.scope, limit)) throw new Error("Unaweza kuweka watumiaji kwenye idara yako tu (idara ulizopewa).");
+    if (existing && !insideLimit(departmentScope(existing), limit)) throw new ConvexError("Akaunti yako imefungwa kwenye idara moja (au idara chache ulizopewa); huwezi kusimamia watumiaji wa idara nyingine.");
+    if (!insideLimit(next.scope, limit)) throw new ConvexError("Unaweza kuweka watumiaji kwenye idara yako tu (idara ulizopewa).");
   }
   if (!requireDepartment || next.scope || next.allDepartments || !next.tenantId) return;
   const role = normalizeRole(next.role);
   if (FLOATING_ROLES.includes(role) || (role && (await roleHasPermission(ctx, { role }, "system.manager")))) return;
   if ((await activeDepartments(ctx, next.tenantId)).length > 0) {
-    throw new Error("Biashara hii ina idara. Chagua idara za mtumiaji huyu (tiki moja au zaidi) au washa 'Idara zote'.");
+    throw new ConvexError("Biashara hii ina idara. Chagua idara za mtumiaji huyu (tiki moja au zaidi) au washa 'Idara zote'.");
   }
 }
 
 async function assertCanAssign(ctx: QueryCtx, actor: UserLike, target: { role?: string; tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, existing?: UserLike | null) {
   const role = target.role === undefined ? undefined : normalizeRole(target.role);
-  if (role && ["super_admin", "superadmin"].includes(role) && !isSuperAdmin(actor)) throw new Error("Super Admin pekee ndiye anaweza kutoa role ya Super Admin.");
-  if (existing && isSuperAdmin(existing) && !isSuperAdmin(actor)) throw new Error("Huwezi kubadilisha akaunti ya Super Admin.");
+  if (role && ["super_admin", "superadmin"].includes(role) && !isSuperAdmin(actor)) throw new ConvexError("Super Admin pekee ndiye anaweza kutoa role ya Super Admin.");
+  if (existing && isSuperAdmin(existing) && !isSuperAdmin(actor)) throw new ConvexError("Huwezi kubadilisha akaunti ya Super Admin.");
   if (role && !["super_admin", "superadmin"].includes(role)) {
     const known = SYSTEM_ROLES.some((r) => r.name === role) || (await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", role)).first());
-    if (!known) throw new Error(`Role "${role}" haipo.`);
+    if (!known) throw new ConvexError(`Role "${role}" haipo.`);
   }
   if (!isSuperAdmin(actor)) {
     const tenantId = target.tenantId ?? actor.tenantId;
-    if (!actor.tenantId || tenantId !== actor.tenantId) throw new Error("Unaweza kusimamia watumiaji wa ofisi yako tu.");
+    if (!actor.tenantId || tenantId !== actor.tenantId) throw new ConvexError("Unaweza kusimamia watumiaji wa ofisi yako tu.");
   }
   if (target.branchId) {
     const branch = await ctx.db.get("branches", target.branchId);
     const tenantId = target.tenantId ?? actor.tenantId;
-    if (!branch || (tenantId && branch.tenantId !== tenantId)) throw new Error("Branch haihusiani na ofisi iliyochaguliwa.");
+    if (!branch || (tenantId && branch.tenantId !== tenantId)) throw new ConvexError("Branch haihusiani na ofisi iliyochaguliwa.");
   }
 }
 
@@ -513,22 +513,22 @@ export const renameUsername = mutation({
   args: { userId: v.id("users"), newUsername: v.string() },
   handler: async (ctx, a): Promise<{ username: string }> => {
     const username = a.newUsername.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3–32, bila nafasi.");
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new ConvexError("Username: herufi ndogo/namba 3–32, bila nafasi.");
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { targetUserId: a.userId }); // active actor + maintenance.users + same business/department rules
     const target = await ctx.db.get("users", a.userId);
-    if (!target) throw new Error("Mtumiaji hapatikani.");
-    if (normalizeRole(target.role) === "super_admin" || normalizeRole(target.role) === "superadmin") throw new Error("Username ya Super Admin haibadilishwi hapa; inafungamana na SUPER_ADMIN_USERNAME kwenye Convex.");
+    if (!target) throw new ConvexError("Mtumiaji hapatikani.");
+    if (normalizeRole(target.role) === "super_admin" || normalizeRole(target.role) === "superadmin") throw new ConvexError("Username ya Super Admin haibadilishwi hapa; inafungamana na SUPER_ADMIN_USERNAME kwenye Convex.");
     if (target.username === username) return { username };
-    if (username === (process.env.SUPER_ADMIN_USERNAME ?? "").trim().toLowerCase()) throw new Error(`Username "${username}" imehifadhiwa kwa Super Admin.`);
+    if (username === (process.env.SUPER_ADMIN_USERNAME ?? "").trim().toLowerCase()) throw new ConvexError(`Username "${username}" imehifadhiwa kwa Super Admin.`);
     // Unique only inside the target's own business (a user with no business: global).
     const sameName = target.tenantId
       ? await ctx.db.query("users").withIndex("by_tenant_username", (q) => q.eq("tenantId", target.tenantId).eq("username", username)).first()
       : await ctx.db.query("users").withIndex("by_username", (q) => q.eq("username", username)).first();
-    if (sameName && sameName._id !== target._id) throw new Error(`Username "${username}" tayari inatumika ndani ya biashara hii. Chagua jina lingine.`);
+    if (sameName && sameName._id !== target._id) throw new ConvexError(`Username "${username}" tayari inatumika ndani ya biashara hii. Chagua jina lingine.`);
     const newEmail = target.tenantId ? scopedLoginEmail(username, target.tenantId) : `${username}@${LOGIN_DOMAIN}`;
-    if (await ctx.db.query("authAccounts").withIndex("providerAndAccountId", (q) => q.eq("provider", "password").eq("providerAccountId", newEmail)).first()) throw new Error(`Username "${username}" tayari inatumika. Chagua jina lingine.`);
+    if (await ctx.db.query("authAccounts").withIndex("providerAndAccountId", (q) => q.eq("provider", "password").eq("providerAccountId", newEmail)).first()) throw new ConvexError(`Username "${username}" tayari inatumika. Chagua jina lingine.`);
     const account = await ctx.db.query("authAccounts").withIndex("userIdAndProvider", (q) => q.eq("userId", a.userId).eq("provider", "password")).first();
-    if (!account) throw new Error("Akaunti hii haina login ya password; badilisha username haiwezekani bila kuiharibu.");
+    if (!account) throw new ConvexError("Akaunti hii haina login ya password; badilisha username haiwezekani bila kuiharibu.");
     const old = target.username;
     await ctx.db.patch("authAccounts", account._id, { providerAccountId: newEmail });
     await ctx.db.patch("users", a.userId, { username, email: newEmail, name: target.name === old ? username : target.name });
@@ -549,7 +549,7 @@ export const updateUser = mutation({
   handler: async (ctx, a) => {
     const actor = await requirePermission(ctx, "maintenance.users");
     const target = await ctx.db.get("users", a.userId);
-    if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
+    if (!target || target.tokenIdentifier !== undefined) throw new ConvexError("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target.tenantId, branchId: a.branchId }, target);
     const nextRole = a.role !== undefined ? a.role : target.role;
     const nextTenant = a.tenantId ?? target.tenantId;
@@ -566,10 +566,10 @@ export const updateUser = mutation({
     const nextScope = departmentScope(next);
     if (deptTouched) await assertBranchesBelong(ctx, nextTenant, [...(next.branchIds ?? []), ...(next.branchId ? [next.branchId] : [])]);
     if (String(actor._id) === String(target._id)) {
-      if (a.isActive === false) throw new Error("Huwezi kuzima akaunti yako mwenyewe.");
-      if (a.role !== undefined && normalizeRole(a.role) !== normalizeRole(target.role)) throw new Error("Huwezi kubadilisha role yako mwenyewe.");
+      if (a.isActive === false) throw new ConvexError("Huwezi kuzima akaunti yako mwenyewe.");
+      if (a.role !== undefined && normalizeRole(a.role) !== normalizeRole(target.role)) throw new ConvexError("Huwezi kubadilisha role yako mwenyewe.");
       // Otherwise a user tied to one department could free himself by choosing "Zote" on his own account.
-      if (deptTouched && (!sameScope(departmentScope(target), nextScope) || !!next.allDepartments !== !!target.allDepartments)) throw new Error("Huwezi kubadilisha idara ya akaunti yako mwenyewe.");
+      if (deptTouched && (!sameScope(departmentScope(target), nextScope) || !!next.allDepartments !== !!target.allDepartments)) throw new ConvexError("Huwezi kubadilisha idara ya akaunti yako mwenyewe.");
     }
     // Authority (own departments only) is always checked; "must have a department" only when role/department is being changed.
     if (!isSuperAdmin(target)) {
@@ -577,7 +577,7 @@ export const updateUser = mutation({
     }
     if (isSuperAdmin(target) && (a.isActive === false || (a.role !== undefined && !isSuperAdmin({ role: a.role })))) {
       const others = (await ctx.db.query("users").collect()).filter((u) => u._id !== target._id && u.tokenIdentifier === undefined && isSuperAdmin(u) && u.isActive !== false);
-      if (!others.length) throw new Error("Lazima abaki angalau Super Admin mmoja aliye active.");
+      if (!others.length) throw new ConvexError("Lazima abaki angalau Super Admin mmoja aliye active.");
     }
     const patch: Record<string, unknown> = {};
     if (a.name !== undefined) patch.name = a.name.trim();
@@ -586,13 +586,13 @@ export const updateUser = mutation({
     if (deptTouched) { patch.branchId = next.branchId; patch.branchIds = next.branchIds; patch.allDepartments = next.allDepartments; patch.branchPicked = next.branchPicked; }
     if (a.isActive === true && target.isActive === false && target.pinLookup) {
       const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", target.pinLookup)).take(300);
-      if (owners.some((u) => u._id !== target._id && u.tenantId === target.tenantId && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN ya mtumiaji huyu sasa inatumiwa na mtu mwingine. Mwekee PIN mpya kabla ya kumwasha.");
+      if (owners.some((u) => u._id !== target._id && u.tenantId === target.tenantId && u.tokenIdentifier === undefined && u.isActive !== false)) throw new ConvexError("PIN ya mtumiaji huyu sasa inatumiwa na mtu mwingine. Mwekee PIN mpya kabla ya kumwasha.");
     }
     if (a.isActive !== undefined) patch.isActive = a.isActive;
     if (a.requirePasswordChange !== undefined) patch.requirePasswordChange = a.requirePasswordChange;
     if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined || a.extraPermissions !== undefined) {
-      if (String(actor._id) === String(target._id)) throw new Error("Huwezi kubadilisha menyu au ruhusa za data za akaunti yako mwenyewe.");
-      if (isSuperAdmin(target)) throw new Error("Huwezi kubadilisha menyu ya Super Admin.");
+      if (String(actor._id) === String(target._id)) throw new ConvexError("Huwezi kubadilisha menyu au ruhusa za data za akaunti yako mwenyewe.");
+      if (isSuperAdmin(target)) throw new ConvexError("Huwezi kubadilisha menyu ya Super Admin.");
     }
     if (a.clearMenuAccess) patch.menuAccess = undefined;
     else if (a.menuAccess !== undefined) patch.menuAccess = await allowedMenu(ctx, a.tenantId ?? target.tenantId, a.menuAccess);
@@ -612,15 +612,15 @@ export const setStaffCode = mutation({
     try { // plain Errors are hidden in production ("Server Error"): surfaceError keeps the real reason (e.g. "Staff code hii inatumika...") visible
     const actor = await requirePermission(ctx, "maintenance.users");
     const target = await ctx.db.get("users", a.userId);
-    if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
-    if (!isSuperAdmin(actor) && (!actor.tenantId || target.tenantId !== actor.tenantId)) throw new Error("Mtumiaji hapatikani.");
+    if (!target || target.tokenIdentifier !== undefined) throw new ConvexError("Mtumiaji hapatikani.");
+    if (!isSuperAdmin(actor) && (!actor.tenantId || target.tenantId !== actor.tenantId)) throw new ConvexError("Mtumiaji hapatikani.");
     const code = a.staffCode.trim().toUpperCase();
-    if (code && !/^[A-Z0-9_-]{2,20}$/.test(code)) throw new Error("Staff code: herufi/namba 2-20 (bila nafasi).");
+    if (code && !/^[A-Z0-9_-]{2,20}$/.test(code)) throw new ConvexError("Staff code: herufi/namba 2-20 (bila nafasi).");
     if (code && target.tenantId) {
       const tenantId = target.tenantId;
       // by_scope is (tenantId, branchId): a prefix query on tenantId alone returns EVERY department of the business, so the code is unique business-wide
       const sameTenant = await ctx.db.query("users").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect();
-      if (sameTenant.some((u) => u._id !== target._id && (u.staffCode ?? "").toUpperCase() === code)) throw new Error("Staff code hii inatumika na mtu mwingine.");
+      if (sameTenant.some((u) => u._id !== target._id && (u.staffCode ?? "").toUpperCase() === code)) throw new ConvexError("Staff code hii inatumika na mtu mwingine.");
     }
     await ctx.db.patch("users", a.userId, { staffCode: code || undefined });
     await logAudit(ctx, actor, { action: "set_staff_code", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${target.username ?? target.name}: ${code ? "staff code imewekwa" : "staff code imeondolewa"}` });
@@ -633,13 +633,13 @@ export const saveStaffPin = internalMutation({
   args: { userId: v.id("users"), actorId: v.id("users"), pinHash: v.optional(v.string()), pinLookup: v.optional(v.string()), enabled: v.boolean() },
   handler: async (ctx, a) => {
     const target = await ctx.db.get("users", a.userId);
-    if (!target || target.tokenIdentifier !== undefined) throw new Error("Mtumiaji hapatikani.");
-    if (a.enabled && !(a.pinHash ?? target.pinHash)) throw new Error("Weka PIN ya tarakimu 4 hadi 6 kabla ya kuwasha Staff PIN.");
+    if (!target || target.tokenIdentifier !== undefined) throw new ConvexError("Mtumiaji hapatikani.");
+    if (a.enabled && !(a.pinHash ?? target.pinHash)) throw new ConvexError("Weka PIN ya tarakimu 4 hadi 6 kabla ya kuwasha Staff PIN.");
     // One PIN = one person INSIDE a business (sign-in asks for the business code + PIN). Other businesses may use the same PIN.
     const lookup = a.pinLookup ?? target.pinLookup;
     if (lookup) {
       const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", lookup)).take(300);
-      if (owners.some((u) => u._id !== target._id && u.tenantId === target.tenantId && u.tokenIdentifier === undefined && u.isActive !== false)) throw new Error("PIN hii tayari inatumika na mtu mwingine kwenye biashara hii. Chagua PIN nyingine.");
+      if (owners.some((u) => u._id !== target._id && u.tenantId === target.tenantId && u.tokenIdentifier === undefined && u.isActive !== false)) throw new ConvexError("PIN hii tayari inatumika na mtu mwingine kwenye biashara hii. Chagua PIN nyingine.");
     }
     await ctx.db.patch("users", a.userId, {
       ...(a.pinHash ? { pinHash: a.pinHash } : {}),
@@ -657,7 +657,7 @@ export const saveStaffPin = internalMutation({
 export const setStaffPin = action({
   args: { userId: v.id("users"), pin: v.optional(v.string()), enabled: v.boolean() },
   handler: async (ctx, a) => {
-    if (a.pin !== undefined && !PIN_PATTERN.test(a.pin)) throw new Error("PIN lazima iwe tarakimu 4 hadi 6.");
+    if (a.pin !== undefined && !PIN_PATTERN.test(a.pin)) throw new ConvexError("PIN lazima iwe tarakimu 4 hadi 6.");
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { targetUserId: a.userId });
     const pinHash = a.pin === undefined ? undefined : await hashStaffPin(a.pin);
     const pinLookup = a.pin === undefined ? undefined : await pinLookupKey(a.pin);
@@ -673,7 +673,7 @@ export const authorizeUserAdmin = internalQuery({
     const actor = await requirePermission(ctx, "maintenance.users");
     if (!a.targetUserId) assertSuperAdminKeysUnchanged(actor, [], a.extraPermissions);
     const target = a.targetUserId ? await ctx.db.get("users", a.targetUserId) : undefined;
-    if (a.targetUserId && (!target || target.tokenIdentifier !== undefined)) throw new Error("Mtumiaji hapatikani.");
+    if (a.targetUserId && (!target || target.tokenIdentifier !== undefined)) throw new ConvexError("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target?.tenantId, branchId: a.branchId }, target);
     if (target) await assertDepartmentRules(ctx, actor, { tenantId: target.tenantId, role: target.role, scope: departmentScope(target) }, target, false); // e.g. password reset
     else if (!["super_admin", "superadmin"].includes(normalizeRole(a.role))) {
@@ -746,32 +746,32 @@ export const createUser = action({
   },
   handler: async (ctx, a): Promise<string> => {
     const username = a.username.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new Error("Username: herufi ndogo/namba 3–32, bila nafasi.");
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) throw new ConvexError("Username: herufi ndogo/namba 3–32, bila nafasi.");
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { role: a.role, tenantId: a.tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, extraPermissions: a.extraPermissions });
     const pinOnlyRole = ["waiter", "waitress"].includes(normalizeRole(a.role));
-    if (a.pin !== undefined && a.pin !== "" && !PIN_PATTERN.test(a.pin)) throw new Error("PIN lazima iwe tarakimu 4 hadi 6.");
-    if (pinOnlyRole && !a.pin) throw new Error("Mhudumu husajiliwa kwa PIN: weka PIN ya tarakimu 4 hadi 6.");
+    if (a.pin !== undefined && a.pin !== "" && !PIN_PATTERN.test(a.pin)) throw new ConvexError("PIN lazima iwe tarakimu 4 hadi 6.");
+    if (pinOnlyRole && !a.pin) throw new ConvexError("Mhudumu husajiliwa kwa PIN: weka PIN ya tarakimu 4 hadi 6.");
     const newPin = a.pin ? a.pin : undefined;
     const newPinLookup = newPin ? await pinLookupKey(newPin) : undefined;
     // A PIN-only person has no password to remember: the account gets a long random one nobody knows (an administrator can still reset it).
     const password = pinOnlyRole && !a.password ? `${crypto.randomUUID()}${crypto.randomUUID()}` : (a.password ?? "");
-    if (!pinOnlyRole && password.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
+    if (!pinOnlyRole && password.length < auth.minLength) throw new ConvexError(`Password iwe angalau herufi ${auth.minLength}.`);
     const tenantId = a.tenantId ?? auth.actorTenantId;
-    if (!["super_admin", "superadmin"].includes(normalizeRole(a.role)) && !tenantId) throw new Error("Chagua ofisi kwa mtumiaji huyu.");
+    if (!["super_admin", "superadmin"].includes(normalizeRole(a.role)) && !tenantId) throw new ConvexError("Chagua ofisi kwa mtumiaji huyu.");
     if (newPinLookup) await ctx.runQuery(internal.maintenance.assertPinFree, { lookup: newPinLookup, tenantId }); // refuse BEFORE any account is created (same business only)
     // A business user gets a business-scoped login identity; only a user with no business (Super Admin) uses the plain global one.
     const email = tenantId ? scopedLoginEmail(username, tenantId) : `${username}@${LOGIN_DOMAIN}`;
-    if (username === (process.env.SUPER_ADMIN_USERNAME ?? "").trim().toLowerCase()) throw new Error(`Username "${username}" imehifadhiwa kwa Super Admin. Chagua jina lingine.`);
+    if (username === (process.env.SUPER_ADMIN_USERNAME ?? "").trim().toLowerCase()) throw new ConvexError(`Username "${username}" imehifadhiwa kwa Super Admin. Chagua jina lingine.`);
     const status = await ctx.runQuery(internal.maintenance.usernameStatus, { username, tenantId, email });
     if (status.taken) {
       const hint = status.suggestions.length ? ` Jaribu: ${status.suggestions.join(", ")}.` : "";
-      throw new Error(`Username "${username}" tayari inatumika ndani ya biashara hii (jina la mtumiaji ni la kipekee ndani ya biashara moja; biashara nyingine zinaweza kutumia jina hilo hilo).${hint}`);
+      throw new ConvexError(`Username "${username}" tayari inatumika ndani ya biashara hii (jina la mtumiaji ni la kipekee ndani ya biashara moja; biashara nyingine zinaweza kutumia jina hilo hilo).${hint}`);
     }
     let userId: Id<"users">;
     if (status.orphanId) {
       // An earlier attempt created the login but never finished: complete it with the new password instead of failing forever.
       try { await modifyAccountCredentials(ctx, { provider: "password", account: { id: status.orphanEmail ?? email, secret: password } }); }
-      catch (e) { const err = new Error(`Username "${username}" imeshatumika bila kukamilika. Tumia jina lingine. Sababu: ${String((e as Error)?.message ?? e)}`) as Error & { cause?: unknown }; err.cause = e; throw err; }
+      catch (e) { throw new ConvexError(`Username "${username}" imeshatumika bila kukamilika. Tumia jina lingine. Sababu: ${String((e as Error)?.message ?? e)}`); }
       userId = status.orphanId;
     } else {
       try {
@@ -800,9 +800,9 @@ export const resetUserPassword = action({
   args: { userId: v.id("users"), newPassword: v.string() },
   handler: async (ctx, a) => {
     const auth = await ctx.runQuery(internal.maintenance.authorizeUserAdmin, { targetUserId: a.userId });
-    if (a.newPassword.length < auth.minLength) throw new Error(`Password iwe angalau herufi ${auth.minLength}.`);
+    if (a.newPassword.length < auth.minLength) throw new ConvexError(`Password iwe angalau herufi ${auth.minLength}.`);
     const email = auth.email ?? (auth.username ? `${auth.username}@${LOGIN_DOMAIN}` : undefined);
-    if (!email) throw new Error("Mtumiaji huyu hana account ya password.");
+    if (!email) throw new ConvexError("Mtumiaji huyu hana account ya password.");
     await modifyAccountCredentials(ctx, { provider: "password", account: { id: email, secret: a.newPassword } });
     await invalidateSessions(ctx, { userId: a.userId });
     await ctx.runMutation(internal.maintenance.logUserEvent, { actorId: auth.actorId, action: "reset_password", details: auth.username ?? email });
@@ -814,12 +814,12 @@ export const changeOwnPassword = action({
   args: { currentPassword: v.string(), newPassword: v.string() },
   handler: async (ctx, a) => {
     const me = await ctx.runQuery(internal.maintenance.whoAmI, {});
-    if (a.newPassword.length < me.minLength) throw new Error(`Password mpya iwe angalau herufi ${me.minLength}.`);
-    if (a.newPassword === a.currentPassword) throw new Error("Password mpya lazima itofautiane na ya sasa.");
+    if (a.newPassword.length < me.minLength) throw new ConvexError(`Password mpya iwe angalau herufi ${me.minLength}.`);
+    if (a.newPassword === a.currentPassword) throw new ConvexError("Password mpya lazima itofautiane na ya sasa.");
     try {
       await retrieveAccount(ctx, { provider: "password", account: { id: me.email, secret: a.currentPassword } });
     } catch {
-      throw new Error("Password ya sasa si sahihi.");
+      throw new ConvexError("Password ya sasa si sahihi.");
     }
     await modifyAccountCredentials(ctx, { provider: "password", account: { id: me.email, secret: a.newPassword } });
     // Anyone else holding the old password (other devices / browsers) is signed out; this session stays.
@@ -837,7 +837,7 @@ export const whoAmI = internalQuery({
     const sessionId = String(identity?.subject ?? "").split("|")[1];
     const policy = await securityPolicy(ctx, user);
     const email = user.email ?? (user.username ? `${user.username}@${LOGIN_DOMAIN}` : undefined);
-    if (!email) throw new Error("Akaunti haina login ya password.");
+    if (!email) throw new ConvexError("Akaunti haina login ya password.");
     return { userId: user._id, email, sessionId: sessionId || undefined, minLength: policy.minPasswordLength as number };
   },
 });
@@ -879,7 +879,7 @@ export const BACKUP_TABLES = [
   "purchases", "purchaseLines", "purchaseOrders", "purchaseOrderLines", "goodsReceivedNotes", "grnLines",
   "supplierPayments", "purchaseReturns", "purchaseReturnLines", "clients", "invoices", "invoiceLines",
   "customerPayments", "salesReturns", "stockMovements", "stockAdjustments", "employees", "attendance",
-  "payrollPeriods", "payrollRecords", "accounts", "journalEntries", "journalLines", "expenses", "auditLogs",
+  "workSchedules", "offDays", "attendanceRules", "payrollPeriods", "payrollRecords", "accounts", "journalEntries", "journalLines", "expenses", "auditLogs",
 ] as const;
 
 export const backupTables = query({
@@ -892,7 +892,7 @@ export const exportTable = query({
   args: { table: v.string(), cursor: v.union(v.string(), v.null()) },
   handler: async (ctx, a) => {
     await requireSuperAdminUser(ctx);
-    if (!(BACKUP_TABLES as readonly string[]).includes(a.table)) throw new Error("Table hairuhusiwi.");
+    if (!(BACKUP_TABLES as readonly string[]).includes(a.table)) throw new ConvexError("Table hairuhusiwi.");
     const page = await dynamicDb(ctx.db).query(a.table).paginate({ numItems: 400, cursor: a.cursor });
     return { rows: page.page, isDone: page.isDone, cursor: page.continueCursor };
   },
@@ -951,7 +951,7 @@ export const assignUnscoped = mutation({
   handler: async (ctx) => {
     const user = await requireSuperAdminUser(ctx);
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
-    if (!scope.tenantId) throw new Error("Unda ofisi kwanza (Super Admin > Ofisi) kisha jaribu tena.");
+    if (!scope.tenantId) throw new ConvexError("Unda ofisi kwanza (Super Admin > Ofisi) kisha jaribu tena.");
     let updated = 0;
     for (const t of SCOPED_TABLES) {
       if (updated >= 400) break;
@@ -971,7 +971,7 @@ export const purgeAuditLogs = mutation({
   args: { olderThanDays: v.number() },
   handler: async (ctx, a) => {
     const user = await requireSuperAdminUser(ctx);
-    if (!(a.olderThanDays >= 30)) throw new Error("Futa logs zilizo za zaidi ya siku 30 tu.");
+    if (!(a.olderThanDays >= 30)) throw new ConvexError("Futa logs zilizo za zaidi ya siku 30 tu.");
     const cutoff = new Date(Date.now() - a.olderThanDays * 86400000).toISOString();
     const old = await ctx.db.query("auditLogs").withIndex("by_timestamp", (q) => q.lt("timestamp", cutoff)).take(500);
     for (const r of old) await ctx.db.delete("auditLogs", r._id);
@@ -1071,12 +1071,12 @@ export const authorizeClear = internalQuery({
   args: { categories: v.array(v.string()) },
   handler: async (ctx, a) => {
     const user = await requireSuperAdminUser(ctx);
-    if (!user.tenantId) throw new Error("Chagua biashara kwanza kabla ya kufuta data.");
-    if (!a.categories.length) throw new Error("Chagua angalau kundi moja la data.");
+    if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza kabla ya kufuta data.");
+    if (!a.categories.length) throw new ConvexError("Chagua angalau kundi moja la data.");
     const unknown = a.categories.filter((c) => !CLEAR_CATEGORIES[c]);
-    if (unknown.length) throw new Error(`Kundi lisilojulikana: ${unknown.join(", ")}`);
+    if (unknown.length) throw new ConvexError(`Kundi lisilojulikana: ${unknown.join(", ")}`);
     const email = user.email ?? (user.username ? `${user.username}@${LOGIN_DOMAIN}` : undefined);
-    if (!email) throw new Error("Akaunti haina login ya password.");
+    if (!email) throw new ConvexError("Akaunti haina login ya password.");
     const tenant = await ctx.db.get("tenants", user.tenantId);
     return { actorId: user._id, tenantId: user.tenantId, email, tenantName: tenant?.name ?? "" };
   },
@@ -1087,9 +1087,9 @@ export const clearStepBatch = internalMutation({
   args: { actorId: v.id("users"), tenantId: v.id("tenants"), category: v.string(), step: v.number(), restoreStock: v.optional(v.boolean()) },
   handler: async (ctx, a) => {
     const actor = await ctx.db.get("users", a.actorId);
-    if (!actor || !isSuperAdmin(actor) || actor.isActive === false) throw new Error("Forbidden: Super Admin only");
+    if (!actor || !isSuperAdmin(actor) || actor.isActive === false) throw new ConvexError("Forbidden: Super Admin only");
     const step = CLEAR_CATEGORIES[a.category]?.steps[a.step];
-    if (!step) throw new Error("Hatua haipo.");
+    if (!step) throw new ConvexError("Hatua haipo.");
     const db = dynamicDb(ctx.db);
     let deleted = 0;
 
@@ -1199,12 +1199,12 @@ export const clearData = action({
   args: { categories: v.array(v.string()), password: v.string() },
   handler: async (ctx, a): Promise<{ deleted: number }> => {
     const auth = await ctx.runQuery(internal.maintenance.authorizeClear, { categories: a.categories });
-    if (!a.password) throw new Error("Weka password ya Super Admin.");
+    if (!a.password) throw new ConvexError("Weka password ya Super Admin.");
     try {
       await retrieveAccount(ctx, { provider: "password", account: { id: auth.email, secret: a.password } });
     } catch {
       await ctx.runMutation(internal.maintenance.logClearFailure, { actorId: auth.actorId, details: "Password ya Super Admin si sahihi" });
-      throw new Error("Password ya Super Admin si sahihi.");
+      throw new ConvexError("Password ya Super Admin si sahihi.");
     }
     // Audit logs go last so the record of this very action is kept.
     const ordered = [...a.categories].sort((x, y) => Number(x === "auditLogs") - Number(y === "auditLogs"));

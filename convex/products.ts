@@ -1,5 +1,6 @@
+import { ingredientOnlyIds, onSalesMenu } from "./menuVisibility";
 import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { requireActiveUser, requireManagerOrPermission, requirePermission, roleHasPermission, canAccessRecord, isSuperAdmin, resolveWriteScope, scopedRows } from "./access";
@@ -54,7 +55,8 @@ export const listActive = query({
     // "autoProduced": made from its recipe at the moment of sale, so low / zero stock does not stop selling it.
     const auto = new Set<string>();
     if (user.tenantId) for (const r of await ctx.db.query("productionRecipes").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect()) if (r.active && r.autoOnSale === true) auto.add(String(r.outputProductId));
-    return active.map((p) => ({ ...p, autoProduced: auto.has(String(p._id)) }));
+    const hiddenByDefault = await ingredientOnlyIds(ctx, user.tenantId);
+    return active.map((p) => ({ ...p, autoProduced: auto.has(String(p._id)), onMenu: onSalesMenu(p, hiddenByDefault) }));
   },
 });
 
@@ -87,6 +89,7 @@ export const upsert = mutation({
     trackSerialNumbers: v.optional(v.boolean()),
     trackBatchNumbers: v.optional(v.boolean()),
     trackExpiry: v.optional(v.boolean()),
+    showInSales: v.optional(v.boolean()),
     isActive: v.boolean(),
   },
   handler: async (ctx, args) => {
@@ -97,31 +100,31 @@ export const upsert = mutation({
     const writeScope: Scope = { tenantId: scope.tenantId, branchId: scope.branchId };
     // When editing, duplicates are checked inside the record's own scope (a business-wide product stays business-wide).
     const editing = args.id ? await ctx.db.get("products", args.id) : null;
-    if (args.id && (!editing || !canEditCatalogItem(user, editing))) throw new Error("Forbidden: record is outside your office/branch");
+    if (args.id && (!editing || !canEditCatalogItem(user, editing))) throw new ConvexError("Forbidden: record is outside your office/branch");
     const duplicateScope: Scope = editing ? { tenantId: editing.tenantId, branchId: editing.branchId } : writeScope;
 
     const { id, openingQty, openingCost, ...data } = args;
     const itemCode = data.itemCode.trim();
     const name = data.name.trim();
     const barcode = data.barcode?.trim() || undefined;
-    if (!itemCode || !name) throw new Error("Item code na jina la bidhaa vinahitajika.");
-    if (!Number.isFinite(data.sellingPrice) || data.sellingPrice < 0) throw new Error("Bei ya kuuzia si sahihi.");
-    for (const n of [data.minStockLevel, data.reorderLevel]) if (n !== undefined && (!Number.isFinite(n) || n < 0)) throw new Error("Reorder/minimum level si sahihi.");
+    if (!itemCode || !name) throw new ConvexError("Item code na jina la bidhaa vinahitajika.");
+    if (!Number.isFinite(data.sellingPrice) || data.sellingPrice < 0) throw new ConvexError("Bei ya kuuzia si sahihi.");
+    for (const n of [data.minStockLevel, data.reorderLevel]) if (n !== undefined && (!Number.isFinite(n) || n < 0)) throw new ConvexError("Reorder/minimum level si sahihi.");
     const clean = { ...data, itemCode, name, barcode };
 
     // Duplicate checks are limited to the user's own office/branch.
     const sameCode = (await ctx.db.query("products").withIndex("by_itemCode", (q) => q.eq("itemCode", itemCode)).collect())
       .filter((p) => p.tenantId === duplicateScope.tenantId && p.branchId === duplicateScope.branchId && p._id !== id);
-    if (sameCode.length) throw new Error(`Item code ${itemCode} tayari ipo.`);
+    if (sameCode.length) throw new ConvexError(`Item code ${itemCode} tayari ipo.`);
     if (barcode) {
       const sameBarcode = (await ctx.db.query("products").withIndex("by_barcode", (q) => q.eq("barcode", barcode)).collect())
         .filter((p) => p.tenantId === duplicateScope.tenantId && p.branchId === duplicateScope.branchId && p._id !== id);
-      if (sameBarcode.length) throw new Error(`Barcode ${barcode} tayari inatumika na bidhaa nyingine.`);
+      if (sameBarcode.length) throw new ConvexError(`Barcode ${barcode} tayari inatumika na bidhaa nyingine.`);
     }
 
     if (id) {
       const existingRecord = editing;
-      if (!existingRecord) throw new Error("Forbidden: record is outside your office/branch");
+      if (!existingRecord) throw new ConvexError("Forbidden: record is outside your office/branch");
       await ctx.db.patch("products", id, clean); // never touches currentQty / openingQty / cost
       const changes: string[] = [];
       if (existingRecord.sellingPrice !== clean.sellingPrice) changes.push(`bei ${existingRecord.sellingPrice} -> ${clean.sellingPrice}`);
@@ -133,8 +136,8 @@ export const upsert = mutation({
 
     const qty = openingQty ?? 0;
     const cost = openingCost ?? 0;
-    if (!Number.isFinite(qty) || qty < 0) throw new Error("Opening quantity si sahihi.");
-    if (!Number.isFinite(cost) || cost < 0) throw new Error("Opening cost si sahihi.");
+    if (!Number.isFinite(qty) || qty < 0) throw new ConvexError("Opening quantity si sahihi.");
+    if (!Number.isFinite(cost) || cost < 0) throw new ConvexError("Opening cost si sahihi.");
 
     const productId = await ctx.db.insert("products", {
       ...clean,
@@ -183,7 +186,7 @@ export const upsertGroup = mutation({
     const { id, ...data } = args;
     if (id) {
       const existingRecord = await ctx.db.get("productGroups", id);
-      if (!canEditCatalogItem(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
+      if (!canEditCatalogItem(user, existingRecord)) throw new ConvexError("Forbidden: record is outside your office/branch");
       await ctx.db.patch("productGroups", id, data);
       return id;
     }
@@ -213,7 +216,7 @@ export const upsertUnit = mutation({
     const { id, ...data } = args;
     if (id) {
       const existingRecord = await ctx.db.get("unitsOfMeasure", id);
-      if (!canEditCatalogItem(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
+      if (!canEditCatalogItem(user, existingRecord)) throw new ConvexError("Forbidden: record is outside your office/branch");
       await ctx.db.patch("unitsOfMeasure", id, data);
       return id;
     }
@@ -247,9 +250,9 @@ export const importBatch = mutation({
   args: { rows: v.array(importRow), dryRun: v.boolean(), updateExisting: v.boolean() },
   handler: async (ctx, args) => {
     const user = await requireManagerOrPermission(ctx, "stock.manage");
-    if (args.updateExisting && !(await roleHasPermission(ctx, user, "stock.adjust"))) throw new Error("Kuboresha bidhaa zilizopo kunahitaji ruhusa ya kubadili / kufuta stock (inatolewa na Super Admin). Ingiza bidhaa mpya tu.");
+    if (args.updateExisting && !(await roleHasPermission(ctx, user, "stock.adjust"))) throw new ConvexError("Kuboresha bidhaa zilizopo kunahitaji ruhusa ya kubadili / kufuta stock (inatolewa na Super Admin). Ingiza bidhaa mpya tu.");
     const scope = await resolveWriteScope(ctx, user);
-    if (args.rows.length > 400) throw new Error("Pakia hadi bidhaa 400 kwa mara moja.");
+    if (args.rows.length > 400) throw new ConvexError("Pakia hadi bidhaa 400 kwa mara moja.");
     // Read only THIS business (and department) through the by_scope index - never every business's products.
     const inScope = (r: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }) => r.tenantId === scope.tenantId && r.branchId === scope.branchId;
     const products = (await ctx.db.query("products").withIndex("by_scope", (q) => (scope.branchId ? q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId) : q.eq("tenantId", scope.tenantId))).collect()).filter(inScope);

@@ -1,6 +1,6 @@
 # SmartHubPOS
 
-SmartHubPOS POS and business management application. See `REMEDIATION_REPORT_SW.md` for the source-review findings, changes made, and remaining release blockers. See `docs/MULTI_OFFICE_IMPLEMENTATION.md` for the current multi-office implementation notes.
+SmartHubPOS POS and business management application. See `docs/MULTI_OFFICE_IMPLEMENTATION.md` for the current multi-office implementation notes.
 
 ## Development
 
@@ -32,7 +32,7 @@ npx tsc -b ; npm run lint ; npm test ; npm run build
 - `docs/BACKUP_RECOVERY.md` - backup / restore procedure (documented, not yet drilled on production).
 - `docs/PRINTING.md` - paper sizes, auto-print, QZ Tray notes.
 
-Do not use with real financial or customer data until the checklist in `REMEDIATION_REPORT_SW.md` and the "Known limits" in `docs/MIGRATION_NOTES.md` have been reviewed and a dev-deployment test has passed. Offline mode is intentionally not implemented.
+Do not use with real financial or customer data until the "Known limits" in `docs/MIGRATION_NOTES.md` have been reviewed and a dev-deployment test has passed. Offline mode is intentionally not implemented.
 
 
 ## Initial administrator provisioning (username/password)
@@ -47,7 +47,7 @@ Replace `your-admin-username` with the username you choose. The initial sign-up 
 
 ## Tenant/branch data scope
 
-New product, product-group, unit, client, supplier, invoice, purchase and selected operational records support optional tenant and branch ownership fields. Product/client/supplier reads and updates enforce server-side ownership for assigned users. Legacy records without ownership fields are intentionally hidden from non-Super-Admin users rather than being shared implicitly. The full application still requires additional tenant/branch enforcement across every transaction table and workflow before production use; see `REMEDIATION_REPORT_SW.md`.
+New product, product-group, unit, client, supplier, invoice, purchase and selected operational records support optional tenant and branch ownership fields. Product/client/supplier reads and updates enforce server-side ownership for assigned users. Legacy records without ownership fields are intentionally hidden from non-Super-Admin users rather than being shared implicitly. The full application still requires additional tenant/branch enforcement across every transaction table and workflow before production use.
 
 ## Automatic accounting integration (phase update)
 

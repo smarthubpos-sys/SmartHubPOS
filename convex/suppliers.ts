@@ -1,5 +1,5 @@
 import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { requireActiveUser, requirePermission, canAccessBusinessRecord, filterBusiness, resolveWriteScope, logAudit, businessRows, isSuperAdmin } from "./access";
 
 /**
@@ -60,7 +60,7 @@ export const upsert = mutation({
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
     const { id, ...rest } = args;
     const name = rest.name.trim();
-    if (!name) throw new Error("Weka jina la supplier.");
+    if (!name) throw new ConvexError("Weka jina la supplier.");
     const tenantId = scope.tenantId;
     const sameBusiness = tenantId
       ? await ctx.db.query("suppliers").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect()
@@ -68,11 +68,11 @@ export const upsert = mutation({
     // A blank code is filled in automatically (SUP-0001, SUP-0002, ...).
     const code = rest.code.trim() || nextCode(sameBusiness.map((s) => s.code));
     const clash = sameBusiness.find((s) => s.code.trim().toLowerCase() === code.toLowerCase() && s._id !== id);
-    if (clash) throw new Error(`Supplier code ${code} tayari inatumika na ${clash.name}. Tumia code nyingine au iache wazi ijazwe yenyewe.`);
+    if (clash) throw new ConvexError(`Supplier code ${code} tayari inatumika na ${clash.name}. Tumia code nyingine au iache wazi ijazwe yenyewe.`);
     const data = { ...rest, name, code };
     if (id) {
       const existingRecord = await ctx.db.get("suppliers", id);
-      if (!canAccessBusinessRecord(user, existingRecord)) throw new Error("Forbidden: record is outside your office/branch");
+      if (!canAccessBusinessRecord(user, existingRecord)) throw new ConvexError("Forbidden: record is outside your office/branch");
       await ctx.db.patch("suppliers", id, data);
       await logAudit(ctx, user, { action: "update_supplier", module: "purchasing", referenceId: String(id), referenceType: "supplier", details: `${data.code} ${data.name}` });
       return id;
@@ -99,7 +99,7 @@ export const adoptUnassigned = mutation({
   handler: async (ctx) => {
     const user = await requirePermission(ctx, "suppliers.manage");
     const tenantId = user.tenantId;
-    if (!isSuperAdmin(user) || !tenantId) throw new Error("Super Admin achague biashara kwanza.");
+    if (!isSuperAdmin(user) || !tenantId) throw new ConvexError("Super Admin achague biashara kwanza.");
     const orphans = await ctx.db.query("suppliers").withIndex("by_scope", (q) => q.eq("tenantId", undefined)).take(500);
     const taken = new Set((await ctx.db.query("suppliers").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect()).map((s) => s.code.trim().toLowerCase()));
     for (const s of orphans) {

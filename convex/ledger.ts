@@ -1,3 +1,4 @@
+import { ConvexError } from "convex/values";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 /** Shared idempotent ledger posting helpers for business workflows. */
@@ -54,7 +55,7 @@ export async function assertPeriodOpen(ctx: MutationCtx, scope: Scope, date: str
   if (!scope?.tenantId || !date) return;
   const periods = await ctx.db.query("financialPeriods").withIndex("by_scope", (q) => q.eq("tenantId", scope.tenantId)).collect();
   const shut = periods.find((p) => p.status !== "open" && p.startDate <= date && date <= p.endDate && (!p.branchId || p.branchId === scope.branchId));
-  if (shut) throw new Error(`Kipindi cha hesabu "${shut.name}" kimefungwa (${shut.startDate} hadi ${shut.endDate}); huwezi kuweka miamala ya tarehe ${date}. Mwombe meneja afungue kipindi kwanza.`);
+  if (shut) throw new ConvexError(`Kipindi cha hesabu "${shut.name}" kimefungwa (${shut.startDate} hadi ${shut.endDate}); huwezi kuweka miamala ya tarehe ${date}. Mwombe meneja afungue kipindi kwanza.`);
 }
 
 export async function postSystemJournal(ctx: MutationCtx, input: { scope: Scope; userId: Id<"users">; date: string; reference: string; description: string; sourceType: string; sourceId: string; lines: Array<{ accountId: Id<"accounts">; debit: number; credit: number; description?: string }> }) {
@@ -65,7 +66,7 @@ export async function postSystemJournal(ctx: MutationCtx, input: { scope: Scope;
   const lines = input.lines.filter((l) => roundMoney(l.debit) !== 0 || roundMoney(l.credit) !== 0);
   const debit = roundMoney(lines.reduce((n, l) => n + l.debit, 0));
   const credit = roundMoney(lines.reduce((n, l) => n + l.credit, 0));
-  if (lines.length < 2 || Math.abs(debit - credit) > 0.009) throw new Error(`Automatic journal is not balanced (${debit} != ${credit}).`);
+  if (lines.length < 2 || Math.abs(debit - credit) > 0.009) throw new ConvexError(`Automatic journal is not balanced (${debit} != ${credit}).`);
   const id = await ctx.db.insert("journalEntries", { ...input.scope, entryDate: input.date, reference: input.reference, description: input.description, status: "posted", sourceType: input.sourceType, sourceId: input.sourceId, totalDebit: debit, totalCredit: credit, createdBy: input.userId, postedAt: new Date().toISOString() });
   for (const line of lines) await ctx.db.insert("journalLines", { ...input.scope, entryId: id, ...line, debit: roundMoney(line.debit), credit: roundMoney(line.credit) });
   return id;
@@ -75,14 +76,14 @@ export async function postSystemJournal(ctx: MutationCtx, input: { scope: Scope;
 export function assertDate(value: string | undefined, label = "Tarehe"): string {
   const d = String(value ?? "");
   const ok = /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d;
-  if (!ok) throw new Error(`${label} si sahihi (tumia mwaka-mwezi-siku, mfano 2026-10-15).`);
+  if (!ok) throw new ConvexError(`${label} si sahihi (tumia mwaka-mwezi-siku, mfano 2026-10-15).`);
   return d;
 }
 
 /** Optional money / rate values must be real finite numbers: NaN and Infinity slip through plain `<`, `>` comparisons. */
 export function assertFinite(value: number | undefined, label: string): number {
   const n = value ?? 0;
-  if (!Number.isFinite(n)) throw new Error(`${label} si sahihi.`);
+  if (!Number.isFinite(n)) throw new ConvexError(`${label} si sahihi.`);
   return n;
 }
 

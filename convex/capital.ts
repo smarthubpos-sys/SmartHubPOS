@@ -1,5 +1,5 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { filterScoped, logAudit, requireActiveUser, requireManager, resolveWriteScope, scopedRows, requirePermission } from "./access";
 import { getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits } from "./paymentMethods";
@@ -49,13 +49,13 @@ export const receive = mutation({
     const user = await requireManager(ctx, "accounts");
     const scope = await resolveWriteScope(ctx, user);
     const source = SOURCES[a.sourceType];
-    if (!source) throw new Error("Chanzo cha mtaji si sahihi.");
-    if (!a.depositMethodId && !DEPOSIT[a.depositMethod]) throw new Error("Njia ya kuweka fedha si sahihi.");
+    if (!source) throw new ConvexError("Chanzo cha mtaji si sahihi.");
+    if (!a.depositMethodId && !DEPOSIT[a.depositMethod]) throw new ConvexError("Njia ya kuweka fedha si sahihi.");
     const chosen = a.depositMethodId ? (await normaliseSplits(ctx, user, [{ method: a.depositMethod, methodId: a.depositMethodId, amount: 1 }])).splits[0] : null;
-    if (!Number.isFinite(a.amount) || a.amount <= 0) throw new Error("Kiasi lazima kiwe zaidi ya sifuri.");
-    if (!a.sourceName.trim()) throw new Error("Andika mtaji umetoka kwa nani au wapi.");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(a.receiptDate)) throw new Error("Tarehe si sahihi.");
-    for (const n of [a.interestRate, a.termMonths]) if (n !== undefined && (!Number.isFinite(n) || n < 0)) throw new Error("Riba au muda si sahihi.");
+    if (!Number.isFinite(a.amount) || a.amount <= 0) throw new ConvexError("Kiasi lazima kiwe zaidi ya sifuri.");
+    if (!a.sourceName.trim()) throw new ConvexError("Andika mtaji umetoka kwa nani au wapi.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(a.receiptDate)) throw new ConvexError("Tarehe si sahihi.");
+    for (const n of [a.interestRate, a.termMonths]) if (n !== undefined && (!Number.isFinite(n) || n < 0)) throw new ConvexError("Riba au muda si sahihi.");
     const amount = roundMoney(a.amount);
     const id = await ctx.db.insert("capitalReceipts", { ...scope, ...a, depositMethod: chosen?.method ?? a.depositMethod, sourceName: a.sourceName.trim(), amount, createdBy: user._id });
     const dep = await methodAccount(ctx, scope, { methodId: chosen?.methodId, method: a.depositMethod }); // funds go into the chosen method's own account

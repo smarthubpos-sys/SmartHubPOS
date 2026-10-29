@@ -1,6 +1,6 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireActiveUser, requireManager, canAccessRecord, filterScoped, resolveWriteScope, scopedRows, logAudit, requirePermission } from "./access";
 import type { UserLike } from "./access";
@@ -32,15 +32,15 @@ export const upsert = mutation({
     const user = await requireManager(ctx);
     const scope = await resolveWriteScope(ctx, user);
     const name = a.name.trim();
-    if (!name) throw new Error("Weka jina la njia ya malipo.");
-    if (name.length > 60) throw new Error("Jina ni refu sana (herufi 60 upeo).");
-    if (!(KINDS as readonly string[]).includes(a.kind)) throw new Error("Aina ya njia ya malipo si sahihi.");
+    if (!name) throw new ConvexError("Weka jina la njia ya malipo.");
+    if (name.length > 60) throw new ConvexError("Jina ni refu sana (herufi 60 upeo).");
+    if (!(KINDS as readonly string[]).includes(a.kind)) throw new ConvexError("Aina ya njia ya malipo si sahihi.");
     const rows = filterScoped(user, await scopedRows(ctx, user, "paymentMethods"));
-    if (rows.some((r) => r._id !== a.id && r.name.trim().toLowerCase() === name.toLowerCase())) throw new Error(`Njia ya malipo "${name}" tayari ipo.`);
+    if (rows.some((r) => r._id !== a.id && r.name.trim().toLowerCase() === name.toLowerCase())) throw new ConvexError(`Njia ya malipo "${name}" tayari ipo.`);
     const data = { name, kind: a.kind, accountNo: a.accountNo?.trim() || undefined, accountName: a.accountName?.trim() || undefined, isActive: a.isActive };
     if (a.id) {
       const row = await ctx.db.get("paymentMethods", a.id);
-      if (!canAccessRecord(user, row)) throw new Error("Njia hii ya malipo haipo kwenye biashara yako.");
+      if (!canAccessRecord(user, row)) throw new ConvexError("Njia hii ya malipo haipo kwenye biashara yako.");
       await ctx.db.patch("paymentMethods", a.id, data);
       if (row?.accountId && row.name !== name) await ctx.db.patch("accounts", row.accountId, { name, description: `Account of payment method: ${name}` }); // the account follows the method's name
       await logAudit(ctx, user, { action: "update_payment_method", module: "maintenance", referenceId: String(a.id), referenceType: "paymentMethod", details: name });
@@ -72,7 +72,7 @@ export const remove = mutation({
   handler: async (ctx, a) => {
     const user = await requireManager(ctx);
     const row = await ctx.db.get("paymentMethods", a.id);
-    if (!canAccessRecord(user, row)) throw new Error("Njia hii ya malipo haipo kwenye biashara yako.");
+    if (!canAccessRecord(user, row)) throw new ConvexError("Njia hii ya malipo haipo kwenye biashara yako.");
     await ctx.db.delete("paymentMethods", a.id);
     await logAudit(ctx, user, { action: "delete_payment_method", module: "maintenance", referenceId: String(a.id), referenceType: "paymentMethod", details: row?.name });
   },
@@ -97,20 +97,20 @@ export const splitValidator = v.object({ method: v.string(), methodId: v.optiona
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 /** Validate and normalise the lines of ONE receipt (e.g. 10,000 phone + 10,000 bank + 10,000 cash). */
 export async function normaliseSplits(ctx: MutationCtx, user: UserLike, splits: PaymentSplitInput[]) {
-  if (!splits.length) throw new Error("Weka angalau njia moja ya malipo.");
-  if (splits.length > 20) throw new Error("Njia za malipo zimezidi (upeo 20 kwa risiti moja).");
+  if (!splits.length) throw new ConvexError("Weka angalau njia moja ya malipo.");
+  if (splits.length > 20) throw new ConvexError("Njia za malipo zimezidi (upeo 20 kwa risiti moja).");
   const known = filterScoped(user, await scopedRows(ctx, user, "paymentMethods"));
   const out: Array<{ method: string; methodId?: Id<"paymentMethods">; amount: number; reference?: string }> = [];
   for (const s of splits) {
-    if (!Number.isFinite(s.amount) || s.amount <= 0) throw new Error("Kila njia ya malipo lazima iwe na kiasi kikubwa kuliko sifuri.");
+    if (!Number.isFinite(s.amount) || s.amount <= 0) throw new ConvexError("Kila njia ya malipo lazima iwe na kiasi kikubwa kuliko sifuri.");
     let method = (s.method ?? "").trim(); let methodId: Id<"paymentMethods"> | undefined;
     if (s.methodId) {
       const row = known.find((k) => k._id === s.methodId);
-      if (!row) throw new Error("Njia ya malipo haipo kwenye biashara yako.");
-      if (!row.isActive) throw new Error(`Njia ya malipo "${row.name}" imezimwa.`);
+      if (!row) throw new ConvexError("Njia ya malipo haipo kwenye biashara yako.");
+      if (!row.isActive) throw new ConvexError(`Njia ya malipo "${row.name}" imezimwa.`);
       method = row.name; methodId = row._id;
     }
-    if (!method) throw new Error("Chagua njia ya malipo.");
+    if (!method) throw new ConvexError("Chagua njia ya malipo.");
     out.push({ method, methodId, amount: r2(s.amount), reference: s.reference?.trim() || undefined });
   }
   return { splits: out, total: r2(out.reduce((n, s) => n + s.amount, 0)) };

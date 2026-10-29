@@ -36,6 +36,7 @@ export const PERMISSION_GROUPS: { group: string; items: { key: string; label: st
     ],
   },
   { group: "Payroll", items: [{ key: "payroll.view", label: "View payroll" }, { key: "payroll.manage", label: "Manage employees and payroll" }, { key: "payroll.approve", label: "Approve payroll" }, { key: "payroll.reports.view", label: "View payroll reports" }, { key: "payroll.print", label: "Print payroll reports" }, { key: "payroll.export", label: "Export payroll data" }] },
+  { group: "Leave", items: [{ key: "leave.request", label: "Request leave / permission and see own timetable" }, { key: "leave.review", label: "HR: receive, view and decide leave requests sent to HR" }] },
   { group: "Accounts", items: [{ key: "accounts.view", label: "View accounts and balances" }, { key: "accounts.manage", label: "Post journals and manage chart of accounts" }, { key: "accounts.approve", label: "Approve accounting entries" }, { key: "accounts.reports.view", label: "View financial reports" }, { key: "accounts.print", label: "Print financial reports" }, { key: "accounts.export", label: "Export financial data" }] },
   {
     group: "Maintenance",
@@ -81,6 +82,8 @@ export const USER_GRANTABLE_PERMISSIONS: { key: string; label: string }[] = [
   { key: "purchasing.edit", label: "Anaweza ku-edit Purchase (invoice, order, GRN)" },
   { key: "purchasing.delete", label: "Anaweza kufuta Purchase (invoice, order, GRN, return)" },
   { key: "accounts.reports.delete", label: "Anaweza kufuta ripoti za kipindi (Period Reports)" },
+  { key: "leave.request", label: "Anaweza kuomba ruhusa / likizo na kuona ratiba yake" },
+  { key: "leave.review", label: "HR: anapokea, anaona na kuamua maombi ya ruhusa yaliyotumwa kwa HR" },
   { key: "stock.adjust", label: "Anaweza kubadili / kufuta stock (adjustment, kuhariri bidhaa) â€” Super Admin pekee ndiye anayetoa" },
 ];
 
@@ -101,14 +104,14 @@ export const LATE_PERMISSIONS = ["sales.view", "sales.print", "sales.void", "wai
 
 export const SYSTEM_ROLES: { name: string; displayName: string; permissions: string[] }[] = [
   { name: "admin", displayName: "Administrator", permissions: ALL_PERMISSION_KEYS.filter((k) => k !== "maintenance.roles" && !SUPER_ADMIN_ONLY_PERMISSIONS.includes(k)) },
-  { name: "manager", displayName: "Manager", permissions: ["system.manager", "sales.view", "sales.manage", "sales.edit", "sales.print", "sales.export", "sales.reports.view", "sales.void", "stock.view", "stock.manage", "stock.reports.view", "stock.print", "stock.export", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer", "suppliers.view", "suppliers.manage", "purchasing.view", "purchasing.manage", "purchasing.reports.view", "purchasing.print", "purchasing.export", "purchasing.edit", "purchasing.delete", "payroll.view", "payroll.manage", "payroll.approve", "payroll.reports.view", "payroll.print", "payroll.export", "accounts.view", "accounts.manage", "accounts.approve", "accounts.reports.view", "accounts.print", "accounts.export", "bills.all_departments", "waiterOrders.view", "waiterOrders.manage", "maintenance.company", "maintenance.periods", "maintenance.audit.view"] },
+  { name: "manager", displayName: "Manager", permissions: ["system.manager", "sales.view", "sales.manage", "sales.edit", "sales.print", "sales.export", "sales.reports.view", "sales.void", "stock.view", "stock.manage", "stock.reports.view", "stock.print", "stock.export", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer", "suppliers.view", "suppliers.manage", "purchasing.view", "purchasing.manage", "purchasing.reports.view", "purchasing.print", "purchasing.export", "purchasing.edit", "purchasing.delete", "payroll.view", "payroll.manage", "payroll.approve", "payroll.reports.view", "payroll.print", "payroll.export", "leave.request", "leave.review", "accounts.view", "accounts.manage", "accounts.approve", "accounts.reports.view", "accounts.print", "accounts.export", "bills.all_departments", "waiterOrders.view", "waiterOrders.manage", "maintenance.company", "maintenance.periods", "maintenance.audit.view"] },
   // Accountant: every FINANCIAL view (accounts, profit/loss, sales / purchase / stock reports incl. cost and margins, payroll cost reports).
   // Read, print and export only: no selling, no stock or purchase entry, no void/edit/delete, no user or role management.
-  { name: "accountant", displayName: "Accountant", permissions: ["accounts.view", "accounts.reports.view", "accounts.print", "accounts.export", "sales.view", "sales.print", "sales.export", "sales.reports.view", "purchasing.view", "purchasing.print", "purchasing.export", "purchasing.reports.view", "suppliers.view", "stock.view", "stock.print", "stock.export", "stock.reports.view", "payroll.view", "payroll.reports.view", "payroll.print", "payroll.export", "maintenance.periods", "maintenance.audit.view"] },
-  { name: "cashier", displayName: "Cashier", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage"] },
+  { name: "accountant", displayName: "Accountant", permissions: ["accounts.view", "accounts.reports.view", "accounts.print", "accounts.export", "sales.view", "sales.print", "sales.export", "sales.reports.view", "purchasing.view", "purchasing.print", "purchasing.export", "purchasing.reports.view", "suppliers.view", "stock.view", "stock.print", "stock.export", "stock.reports.view", "payroll.view", "payroll.reports.view", "payroll.print", "payroll.export", "leave.request", "maintenance.periods", "maintenance.audit.view"] },
+  { name: "cashier", displayName: "Cashier", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage", "leave.request"] },
   // Waiter / Waitress have defaults for both workflows, but the two permission sets remain independently removable/grantable.
-  { name: "waiter", displayName: "Waiter", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage"] },
-  { name: "waitress", displayName: "Waitress", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage"] },
+  { name: "waiter", displayName: "Waiter", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage", "leave.request"] },
+  { name: "waitress", displayName: "Waitress", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage", "leave.request"] },
   { name: "viewer", displayName: "Viewer", permissions: [] },
 ];
 
@@ -190,6 +193,7 @@ export const MODULES: { key: string; label: string; path: string; core?: boolean
   { key: "bills", label: "Bills", path: "/bills" },
   { key: "payroll", label: "Payroll", path: "/payroll" },
   { key: "hr", label: "HR", path: "/hr" },
+  { key: "leave", label: "Leave / Ruhusa", path: "/leave" },
   { key: "notifications", label: "Notifications", path: "/notifications" },
   { key: "help", label: "Help & Support", path: "/help", core: true },
   { key: "maintenance", label: "Maintenance", path: "/maintenance" },

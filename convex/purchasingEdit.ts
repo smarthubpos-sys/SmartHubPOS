@@ -7,7 +7,7 @@
  */
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { canAccessBusinessRecord, canAccessRecord, logAudit, requireActiveUser, requirePermission } from "./access";
 import { assertDate, assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal } from "./ledger";
@@ -31,12 +31,12 @@ function avgAfterRemoving(cur: number, avg: number, qty: number, unitCost: numbe
 }
 
 async function validLines(ctx: QueryCtx, u: Doc<"users">, lines: LineInput[], keep: Set<string> = new Set()) {
-  if (!lines.length) throw new Error("Ongeza angalau bidhaa moja.");
+  if (!lines.length) throw new ConvexError("Ongeza angalau bidhaa moja.");
   const out: Array<LineInput & { total: number }> = [];
   for (const l of lines) {
-    if (!Number.isFinite(l.qty) || l.qty <= 0 || !Number.isFinite(l.unitCost) || l.unitCost < 0) throw new Error("Kiasi au gharama si sahihi.");
+    if (!Number.isFinite(l.qty) || l.qty <= 0 || !Number.isFinite(l.unitCost) || l.unitCost < 0) throw new ConvexError("Kiasi au gharama si sahihi.");
     const p = await ctx.db.get("products", l.productId);
-    if (!p || !canAccessRecord(u, p) || (!p.isActive && !keep.has(String(l.productId)))) throw new Error("Bidhaa haipatikani kwenye branch yako.");
+    if (!p || !canAccessRecord(u, p) || (!p.isActive && !keep.has(String(l.productId)))) throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");
     out.push({ ...l, total: round(l.qty * l.unitCost) });
   }
   return out;
@@ -44,9 +44,9 @@ async function validLines(ctx: QueryCtx, u: Doc<"users">, lines: LineInput[], ke
 
 async function loadPurchase(ctx: QueryCtx, u: Doc<"users">, id: Id<"purchases">) {
   const purchase = await ctx.db.get("purchases", id);
-  if (!purchase || !canAccessRecord(u, purchase)) throw new Error("Purchase invoice haipatikani.");
-  if (purchase.status !== "posted") throw new Error("Invoice hii tayari imefutwa.");
-  if ((await postedReturns(ctx, id)).length) throw new Error("Invoice hii ina Purchase Return. Futa return kwanza ndipo ubadilishe au kufuta invoice.");
+  if (!purchase || !canAccessRecord(u, purchase)) throw new ConvexError("Purchase invoice haipatikani.");
+  if (purchase.status !== "posted") throw new ConvexError("Invoice hii tayari imefutwa.");
+  if ((await postedReturns(ctx, id)).length) throw new ConvexError("Invoice hii ina Purchase Return. Futa return kwanza ndipo ubadilishe au kufuta invoice.");
   return purchase;
 }
 
@@ -87,7 +87,7 @@ export const editPurchase = mutation({
       const keep = new Set(oldLines.map((l) => String(l.productId)));
       const next = await validLines(ctx, u, a.lines, keep);
       newTotal = round(next.reduce((n, l) => n + l.total, 0));
-      if (newTotal + EPS < purchase.amountPaid) throw new Error(`Jumla mpya (${newTotal}) ni chini ya kilicholipwa tayari (${purchase.amountPaid}). Punguza malipo kwanza au weka jumla kubwa zaidi.`);
+      if (newTotal + EPS < purchase.amountPaid) throw new ConvexError(`Jumla mpya (${newTotal}) ni chini ya kilicholipwa tayari (${purchase.amountPaid}). Punguza malipo kwanza au weka jumla kubwa zaidi.`);
       newOutstanding = round(newTotal - purchase.amountPaid);
 
       // Stock and average cost move by the difference per product.
@@ -96,7 +96,7 @@ export const editPurchase = mutation({
       for (const key of ids) {
         const id = key as Id<"products">;
         const product = await ctx.db.get("products", id);
-        if (!product) throw new Error("Bidhaa haipo.");
+        if (!product) throw new ConvexError("Bidhaa haipo.");
         const oldQty = oldLines.filter((l) => l.productId === id).reduce((n, l) => n + l.qty, 0);
         const oldVal = oldLines.filter((l) => l.productId === id).reduce((n, l) => n + l.qty * l.unitCost, 0);
         const mine = next.filter((l) => l.productId === id);
@@ -104,7 +104,7 @@ export const editPurchase = mutation({
         const newVal = mine.reduce((n, l) => n + l.qty * l.unitCost, 0);
         const net = round(newQty - oldQty);
         const newCur = product.currentQty + net;
-        if (newCur < -EPS) throw new Error(`Stock ya ${product.name} haitoshi kupunguza kiasi hiki (sehemu yake imeshauzwa au kutumika).`);
+        if (newCur < -EPS) throw new ConvexError(`Stock ya ${product.name} haitoshi kupunguza kiasi hiki (sehemu yake imeshauzwa au kutumika).`);
         const oldAvg = product.weightedAvgCost ?? product.lastPurchaseCost ?? 0;
         const avg = newCur > EPS ? Math.max(0, round((product.currentQty * oldAvg - oldVal + newVal) / newCur)) : product.weightedAvgCost;
         stage.push({ id, name: product.name, cur: product.currentQty, net, newCur, avg, last: mine.length ? mine[mine.length - 1].unitCost : undefined, unitCost: mine.length ? mine[mine.length - 1].unitCost : (oldLines.find((l) => l.productId === id)?.unitCost ?? 0) });
@@ -161,7 +161,7 @@ export const voidPurchase = mutation({
     for (const l of lines) need.set(String(l.productId), (need.get(String(l.productId)) ?? 0) + l.qty);
     for (const [id, qty] of need) {
       const p = await ctx.db.get("products", id as Id<"products">);
-      if (p && p.currentQty + EPS < qty) throw new Error(`Huwezi kufuta invoice: stock ya ${p.name} (${p.currentQty}) ni ndogo kuliko iliyonunuliwa (${qty}); sehemu imeshauzwa au kutumika.`);
+      if (p && p.currentQty + EPS < qty) throw new ConvexError(`Huwezi kufuta invoice: stock ya ${p.name} (${p.currentQty}) ni ndogo kuliko iliyonunuliwa (${qty}); sehemu imeshauzwa au kutumika.`);
     }
     for (const l of lines) {
       const p = await ctx.db.get("products", l.productId);
@@ -198,10 +198,10 @@ const EDITABLE_ORDER = ["draft", "pending_approval", "approved"];
 
 async function loadOrder(ctx: QueryCtx, u: Doc<"users">, id: Id<"purchaseOrders">) {
   const order = await ctx.db.get("purchaseOrders", id);
-  if (!order || !canAccessRecord(u, order)) throw new Error("Purchase Order haipatikani.");
-  if (order.status === "cancelled") throw new Error("Order hii tayari imefutwa.");
+  if (!order || !canAccessRecord(u, order)) throw new ConvexError("Purchase Order haipatikani.");
+  if (order.status === "cancelled") throw new ConvexError("Order hii tayari imefutwa.");
   const lines = await ctx.db.query("purchaseOrderLines").withIndex("by_order", (q) => q.eq("orderId", id)).collect();
-  if (!EDITABLE_ORDER.includes(order.status) || lines.some((l) => l.qtyReceived > EPS)) throw new Error("Order hii ina bidhaa zilizopokelewa (GRN). Futa GRN kwanza, au tumia Purchase Return.");
+  if (!EDITABLE_ORDER.includes(order.status) || lines.some((l) => l.qtyReceived > EPS)) throw new ConvexError("Order hii ina bidhaa zilizopokelewa (GRN). Futa GRN kwanza, au tumia Purchase Return.");
   return { order, lines };
 }
 const draftGrns = async (ctx: QueryCtx, orderId: Id<"purchaseOrders">) => (await ctx.db.query("goodsReceivedNotes").withIndex("by_po", (q) => q.eq("purchaseOrderId", orderId)).collect()).filter((g) => g.status === "draft");
@@ -223,12 +223,12 @@ export const editPurchaseOrder = mutation({
     const u = await requirePermission(ctx, "purchasing.edit", "purchasing");
     const { order, lines: oldLines } = await loadOrder(ctx, u, a.orderId);
     const patch: Partial<Doc<"purchaseOrders">> = {};
-    if (a.supplierId !== undefined) { const s = await ctx.db.get("suppliers", a.supplierId); if (!s || !canAccessBusinessRecord(u, s)) throw new Error("Supplier hayupo kwenye branch yako."); patch.supplierId = a.supplierId; }
+    if (a.supplierId !== undefined) { const s = await ctx.db.get("suppliers", a.supplierId); if (!s || !canAccessBusinessRecord(u, s)) throw new ConvexError("Supplier hayupo kwenye branch yako."); patch.supplierId = a.supplierId; }
     if (a.orderDate !== undefined) { assertDate(a.orderDate); patch.orderDate = a.orderDate; }
     if (a.expectedDelivery !== undefined) patch.expectedDelivery = a.expectedDelivery.trim() || undefined;
     if (a.notes !== undefined) patch.notes = a.notes.trim() || undefined;
     if (a.lines) {
-      if ((await draftGrns(ctx, a.orderId)).length) throw new Error("Order hii ina GRN ya rasimu. Ifute kwanza kabla ya kubadilisha bidhaa.");
+      if ((await draftGrns(ctx, a.orderId)).length) throw new ConvexError("Order hii ina GRN ya rasimu. Ifute kwanza kabla ya kubadilisha bidhaa.");
       const next = await validLines(ctx, u, a.lines, new Set(oldLines.map((l) => String(l.productId))));
       const total = round(next.reduce((n, l) => n + l.total, 0));
       for (const l of oldLines) await ctx.db.delete("purchaseOrderLines", l._id);
@@ -271,21 +271,21 @@ export const editGoodsReceivedNote = mutation({
   handler: async (ctx, a) => {
     const u = await requirePermission(ctx, "purchasing.edit", "purchasing");
     const grn = await ctx.db.get("goodsReceivedNotes", a.grnId);
-    if (!grn || !canAccessRecord(u, grn)) throw new Error("GRN haipatikani.");
-    if (grn.status !== "draft") throw new Error("GRN iliyothibitishwa imeshaongeza stock, haiwezi kubadilishwa. Ifute kisha uunde upya.");
+    if (!grn || !canAccessRecord(u, grn)) throw new ConvexError("GRN haipatikani.");
+    if (grn.status !== "draft") throw new ConvexError("GRN iliyothibitishwa imeshaongeza stock, haiwezi kubadilishwa. Ifute kisha uunde upya.");
     const patch: Partial<Doc<"goodsReceivedNotes">> = {};
     if (a.receiptDate !== undefined) { assertDate(a.receiptDate); patch.receiptDate = a.receiptDate; }
     if (a.notes !== undefined) patch.notes = a.notes.trim() || undefined;
     if (a.lines) {
-      if (!a.lines.length) throw new Error("Ongeza bidhaa za kupokea.");
+      if (!a.lines.length) throw new ConvexError("Ongeza bidhaa za kupokea.");
       const poLines = grn.purchaseOrderId ? await ctx.db.query("purchaseOrderLines").withIndex("by_order", (q) => q.eq("orderId", grn.purchaseOrderId!)).collect() : [];
       const clean: Array<{ productId: Id<"products">; qtyOrdered: number; qtyReceived: number; qtyRejected: number; unitCost: number }> = [];
       for (const l of a.lines) {
         const po = poLines.find((x) => x.productId === l.productId);
-        if (!po) throw new Error("Bidhaa haipo kwenye Purchase Order.");
+        if (!po) throw new ConvexError("Bidhaa haipo kwenye Purchase Order.");
         const rejected = l.qtyRejected ?? 0;
-        if (!Number.isFinite(l.qtyReceived) || l.qtyReceived < 0 || !Number.isFinite(rejected) || rejected < 0 || l.qtyReceived + rejected <= 0) throw new Error("Kiasi kilichopokelewa/kukataliwa si sahihi.");
-        if (l.qtyReceived + rejected > po.qtyOrdered - po.qtyReceived + EPS) throw new Error("Kiasi kinazidi salio la Purchase Order.");
+        if (!Number.isFinite(l.qtyReceived) || l.qtyReceived < 0 || !Number.isFinite(rejected) || rejected < 0 || l.qtyReceived + rejected <= 0) throw new ConvexError("Kiasi kilichopokelewa/kukataliwa si sahihi.");
+        if (l.qtyReceived + rejected > po.qtyOrdered - po.qtyReceived + EPS) throw new ConvexError("Kiasi kinazidi salio la Purchase Order.");
         clean.push({ productId: l.productId, qtyOrdered: po.qtyOrdered, qtyReceived: l.qtyReceived, qtyRejected: rejected, unitCost: po.unitCost });
       }
       for (const old of await ctx.db.query("grnLines").withIndex("by_grn", (q) => q.eq("grnId", a.grnId)).collect()) await ctx.db.delete("grnLines", old._id);
@@ -302,15 +302,15 @@ export const cancelGoodsReceivedNote = mutation({
   handler: async (ctx, a) => {
     const u = await requirePermission(ctx, "purchasing.delete", "purchasing");
     const grn = await ctx.db.get("goodsReceivedNotes", a.grnId);
-    if (!grn || !canAccessRecord(u, grn)) throw new Error("GRN haipatikani.");
-    if (grn.status === "cancelled") throw new Error("GRN hii tayari imefutwa.");
+    if (!grn || !canAccessRecord(u, grn)) throw new ConvexError("GRN haipatikani.");
+    if (grn.status === "cancelled") throw new ConvexError("GRN hii tayari imefutwa.");
     if (grn.status === "confirmed") {
       // Goods were added to stock: take them out again (only possible while they are still on the shelf).
       const scope = scopeOf(grn);
       const lines = await ctx.db.query("grnLines").withIndex("by_grn", (q) => q.eq("grnId", a.grnId)).collect();
       const need = new Map<string, number>();
       for (const l of lines) need.set(String(l.productId), (need.get(String(l.productId)) ?? 0) + l.qtyReceived);
-      for (const [id, qty] of need) { const p = await ctx.db.get("products", id as Id<"products">); if (p && p.currentQty + EPS < qty) throw new Error(`Huwezi kufuta GRN: stock ya ${p.name} (${p.currentQty}) ni ndogo kuliko iliyopokelewa (${qty}); sehemu imeshauzwa au kutumika.`); }
+      for (const [id, qty] of need) { const p = await ctx.db.get("products", id as Id<"products">); if (p && p.currentQty + EPS < qty) throw new ConvexError(`Huwezi kufuta GRN: stock ya ${p.name} (${p.currentQty}) ni ndogo kuliko iliyopokelewa (${qty}); sehemu imeshauzwa au kutumika.`); }
       const today = new Date().toISOString().slice(0, 10);
       for (const l of lines) {
         const p = await ctx.db.get("products", l.productId);
@@ -347,10 +347,10 @@ export const voidPurchaseReturn = mutation({
   handler: async (ctx: MutationCtx, a) => {
     const u = await requirePermission(ctx, "purchasing.delete", "purchasing");
     const ret = await ctx.db.get("purchaseReturns", a.returnId);
-    if (!ret || !canAccessRecord(u, ret)) throw new Error("Purchase Return haipatikani.");
-    if (ret.status !== "posted") throw new Error("Return hii tayari imefutwa.");
+    if (!ret || !canAccessRecord(u, ret)) throw new ConvexError("Purchase Return haipatikani.");
+    if (ret.status !== "posted") throw new ConvexError("Return hii tayari imefutwa.");
     const purchase = await ctx.db.get("purchases", ret.purchaseId);
-    if (!purchase || purchase.status !== "posted") throw new Error("Invoice ya return hii imefutwa; return haiwezi kubadilishwa tena.");
+    if (!purchase || purchase.status !== "posted") throw new ConvexError("Invoice ya return hii imefutwa; return haiwezi kubadilishwa tena.");
     const scope = scopeOf(ret);
     const today = new Date().toISOString().slice(0, 10);
     const lines = await ctx.db.query("purchaseReturnLines").withIndex("by_return", (q) => q.eq("returnId", a.returnId)).collect();

@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { getCurrentProfile, isSuperAdmin, normalizeRole } from "./access";
 
@@ -113,7 +113,7 @@ export const listUsers = query({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return [];
     const current = await getCurrentProfile(ctx);
-    if (!current || !isSuperAdmin(current)) throw new Error("Forbidden: Super Admin only");
+    if (!current || !isSuperAdmin(current)) throw new ConvexError("Forbidden: Super Admin only");
     return (await ctx.db.query("users").collect()).filter(isProfile);
   },
 });

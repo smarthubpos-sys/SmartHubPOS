@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { activeDepartments, allowedBranchIds, isSuperAdmin, logAudit, requireActiveUser, requirePermission, roleHasPermission } from "./access";
 import type { UserLike } from "./access";
@@ -28,7 +28,7 @@ async function reportScope(ctx: QueryCtx, user: UserLike, requested: string | un
   const canSwitch = (isSuperAdmin(user) || !user.branchId || !!user.branchPicked) && !allowedBranchIds(user);
   const fixed = canSwitch ? null : String(user.branchId);
   const only = fixed ?? (requested && requested !== "all" ? requested : null);
-  if (only && !departments.some((d) => d.id === only)) throw new Error("Idara hiyo haipo kwenye biashara yako.");
+  if (only && !departments.some((d) => d.id === only)) throw new ConvexError("Idara hiyo haipo kwenye biashara yako.");
   return { tenantId: user.tenantId, departments, only, hasDepartments: departments.length > 0 };
 }
 
@@ -45,7 +45,7 @@ export const chunk = query({
   args: { from: v.string(), to: v.string(), scope: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
-    if (!isDate(a.from) || !isDate(a.to) || a.to < a.from) throw new Error("Tarehe za ripoti si sahihi.");
+    if (!isDate(a.from) || !isDate(a.to) || a.to < a.from) throw new ConvexError("Tarehe za ripoti si sahihi.");
     const sc = await reportScope(ctx, user, a.scope);
     if (!sc.tenantId) return { tooBig: false, sections: [] as Array<{ bk: string; rows: Row[] }> };
     // One department chosen/locked: read only its entries, so a big department cannot make a small one "too big".
@@ -95,19 +95,19 @@ export const save = mutation({
   args: { period: v.string(), startDate: v.string(), endDate: v.string(), scope: v.string(), scopeLabel: v.string(), title: v.string(), sections: v.array(sectionValidator) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
-    if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
-    if (!["day", "month", "year"].includes(a.period)) throw new Error("Aina ya ripoti si sahihi.");
-    if (!isDate(a.startDate) || !isDate(a.endDate) || a.endDate < a.startDate) throw new Error("Tarehe za ripoti si sahihi.");
+    if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
+    if (!["day", "month", "year"].includes(a.period)) throw new ConvexError("Aina ya ripoti si sahihi.");
+    if (!isDate(a.startDate) || !isDate(a.endDate) || a.endDate < a.startDate) throw new ConvexError("Tarehe za ripoti si sahihi.");
     // The department scope of a saved report must be one this user may report on (a department-locked user: only his own).
     const sc = await reportScope(ctx, user, a.scope);
-    if (sc.only ? a.scope !== sc.only : a.scope !== "all") throw new Error("Idara ya ripoti hairuhusiwi kwa akaunti yako.");
-    if (sc.only && a.sections.some((s) => s.bk !== sc.only)) throw new Error("Ripoti ina data ya idara nyingine.");
+    if (sc.only ? a.scope !== sc.only : a.scope !== "all") throw new ConvexError("Idara ya ripoti hairuhusiwi kwa akaunti yako.");
+    if (sc.only && a.sections.some((s) => s.bk !== sc.only)) throw new ConvexError("Ripoti ina data ya idara nyingine.");
     const all = summarize(a.sections.flatMap((s) => s.rows));
     // The snapshot must stay under the document limit: the per-day rows are the only large part, drop them if needed.
     let sections = a.sections;
     if (JSON.stringify(sections).length > MAX_SNAPSHOT) sections = sections.map((s) => ({ ...s, rows: s.rows.filter((r) => r.g !== "day") }));
     const data = JSON.stringify({ sections });
-    if (data.length > MAX_SNAPSHOT) throw new Error("Ripoti ni kubwa mno kuhifadhiwa; chagua kipindi kifupi au idara moja.");
+    if (data.length > MAX_SNAPSHOT) throw new ConvexError("Ripoti ni kubwa mno kuhifadhiwa; chagua kipindi kifupi au idara moja.");
     const id = await ctx.db.insert("reportRuns", {
       tenantId: user.tenantId, period: a.period, startDate: a.startDate, endDate: a.endDate, scope: a.scope, scopeLabel: a.scopeLabel.slice(0, 120), title: a.title.slice(0, 160),
       netProfit: round2(all.netProfit), netSales: round2(all.netSales), totalExpenses: round2(all.totalExpenses), data,
@@ -150,14 +150,14 @@ export const deleteRun = mutation({
     const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
 
     if (!isSuperAdmin(user)) {
-      throw new Error("Super Admin pekee ndiye anayeruhusiwa kufuta ripoti.");
+      throw new ConvexError("Super Admin pekee ndiye anayeruhusiwa kufuta ripoti.");
     }
 
-    if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
+    if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
 
     const report = await ctx.db.get("reportRuns", a.id);
     if (!report || report.tenantId !== user.tenantId) {
-      throw new Error("Ripoti haipo kwenye biashara yako.");
+      throw new ConvexError("Ripoti haipo kwenye biashara yako.");
     }
 
     await logAudit(ctx, user, {

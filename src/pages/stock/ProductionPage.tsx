@@ -4,7 +4,7 @@ import { api } from "@/convex/_generated/api.js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { tr } from "@/lib/i18n.ts";
+import { errorText, tr } from "@/lib/i18n.ts";
 
 type IngredientLine = { productId: string; qty: string };
 export default function ProductionPage() {
@@ -27,7 +27,7 @@ export default function ProductionPage() {
     try {
       await saveRecipe({ outputProductId: outputProductId as never, outputQty: Number(outputQty), active: true, autoOnSale, ingredients: ingredients.map(x => ({ productId: x.productId as never, qty: Number(x.qty) })) });
       toast.success("Recipe imehifadhiwa.");
-    } catch (e) { toast.error(e instanceof Error ? e.message : "Imeshindikana kuhifadhi recipe."); }
+    } catch (e) { toast.error(errorText(e, "Imeshindikana kuhifadhi recipe.")); }
     finally { setBusy(false); }
   };
   const submitBatch = async () => {
@@ -36,7 +36,7 @@ export default function ProductionPage() {
     try {
       const result = await produceBatch({ outputProductId: batchProductId as never, quantity: Number(batchQty) });
       toast.success(`Production imekamilika. Gharama jumla: ${result.totalCost.toLocaleString()}`);
-    } catch (e) { toast.error(e instanceof Error ? e.message : "Production imeshindikana."); }
+    } catch (e) { toast.error(errorText(e, "Production imeshindikana.")); }
     finally { setBusy(false); }
   };
   const selectClass = "h-10 w-full rounded-md border bg-background px-3 text-sm";

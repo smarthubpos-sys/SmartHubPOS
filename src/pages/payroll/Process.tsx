@@ -71,7 +71,7 @@ export default function ProcessPayroll() {
                 {openId === p._id && (
                   <div className="space-y-3 border-t border-border/60 p-3">
                     <div className="grid grid-cols-3 gap-2"><Stat label={tr("Gross")} value={money(p.totalGross)} tone="blue" /><Stat label={tr("Makato")} value={money(p.totalDeductions)} tone="rose" /><Stat label={tr("Net")} value={money(p.totalNet)} tone="green" /></div>
-                    {records && <Table head={[tr("Mfanyakazi"), tr("Gross"), tr("Makato"), tr("Net"), tr("Hali")]}>{records.map((r) => <tr key={r._id}><td className="font-medium">{r.employeeName}</td><td>{money(r.grossPay)}</td><td>{money(r.totalDeductions)}</td><td className="font-semibold">{money(r.netPay)}</td><td><Pill tone={r.paymentStatus === "paid" ? "green" : "amber"}>{trValue(r.paymentStatus)}</Pill></td></tr>)}</Table>}
+                    {records && <Table head={[tr("Mfanyakazi"), tr("Gross"), tr("Kuchelewa"), tr("Kutokuwepo"), tr("Makato"), tr("Net"), tr("Hali")]}>{records.map((r) => <tr key={r._id}><td className="font-medium">{r.employeeName}</td><td>{money(r.grossPay)}</td><td>{r.lateCount ? `${money(r.lateDeductions ?? 0)} (${r.lateCount})` : "-"}</td><td>{r.absentDays ? `${money(r.absentDeductions ?? 0)} (${tr("siku {0}", [r.absentDays])})` : "-"}</td><td>{money(r.totalDeductions)}</td><td className="font-semibold">{money(r.netPay)}</td><td><Pill tone={r.paymentStatus === "paid" ? "green" : "amber"}>{trValue(r.paymentStatus)}</Pill></td></tr>)}</Table>}
                   </div>
                 )}
               </div>

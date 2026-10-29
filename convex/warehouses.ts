@@ -1,6 +1,6 @@
 import { mutation, query, type QueryCtx, type MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { requirePermission, logAudit } from "./access";
 
 function positive(n: number) { return Number.isFinite(n) && n > 0; }
@@ -14,10 +14,10 @@ async function scopedWarehouse(
 ) {
   const row = await ctx.db.get("warehouses", id);
   if (!row || row.tenantId !== tenantId || !row.isActive) {
-    throw new Error("Ghala halipo au halitumiki kwenye biashara hii.");
+    throw new ConvexError("Ghala halipo au halitumiki kwenye biashara hii.");
   }
   if (branchId && row.branchId !== branchId) {
-    throw new Error("Huna ruhusa ya kufikia ghala la tawi hili.");
+    throw new ConvexError("Huna ruhusa ya kufikia ghala la tawi hili.");
   }
   return row;
 }
@@ -48,20 +48,20 @@ export const create = mutation({
   args: { code: v.string(), name: v.string(), kind: v.string(), branchId: v.optional(v.id("branches")) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "stock.store.manage", "stock");
-    if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
+    if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
     const code = a.code.trim().toUpperCase(); const name = a.name.trim();
-    if (!/^[A-Z0-9_-]{2,24}$/.test(code) || !name) throw new Error("Weka code sahihi na jina la ghala.");
-    if (!["warehouse", "shop", "store"].includes(a.kind)) throw new Error("Aina ya eneo si sahihi.");
+    if (!/^[A-Z0-9_-]{2,24}$/.test(code) || !name) throw new ConvexError("Weka code sahihi na jina la ghala.");
+    if (!["warehouse", "shop", "store"].includes(a.kind)) throw new ConvexError("Aina ya eneo si sahihi.");
     if (user.branchId && a.branchId && a.branchId !== user.branchId) {
-      throw new Error("Huwezi kuunda ghala kwenye tawi tofauti na ulilochagua.");
+      throw new ConvexError("Huwezi kuunda ghala kwenye tawi tofauti na ulilochagua.");
     }
     const branchId = user.branchId ?? a.branchId;
     if (branchId) {
       const b = await ctx.db.get("branches", branchId);
-      if (!b || b.tenantId !== user.tenantId || !b.isActive) throw new Error("Branch si ya biashara hii au haifanyi kazi.");
+      if (!b || b.tenantId !== user.tenantId || !b.isActive) throw new ConvexError("Branch si ya biashara hii au haifanyi kazi.");
     }
     const existing = await ctx.db.query("warehouses").withIndex("by_tenant_code", q => q.eq("tenantId", user.tenantId!).eq("code", code)).first();
-    if (existing) throw new Error("Code ya ghala tayari ipo.");
+    if (existing) throw new ConvexError("Code ya ghala tayari ipo.");
     const id = await ctx.db.insert("warehouses", { tenantId: user.tenantId, branchId, code, name, kind: a.kind, isActive: true, createdBy: user._id, createdAt: new Date().toISOString() });
     await logAudit(ctx, user, { action: "warehouse_create", module: "stock", referenceId: String(id), referenceType: "warehouse", details: `${code} ${name}` });
     return id;
@@ -98,20 +98,20 @@ export const receive = mutation({
   args: { idempotencyKey: v.optional(v.string()), warehouseId: v.id("warehouses"), productId: v.id("products"), quantity: v.number(), unitCost: v.number(), note: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "stock.store.receive", "stock");
-    if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
-    if (!positive(a.quantity) || !Number.isFinite(a.unitCost) || a.unitCost < 0) throw new Error("Kiasi au gharama si sahihi.");
+    if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
+    if (!positive(a.quantity) || !Number.isFinite(a.unitCost) || a.unitCost < 0) throw new ConvexError("Kiasi au gharama si sahihi.");
     const warehouse = await scopedWarehouse(ctx, a.warehouseId, user.tenantId, user.branchId);
     if (a.idempotencyKey) {
       const dup = await ctx.db.query("warehouseMovements").withIndex("by_tenant_key", q => q.eq("tenantId", user.tenantId!).eq("idempotencyKey", a.idempotencyKey)).first();
       if (dup) {
         if (dup.movementType !== "receive" || dup.warehouseId !== a.warehouseId || (user.branchId && dup.branchId !== user.branchId)) {
-          throw new Error("Idempotency key hii tayari imetumika kwenye ghala au tawi jingine.");
+          throw new ConvexError("Idempotency key hii tayari imetumika kwenye ghala au tawi jingine.");
         }
         return { quantity: dup.balance, averageCost: dup.unitCost, duplicate: true };
       }
     }
     const product = await ctx.db.get("products", a.productId);
-    if (!product || product.tenantId !== user.tenantId || !product.isActive) throw new Error("Bidhaa haipo kwenye biashara hii.");
+    if (!product || product.tenantId !== user.tenantId || !product.isActive) throw new ConvexError("Bidhaa haipo kwenye biashara hii.");
     const row = await ctx.db.query("warehouseStock").withIndex("by_warehouse", q => q.eq("warehouseId", a.warehouseId)).collect().then(xs => xs.find(x => x.productId === a.productId));
     const oldQty = row?.quantity ?? 0; const oldCost = row?.averageCost ?? a.unitCost;
     const qty = round(oldQty + a.quantity); const avg = qty > 0 ? round(((oldQty * oldCost) + (a.quantity * a.unitCost)) / qty) : a.unitCost;
@@ -127,25 +127,25 @@ export const createTransfer = mutation({
   args: { idempotencyKey: v.optional(v.string()), fromWarehouseId: v.id("warehouses"), toWarehouseId: v.id("warehouses"), note: v.optional(v.string()), lines: v.array(v.object({ productId: v.id("products"), quantity: v.number() })) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "stock.store.transfer", "stock");
-    if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
-    if (a.fromWarehouseId === a.toWarehouseId || !a.lines.length) throw new Error("Chagua maghala mawili tofauti na angalau bidhaa moja.");
+    if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
+    if (a.fromWarehouseId === a.toWarehouseId || !a.lines.length) throw new ConvexError("Chagua maghala mawili tofauti na angalau bidhaa moja.");
     const from = await scopedWarehouse(ctx, a.fromWarehouseId, user.tenantId, user.branchId);
     const to = await scopedWarehouse(ctx, a.toWarehouseId, user.tenantId);
     if (a.idempotencyKey) {
       const dup = await ctx.db.query("stockTransfers").withIndex("by_tenant_key", q => q.eq("tenantId", user.tenantId!).eq("idempotencyKey", a.idempotencyKey)).first();
       if (dup) {
         if (dup.fromWarehouseId !== from._id || dup.toWarehouseId !== to._id) {
-          throw new Error("Idempotency key hii tayari imetumika kwa uhamisho mwingine.");
+          throw new ConvexError("Idempotency key hii tayari imetumika kwa uhamisho mwingine.");
         }
         return dup._id; // retry / double click: same transfer, nothing created twice
       }
     }
     const seen = new Set<string>(); const lines: { productId: Id<"products">; quantity: number; unitCost: number }[] = [];
     for (const line of a.lines) {
-      if (!positive(line.quantity) || seen.has(String(line.productId))) throw new Error("Kiasi lazima kiwe chanya na bidhaa zisijirudie."); seen.add(String(line.productId));
-      const product = await ctx.db.get("products", line.productId); if (!product || product.tenantId !== user.tenantId || !product.isActive) throw new Error("Bidhaa si ya biashara hii.");
+      if (!positive(line.quantity) || seen.has(String(line.productId))) throw new ConvexError("Kiasi lazima kiwe chanya na bidhaa zisijirudie."); seen.add(String(line.productId));
+      const product = await ctx.db.get("products", line.productId); if (!product || product.tenantId !== user.tenantId || !product.isActive) throw new ConvexError("Bidhaa si ya biashara hii.");
       const row = await ctx.db.query("warehouseStock").withIndex("by_warehouse", q => q.eq("warehouseId", a.fromWarehouseId)).collect().then(xs => xs.find(x => x.productId === line.productId));
-      if (!row || row.quantity < line.quantity) throw new Error(`Stock haitoshi kwa ${product.name}.`);
+      if (!row || row.quantity < line.quantity) throw new ConvexError(`Stock haitoshi kwa ${product.name}.`);
       lines.push({ productId: line.productId, quantity: round(line.quantity), unitCost: row.averageCost });
     }
     const count = await ctx.db.query("stockTransfers").withIndex("by_tenant", q => q.eq("tenantId", user.tenantId!)).collect();
@@ -163,13 +163,13 @@ export const dispatchTransfer = mutation({
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "stock.store.dispatch", "stock");
     const transfer = await ctx.db.get("stockTransfers", a.transferId);
-    if (!transfer || transfer.tenantId !== user.tenantId) throw new Error("Uhamisho haupo.");
+    if (!transfer || transfer.tenantId !== user.tenantId) throw new ConvexError("Uhamisho haupo.");
     await scopedWarehouse(ctx, transfer.fromWarehouseId, user.tenantId, user.branchId);
-    if (transfer.status !== "pending") throw new Error("Uhamisho huu tayari umechakatwa.");
+    if (transfer.status !== "pending") throw new ConvexError("Uhamisho huu tayari umechakatwa.");
     const lines = await ctx.db.query("stockTransferLines").withIndex("by_transfer", q => q.eq("transferId", a.transferId)).collect();
     for (const line of lines) {
       const rows = await ctx.db.query("warehouseStock").withIndex("by_warehouse", q => q.eq("warehouseId", transfer.fromWarehouseId)).collect(); const row = rows.find(x => x.productId === line.productId);
-      if (!row || row.quantity < line.quantity) throw new Error("Stock imebadilika; hifadhi uhamisho upya baada ya kuhesabu stock.");
+      if (!row || row.quantity < line.quantity) throw new ConvexError("Stock imebadilika; hifadhi uhamisho upya baada ya kuhesabu stock.");
       const balance = round(row.quantity - line.quantity); await ctx.db.patch("warehouseStock", row._id, { quantity: balance, updatedAt: new Date().toISOString() });
       await ctx.db.insert("warehouseMovements", { tenantId: transfer.tenantId, branchId: transfer.branchId, warehouseId: transfer.fromWarehouseId, productId: line.productId, movementType: "transfer_out", quantityIn: 0, quantityOut: line.quantity, balance, unitCost: line.unitCost, referenceId: String(transfer._id), createdBy: user._id, createdAt: new Date().toISOString() });
     }
@@ -183,19 +183,19 @@ export const receiveTransfer = mutation({
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "stock.store.receive_transfer", "stock");
     const transfer = await ctx.db.get("stockTransfers", a.transferId);
-    if (!transfer || transfer.tenantId !== user.tenantId) throw new Error("Uhamisho haupo.");
+    if (!transfer || transfer.tenantId !== user.tenantId) throw new ConvexError("Uhamisho haupo.");
     await scopedWarehouse(ctx, transfer.toWarehouseId, user.tenantId, user.branchId);
-    if (transfer.status !== "in_transit") throw new Error("Uhamisho lazima uwe umetumwa kwanza.");
+    if (transfer.status !== "in_transit") throw new ConvexError("Uhamisho lazima uwe umetumwa kwanza.");
     const all = await ctx.db.query("stockTransferLines").withIndex("by_transfer", q => q.eq("transferId", a.transferId)).collect();
-    if (a.lines.length !== all.length || new Set(a.lines.map(x => String(x.lineId))).size !== all.length) throw new Error("Thibitisha kila mstari wa uhamisho mara moja.");
+    if (a.lines.length !== all.length || new Set(a.lines.map(x => String(x.lineId))).size !== all.length) throw new ConvexError("Thibitisha kila mstari wa uhamisho mara moja.");
     const dest = await scopedWarehouse(ctx, transfer.toWarehouseId, transfer.tenantId);
     for (const input of a.lines) {
-      const line = all.find(x => x._id === input.lineId); if (!line || !Number.isFinite(input.receivedQuantity) || input.receivedQuantity < 0) throw new Error("Kiasi kilichopokelewa si sahihi.");
+      const line = all.find(x => x._id === input.lineId); if (!line || !Number.isFinite(input.receivedQuantity) || input.receivedQuantity < 0) throw new ConvexError("Kiasi kilichopokelewa si sahihi.");
       const damaged = input.damagedQuantity ?? 0;
-      if (!Number.isFinite(damaged) || damaged < 0) throw new Error("Kiasi kilichoharibika si sahihi.");
-      if (round(input.receivedQuantity + damaged) > line.quantity) throw new Error("Kilichopokelewa na kilichoharibika haviwezi kuzidi kilichotumwa.");
+      if (!Number.isFinite(damaged) || damaged < 0) throw new ConvexError("Kiasi kilichoharibika si sahihi.");
+      if (round(input.receivedQuantity + damaged) > line.quantity) throw new ConvexError("Kilichopokelewa na kilichoharibika haviwezi kuzidi kilichotumwa.");
       const lost = round(line.quantity - input.receivedQuantity); // shortage + damaged: leaves the books, value written off
-      if (lost > 0 && !input.differenceNote?.trim()) throw new Error("Andika sababu ya tofauti ya kiasi kilichopokelewa.");
+      if (lost > 0 && !input.differenceNote?.trim()) throw new ConvexError("Andika sababu ya tofauti ya kiasi kilichopokelewa.");
       const rows = await ctx.db.query("warehouseStock").withIndex("by_warehouse", q => q.eq("warehouseId", dest._id)).collect(); const row = rows.find(x => x.productId === line.productId);
       const oldQty = row?.quantity ?? 0; const newQty = round(oldQty + input.receivedQuantity); const oldCost = row?.averageCost ?? line.unitCost;
       const avg = newQty > 0 ? round(((oldQty * oldCost) + (input.receivedQuantity * line.unitCost)) / newQty) : line.unitCost;
@@ -234,10 +234,10 @@ export const cancelTransfer = mutation({
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "stock.store.transfer", "stock");
     const transfer = await ctx.db.get("stockTransfers", a.transferId);
-    if (!transfer || transfer.tenantId !== user.tenantId) throw new Error("Uhamisho haupo.");
+    if (!transfer || transfer.tenantId !== user.tenantId) throw new ConvexError("Uhamisho haupo.");
     await scopedWarehouse(ctx, transfer.fromWarehouseId, user.tenantId, user.branchId);
-    if (transfer.status !== "pending") throw new Error("Ni uhamisho ambao haujatumwa tu unaweza kufutwa.");
-    if (!a.reason.trim()) throw new Error("Andika sababu.");
+    if (transfer.status !== "pending") throw new ConvexError("Ni uhamisho ambao haujatumwa tu unaweza kufutwa.");
+    if (!a.reason.trim()) throw new ConvexError("Andika sababu.");
     await ctx.db.patch("stockTransfers", transfer._id, { status: "cancelled", closedBy: user._id, closedAt: new Date().toISOString(), closeReason: a.reason.trim() });
     await logAudit(ctx, user, { action: "stock_transfer_cancel", module: "stock", referenceId: String(transfer._id), referenceType: "stockTransfer", details: `${transfer.transferNo}: ${a.reason.trim()}` });
     return true;
@@ -250,10 +250,10 @@ export const rejectTransfer = mutation({
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "stock.store.receive_transfer", "stock");
     const transfer = await ctx.db.get("stockTransfers", a.transferId);
-    if (!transfer || transfer.tenantId !== user.tenantId) throw new Error("Uhamisho haupo.");
+    if (!transfer || transfer.tenantId !== user.tenantId) throw new ConvexError("Uhamisho haupo.");
     await scopedWarehouse(ctx, transfer.toWarehouseId, user.tenantId, user.branchId);
-    if (transfer.status !== "in_transit") throw new Error("Uhamisho lazima uwe umetumwa kabla ya kukataliwa.");
-    if (!a.reason.trim()) throw new Error("Andika sababu ya kukataa.");
+    if (transfer.status !== "in_transit") throw new ConvexError("Uhamisho lazima uwe umetumwa kabla ya kukataliwa.");
+    if (!a.reason.trim()) throw new ConvexError("Andika sababu ya kukataa.");
     const lines = await ctx.db.query("stockTransferLines").withIndex("by_transfer", q => q.eq("transferId", a.transferId)).collect();
     const now = new Date().toISOString();
     for (const line of lines) {
@@ -270,21 +270,21 @@ export const rejectTransfer = mutation({
 });
 
 async function removeStock(ctx: MutationCtx, user: NonNullable<Awaited<ReturnType<typeof requirePermission>>>, a: { warehouseId: Id<"warehouses">; productId: Id<"products">; quantity: number; reason: string; idempotencyKey?: string }, type: "wastage" | "adjust_out") {
-  if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
-  if (!positive(a.quantity)) throw new Error("Kiasi lazima kiwe chanya.");
-  if (!a.reason.trim()) throw new Error("Andika sababu.");
+  if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
+  if (!positive(a.quantity)) throw new ConvexError("Kiasi lazima kiwe chanya.");
+  if (!a.reason.trim()) throw new ConvexError("Andika sababu.");
   const wh = await scopedWarehouse(ctx, a.warehouseId, user.tenantId, user.branchId);
   if (a.idempotencyKey) {
     const dup = await ctx.db.query("warehouseMovements").withIndex("by_tenant_key", q => q.eq("tenantId", user.tenantId!).eq("idempotencyKey", a.idempotencyKey)).first();
     if (dup) {
       if (dup.movementType !== type || dup.warehouseId !== a.warehouseId || (user.branchId && dup.branchId !== user.branchId)) {
-        throw new Error("Idempotency key hii tayari imetumika kwenye ghala au tawi jingine.");
+        throw new ConvexError("Idempotency key hii tayari imetumika kwenye ghala au tawi jingine.");
       }
       return { quantity: dup.balance, duplicate: true };
     }
   }
   const row = (await ctx.db.query("warehouseStock").withIndex("by_warehouse", q => q.eq("warehouseId", a.warehouseId)).collect()).find(x => x.productId === a.productId);
-  if (!row || row.quantity < a.quantity) throw new Error("Stock haitoshi; hairuhusiwi kwenda hasi ya sifuri.");
+  if (!row || row.quantity < a.quantity) throw new ConvexError("Stock haitoshi; hairuhusiwi kwenda hasi ya sifuri.");
   const balance = round(row.quantity - a.quantity); const now = new Date().toISOString();
   await ctx.db.patch("warehouseStock", row._id, { quantity: balance, updatedAt: now });
   await ctx.db.insert("warehouseMovements", { tenantId: user.tenantId, branchId: wh.branchId, warehouseId: a.warehouseId, productId: a.productId, movementType: type, quantityIn: 0, quantityOut: a.quantity, balance, unitCost: row.averageCost, reason: a.reason.trim(), notes: a.reason.trim(), idempotencyKey: a.idempotencyKey, createdBy: user._id, createdAt: now });
@@ -308,21 +308,21 @@ export const adjustUp = mutation({
   args: { idempotencyKey: v.optional(v.string()), warehouseId: v.id("warehouses"), productId: v.id("products"), quantity: v.number(), reason: v.string() },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "stock.adjust", "stock");
-    if (!user.tenantId) throw new Error("Chagua biashara kwanza.");
-    if (!positive(a.quantity)) throw new Error("Kiasi lazima kiwe chanya.");
-    if (!a.reason.trim()) throw new Error("Andika sababu.");
+    if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
+    if (!positive(a.quantity)) throw new ConvexError("Kiasi lazima kiwe chanya.");
+    if (!a.reason.trim()) throw new ConvexError("Andika sababu.");
     const wh = await scopedWarehouse(ctx, a.warehouseId, user.tenantId, user.branchId);
     if (a.idempotencyKey) {
       const dup = await ctx.db.query("warehouseMovements").withIndex("by_tenant_key", q => q.eq("tenantId", user.tenantId!).eq("idempotencyKey", a.idempotencyKey)).first();
       if (dup) {
         if (dup.movementType !== "adjust_in" || dup.warehouseId !== a.warehouseId || (user.branchId && dup.branchId !== user.branchId)) {
-          throw new Error("Idempotency key hii tayari imetumika kwenye ghala au tawi jingine.");
+          throw new ConvexError("Idempotency key hii tayari imetumika kwenye ghala au tawi jingine.");
         }
         return { quantity: dup.balance, duplicate: true };
       }
     }
     const row = (await ctx.db.query("warehouseStock").withIndex("by_warehouse", q => q.eq("warehouseId", a.warehouseId)).collect()).find(x => x.productId === a.productId);
-    if (!row) throw new Error("Bidhaa haina rekodi ya stock kwenye ghala hili; ipokee kwanza.");
+    if (!row) throw new ConvexError("Bidhaa haina rekodi ya stock kwenye ghala hili; ipokee kwanza.");
     const balance = round(row.quantity + a.quantity); const now = new Date().toISOString();
     await ctx.db.patch("warehouseStock", row._id, { quantity: balance, updatedAt: now });
     await ctx.db.insert("warehouseMovements", { tenantId: user.tenantId, branchId: wh.branchId, warehouseId: a.warehouseId, productId: a.productId, movementType: "adjust_in", quantityIn: a.quantity, quantityOut: 0, balance, unitCost: row.averageCost, reason: a.reason.trim(), notes: a.reason.trim(), idempotencyKey: a.idempotencyKey, createdBy: user._id, createdAt: now });

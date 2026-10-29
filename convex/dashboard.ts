@@ -1,6 +1,6 @@
 import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireActiveUser, isOwnDataOnly, isManagerRole, roleHasPermission, getCompanySettings, filterScoped } from "./access";
 import type { UserLike } from "./access";
@@ -32,7 +32,7 @@ export async function canSeeBusinessDashboard(ctx: QueryCtx, user: UserLike) {
   return false;
 }
 async function forbidPersonalOnly(ctx: QueryCtx, user: UserLike) {
-  if (!(await canSeeBusinessDashboard(ctx, user))) throw new Error("Forbidden: personal dashboard only");
+  if (!(await canSeeBusinessDashboard(ctx, user))) throw new ConvexError("Forbidden: personal dashboard only");
 }
 
 export const getMetrics = query({
@@ -140,7 +140,7 @@ export const getMyDashboard = query({
   args: { from: v.string(), today: v.string() },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "dashboard");
-    if (["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) throw new Error("Forbidden: Selling Point staff have no Dashboard access");
+    if (["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) throw new ConvexError("Forbidden: Selling Point staff have no Dashboard access");
     const tenantId = user.tenantId;
     const empty = { today: { sales: 0, collected: 0, outstanding: 0, invoices: 0 }, range: { sales: 0, collected: 0, outstanding: 0, invoices: 0 }, openBills: 0, daily: [] as Array<{ date: string; sales: number; collected: number }>, recent: [] as Array<{ _id: Id<"invoices">; invoiceNo: string; invoiceDate: string; total: number; outstanding: number; paymentStatus: Doc<"invoices">["paymentStatus"]; clientName: string }> };
     if (!tenantId) return empty;

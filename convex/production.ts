@@ -1,5 +1,5 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { requireActiveUser, requireManagerOrPermission, resolveWriteScope } from "./access";
 
@@ -40,19 +40,19 @@ export const saveRecipe = mutation({
   handler: async (ctx, args) => {
     const user = await requireManagerOrPermission(ctx, "stock.manage", "stock");
     const scope = await resolveWriteScope(ctx, user);
-    if (!scope.tenantId) throw new Error("Chagua biashara kabla ya kuhifadhi recipe.");
-    if (!Number.isFinite(args.outputQty) || args.outputQty <= 0) throw new Error("Kiasi cha bidhaa inayotengenezwa lazima kiwe zaidi ya sifuri.");
-    if (!args.ingredients.length) throw new Error("Recipe lazima iwe na angalau malighafi moja.");
+    if (!scope.tenantId) throw new ConvexError("Chagua biashara kabla ya kuhifadhi recipe.");
+    if (!Number.isFinite(args.outputQty) || args.outputQty <= 0) throw new ConvexError("Kiasi cha bidhaa inayotengenezwa lazima kiwe zaidi ya sifuri.");
+    if (!args.ingredients.length) throw new ConvexError("Recipe lazima iwe na angalau malighafi moja.");
     const output = await ctx.db.get("products", args.outputProductId);
-    if (!output || !belongsToScope(output, scope)) throw new Error("Bidhaa ya mwisho haipo kwenye biashara/department hii.");
+    if (!output || !belongsToScope(output, scope)) throw new ConvexError("Bidhaa ya mwisho haipo kwenye biashara/department hii.");
     const seen = new Set<string>();
     for (const line of args.ingredients) {
-      if (!Number.isFinite(line.qty) || line.qty <= 0) throw new Error("Kiasi cha kila malighafi lazima kiwe zaidi ya sifuri.");
-      if (line.productId === args.outputProductId) throw new Error("Bidhaa inayotengenezwa haiwezi kuwa malighafi yake yenyewe.");
-      if (seen.has(String(line.productId))) throw new Error("Malighafi imechaguliwa zaidi ya mara moja.");
+      if (!Number.isFinite(line.qty) || line.qty <= 0) throw new ConvexError("Kiasi cha kila malighafi lazima kiwe zaidi ya sifuri.");
+      if (line.productId === args.outputProductId) throw new ConvexError("Bidhaa inayotengenezwa haiwezi kuwa malighafi yake yenyewe.");
+      if (seen.has(String(line.productId))) throw new ConvexError("Malighafi imechaguliwa zaidi ya mara moja.");
       seen.add(String(line.productId));
       const ingredient = await ctx.db.get("products", line.productId);
-      if (!ingredient || !belongsToScope(ingredient, scope)) throw new Error("Malighafi haipo kwenye biashara/department hii.");
+      if (!ingredient || !belongsToScope(ingredient, scope)) throw new ConvexError("Malighafi haipo kwenye biashara/department hii.");
     }
     const existing = await ctx.db.query("productionRecipes").withIndex("by_output", q => q.eq("outputProductId", output._id)).collect();
     const prior = existing.find(r => r.tenantId === scope.tenantId && r.branchId === scope.branchId);
@@ -72,14 +72,14 @@ export const produceBatch = mutation({
   handler: async (ctx, args) => {
     const user = await requireManagerOrPermission(ctx, "stock.manage", "stock");
     const scope = await resolveWriteScope(ctx, user);
-    if (!scope.tenantId) throw new Error("Chagua biashara kabla ya kuanzisha production.");
-    if (!Number.isFinite(args.quantity) || args.quantity <= 0) throw new Error("Kiasi cha production lazima kiwe zaidi ya sifuri.");
+    if (!scope.tenantId) throw new ConvexError("Chagua biashara kabla ya kuanzisha production.");
+    if (!Number.isFinite(args.quantity) || args.quantity <= 0) throw new ConvexError("Kiasi cha production lazima kiwe zaidi ya sifuri.");
     const output = await ctx.db.get("products", args.outputProductId);
-    if (!output || !belongsToScope(output, scope)) throw new Error("Bidhaa ya mwisho haipo kwenye biashara/department hii.");
+    if (!output || !belongsToScope(output, scope)) throw new ConvexError("Bidhaa ya mwisho haipo kwenye biashara/department hii.");
     const recipes = await ctx.db.query("productionRecipes").withIndex("by_output", q => q.eq("outputProductId", output._id)).collect();
     const recipe = recipes.find(r => r.tenantId === scope.tenantId && r.branchId === scope.branchId && r.active)
       ?? recipes.find(r => r.tenantId === scope.tenantId && r.branchId === undefined && r.active);
-    if (!recipe) throw new Error("Bidhaa hii haina recipe hai.");
+    if (!recipe) throw new ConvexError("Bidhaa hii haina recipe hai.");
     const factor = args.quantity / recipe.outputQty;
     const consumed = [];
     let totalCost = 0;
@@ -87,8 +87,8 @@ export const produceBatch = mutation({
     for (const line of recipe.ingredients) {
       const product = await ctx.db.get("products", line.productId);
       const qty = line.qty * factor;
-      if (!product || !belongsToScope(product, scope)) throw new Error("Malighafi haipatikani kwenye department hii.");
-      if (product.currentQty + 1e-8 < qty) throw new Error(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, inahitajika: ${qty}.`);
+      if (!product || !belongsToScope(product, scope)) throw new ConvexError("Malighafi haipatikani kwenye department hii.");
+      if (product.currentQty + 1e-8 < qty) throw new ConvexError(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, inahitajika: ${qty}.`);
       const unitCost = product.weightedAvgCost ?? product.lastPurchaseCost ?? 0;
       consumed.push({ product, qty, unitCost });
       totalCost += qty * unitCost;

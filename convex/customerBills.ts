@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { activeDepartments, allowedBranchIds, canAccessRecord, getCompanySettings, isOwnDataOnly, requireActiveUser, roleHasPermission, scopedRows, requirePermission, resolveWriteScope } from "./access";
 import type { UserLike } from "./access";
 
@@ -99,11 +99,11 @@ export const create = mutation({
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "bills");
     if (!(await roleHasPermission(ctx, user, "sales.view")) && !(await roleHasPermission(ctx, user, "sales.manage"))) {
-      throw new Error('Forbidden: permission "sales.view" required');
+      throw new ConvexError('Forbidden: permission "sales.view" required');
     }
-    if (a.invoiceIds.length === 0 || a.invoiceIds.length > MAX_INVOICES) throw new Error("Chagua invoice 1 hadi 50.");
+    if (a.invoiceIds.length === 0 || a.invoiceIds.length > MAX_INVOICES) throw new ConvexError("Chagua invoice 1 hadi 50.");
     const ids = [...new Set(a.invoiceIds.map(String))];
-    if (ids.length !== a.invoiceIds.length) throw new Error("Invoice imechaguliwa zaidi ya mara moja.");
+    if (ids.length !== a.invoiceIds.length) throw new ConvexError("Invoice imechaguliwa zaidi ya mara moja.");
     const { allowed, wide } = await crossAccess(ctx, user);
     const who = allowed ? wide : user;
     const invoices = [];
@@ -111,7 +111,7 @@ export const create = mutation({
       const inv = await ctx.db.get("invoices", id);
       if (!inv || !canAccessRecord(who, inv) || inv.status !== "posted" ||
         ((isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) && inv.createdBy !== user._id)) {
-        throw new Error("Invoice haipatikani au haiwezi kuwekwa kwenye bili.");
+        throw new ConvexError("Invoice haipatikani au haiwezi kuwekwa kwenye bili.");
       }
       invoices.push(inv);
     }
@@ -122,15 +122,15 @@ export const create = mutation({
         const priorIds = new Set((prior?.invoiceIds ?? []).map(String));
         if (prior && prior.status === "issued" && priorIds.size === ids.length && ids.every((id) => priorIds.has(id))) return prior._id;
       }
-      throw new Error("Baadhi ya invoice tayari zipo kwenye bili nyingine. Ondoa hizo kisha ujaribu tena.");
+      throw new ConvexError("Baadhi ya invoice tayari zipo kwenye bili nyingine. Ondoa hizo kisha ujaribu tena.");
     }
     const client = await ctx.db.get("clients", invoices[0].clientId);
-    if (!client || !canAccessRecord(who, client)) throw new Error("Mteja hapatikani.");
+    if (!client || !canAccessRecord(who, client)) throw new ConvexError("Mteja hapatikani.");
     for (const inv of invoices.slice(1)) {
       if (String(inv.clientId) === String(client._id)) continue;
       const other = await ctx.db.get("clients", inv.clientId);
       if (!allowed || !other || !canAccessRecord(who, other) || !sameCustomer(client, other)) {
-        throw new Error("Invoice za bili moja lazima ziwe za mteja mmoja.");
+        throw new ConvexError("Invoice za bili moja lazima ziwe za mteja mmoja.");
       }
     }
     const scope = await resolveWriteScope(ctx, user);
@@ -154,25 +154,25 @@ export const billData = query({
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "bills");
     // A bill/receipt shows sales data: needs sales.view, or sales.manage (a waiter who may take orders can see what he sold).
-    if (!(await roleHasPermission(ctx, user, "sales.view")) && !(await roleHasPermission(ctx, user, "sales.manage"))) throw new Error("Forbidden: permission \"sales.view\" required");
-    if (a.invoiceIds.length === 0) throw new Error("Chagua angalau invoice moja.");
-    if (a.invoiceIds.length > MAX_INVOICES) throw new Error("Bili moja isizidi invoice 50.");
+    if (!(await roleHasPermission(ctx, user, "sales.view")) && !(await roleHasPermission(ctx, user, "sales.manage"))) throw new ConvexError("Forbidden: permission \"sales.view\" required");
+    if (a.invoiceIds.length === 0) throw new ConvexError("Chagua angalau invoice moja.");
+    if (a.invoiceIds.length > MAX_INVOICES) throw new ConvexError("Bili moja isizidi invoice 50.");
     const unique = [...new Set(a.invoiceIds.map(String))];
     const { allowed, wide } = await crossAccess(ctx, user);
     const who = allowed ? wide : user;
     const invoices = [];
     for (const id of a.invoiceIds.filter((x, i, arr) => arr.findIndex((y) => String(y) === String(x)) === i)) {
       const inv = await ctx.db.get("invoices", id);
-      if (!inv || !canAccessRecord(who, inv) || inv.status !== "posted" || ((isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) && inv.createdBy !== user._id)) throw new Error("Invoice haipatikani.");
+      if (!inv || !canAccessRecord(who, inv) || inv.status !== "posted" || ((isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) && inv.createdBy !== user._id)) throw new ConvexError("Invoice haipatikani.");
       invoices.push(inv);
     }
-    if (invoices.length !== unique.length) throw new Error("Invoice haipatikani.");
+    if (invoices.length !== unique.length) throw new ConvexError("Invoice haipatikani.");
     const client = await ctx.db.get("clients", invoices[0].clientId);
-    if (!client || !canAccessRecord(who, client)) throw new Error("Mteja hapatikani.");
+    if (!client || !canAccessRecord(who, client)) throw new ConvexError("Mteja hapatikani.");
     for (const inv of invoices) {
       if (inv.clientId === client._id) continue;
       const other = await ctx.db.get("clients", inv.clientId); // another department's record of the same customer
-      if (!allowed || !other || !canAccessRecord(who, other) || !sameCustomer(client, other)) throw new Error("Invoice za bili moja lazima ziwe za mteja mmoja.");
+      if (!allowed || !other || !canAccessRecord(who, other) || !sameCustomer(client, other)) throw new ConvexError("Invoice za bili moja lazima ziwe za mteja mmoja.");
     }
     invoices.sort((x, y) => x.invoiceDate.localeCompare(y.invoiceDate) || x._creationTime - y._creationTime);
 

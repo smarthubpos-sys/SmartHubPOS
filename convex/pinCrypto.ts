@@ -1,3 +1,4 @@
+import { ConvexError } from "convex/values";
 /** PIN hashing helpers. PINs are never stored as plain text. */
 const ITERATIONS = 120_000;
 
@@ -48,7 +49,7 @@ export const PIN_PATTERN = /^\d{4,6}$/;
  */
 export async function pinLookupKey(pin: string): Promise<string> {
   const secret = process.env.PIN_LOOKUP_SECRET || process.env.JWT_PRIVATE_KEY;
-  if (!secret) throw new Error("Seva haina PIN_LOOKUP_SECRET wala JWT_PRIVATE_KEY; wasiliana na msimamizi wa mfumo.");
+  if (!secret) throw new ConvexError("Seva haina PIN_LOOKUP_SECRET wala JWT_PRIVATE_KEY; wasiliana na msimamizi wa mfumo.");
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(`smarthub-staff-pin:${secret}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(pin)));
   let hex = "";

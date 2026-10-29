@@ -1,3 +1,4 @@
+import { ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
@@ -32,11 +33,11 @@ async function plan(ctx: QueryCtx, scope: Scope, recipe: Doc<"productionRecipes"
   const lines: Array<{ product: Doc<"products">; qty: number; unitCost: number }> = [];
   for (const line of recipe.ingredients) {
     const product = await ctx.db.get("products", line.productId);
-    if (!product || !inScope(product, scope)) throw new Error(`Kiungo cha ${outputName} hakipatikani kwenye idara hii. Angalia recipe.`);
+    if (!product || !inScope(product, scope)) throw new ConvexError(`Kiungo cha ${outputName} hakipatikani kwenye idara hii. Angalia recipe.`);
     const qty = round(line.qty * factor);
     const already = taken.get(String(product._id)) ?? 0; // the same ingredient may serve two products of one sale
     if (!allowNegativeStock && product.currentQty + EPS < already + qty) {
-      throw new Error(`Viungo havitoshi kutengeneza ${outputName}: ${product.name} iliyopo ${round(product.currentQty - already)}, inahitajika ${qty}.`);
+      throw new ConvexError(`Viungo havitoshi kutengeneza ${outputName}: ${product.name} iliyopo ${round(product.currentQty - already)}, inahitajika ${qty}.`);
     }
     taken.set(String(product._id), already + qty);
     lines.push({ product, qty, unitCost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0 });

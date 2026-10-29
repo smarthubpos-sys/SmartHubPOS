@@ -1,5 +1,5 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { businessRows, canAccessBusinessRecord, canAccessRecord, filterBusiness, filterScoped, requireActiveUser, resolveWriteScope, requireManagerOrPermission, scopedRows, requirePermission } from "./access";
@@ -12,20 +12,20 @@ export async function assertSupplierInvoiceFree(ctx: QueryCtx, supplierId: Id<"s
   const key = no?.trim().toLowerCase(); if (!key) return;
   const rows = await ctx.db.query("purchases").withIndex("by_supplier", q => q.eq("supplierId", supplierId)).collect();
   const clash = rows.find(p => p._id !== exceptId && p.status === "posted" && p.supplierInvoiceNo !== p.invoiceNo && (p.supplierInvoiceNo ?? "").trim().toLowerCase() === key);
-  if (clash) throw new Error(`Namba ya invoice ya supplier "${no!.trim()}" tayari imetumika (Purchase ${clash.invoiceNo ?? clash.internalRef}). Usiingize invoice moja mara mbili.`);
+  if (clash) throw new ConvexError(`Namba ya invoice ya supplier "${no!.trim()}" tayari imetumika (Purchase ${clash.invoiceNo ?? clash.internalRef}). Usiingize invoice moja mara mbili.`);
 }
 export const listPurchases = query({args:{},handler:async(ctx)=>{const u=await requirePermission(ctx, "purchasing.view", "purchasing");return (await scopedRows(ctx, u, "purchases")).sort((a,b)=>b.purchaseDate.localeCompare(a.purchaseDate));}});
 export const receivePurchase = mutation({args:{supplierId:v.id("suppliers"),purchaseDate:v.string(),supplierInvoiceNo:v.optional(v.string()),paymentAmount:v.optional(v.number()),paymentMethod:v.optional(v.string()),splits:v.optional(v.array(splitValidator)),notes:v.optional(v.string()),lines:v.array(v.object({productId:v.id("products"),qty:v.number(),unitCost:v.number()}))},handler:async(ctx,a)=>{
- const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"),scope=await resolveWriteScope(ctx, u); if(!a.lines.length)throw new Error("Ongeza angalau bidhaa moja."); assertDate(a.purchaseDate,"Tarehe ya purchase"); assertFinite(a.paymentAmount,"Malipo"); const supplier=await ctx.db.get("suppliers", a.supplierId);if(!canAccessBusinessRecord(u,supplier))throw new Error("Supplier hayupo kwenye branch yako."); await assertSupplierInvoiceFree(ctx,a.supplierId,a.supplierInvoiceNo);
+ const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"),scope=await resolveWriteScope(ctx, u); if(!a.lines.length)throw new ConvexError("Ongeza angalau bidhaa moja."); assertDate(a.purchaseDate,"Tarehe ya purchase"); assertFinite(a.paymentAmount,"Malipo"); const supplier=await ctx.db.get("suppliers", a.supplierId);if(!canAccessBusinessRecord(u,supplier))throw new ConvexError("Supplier hayupo kwenye branch yako."); await assertSupplierInvoiceFree(ctx,a.supplierId,a.supplierInvoiceNo);
  let subtotal=0;const lines=[] as {productId:typeof a.lines[number]["productId"];qty:number;unitCost:number;total:number}[];
- for(const l of a.lines){if(!Number.isFinite(l.qty)||l.qty<=0||!Number.isFinite(l.unitCost)||l.unitCost<0)throw new Error("Kiasi au gharama si sahihi.");const p=await ctx.db.get("products", l.productId);if(!canAccessRecord(u,p)||!p?.isActive)throw new Error("Bidhaa haipatikani kwenye branch yako.");const total=round(l.qty*l.unitCost);subtotal+=total;lines.push({...l,total});}
- subtotal=round(subtotal);const norm=a.splits?.length?await normaliseSplits(ctx,u,a.splits):null;const paid=norm?norm.total:round(a.paymentAmount??0);if(paid<0||paid>subtotal)throw new Error("Malipo si sahihi.");const sequenceRows=await ctx.db.query("purchaseSequences").withIndex("by_scope",q=>scope.branchId?q.eq("tenantId",scope.tenantId).eq("branchId",scope.branchId):q.eq("tenantId",scope.tenantId)).collect();
+ for(const l of a.lines){if(!Number.isFinite(l.qty)||l.qty<=0||!Number.isFinite(l.unitCost)||l.unitCost<0)throw new ConvexError("Kiasi au gharama si sahihi.");const p=await ctx.db.get("products", l.productId);if(!canAccessRecord(u,p)||!p?.isActive)throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");const total=round(l.qty*l.unitCost);subtotal+=total;lines.push({...l,total});}
+ subtotal=round(subtotal);const norm=a.splits?.length?await normaliseSplits(ctx,u,a.splits):null;const paid=norm?norm.total:round(a.paymentAmount??0);if(paid<0||paid>subtotal)throw new ConvexError("Malipo si sahihi.");const sequenceRows=await ctx.db.query("purchaseSequences").withIndex("by_scope",q=>scope.branchId?q.eq("tenantId",scope.tenantId).eq("branchId",scope.branchId):q.eq("tenantId",scope.tenantId)).collect();
  const sequence=sequenceRows.find(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId); const invoiceNo=String(sequence?.nextNumber??1);
  if(sequence) await ctx.db.patch("purchaseSequences", sequence._id,{nextNumber:Number(invoiceNo)+1}); else await ctx.db.insert("purchaseSequences",{...scope,nextNumber:2});
  const internalRef=`PUR-${Date.now().toString(36).toUpperCase()}`;
  const id=await ctx.db.insert("purchases",{...scope,purchaseDate:a.purchaseDate,supplierId:a.supplierId,supplierInvoiceNo:a.supplierInvoiceNo?.trim() || invoiceNo,invoiceNo,internalRef,subtotal,discount:0,additionalCharges:0,taxAmount:0,total:subtotal,amountPaid:paid,outstanding:round(subtotal-paid),paymentStatus:paid===subtotal?"paid":paid>0?"partial":"unpaid",status:"posted",notes:a.notes,createdBy:u._id,postedAt:new Date().toISOString()});
  await bumpStats(ctx,scope,{payable:round(subtotal-paid),date:a.purchaseDate,purchases:subtotal});
- for(const l of lines){const p=await ctx.db.get("products", l.productId);if(!p)throw new Error("Bidhaa haipo.");const newQty=p.currentQty+l.qty;const oldQty=p.currentQty;const oldCost=p.weightedAvgCost??p.lastPurchaseCost??0;const baseQty=Math.max(0,oldQty);const avg=round((baseQty*oldCost+l.qty*l.unitCost)/(baseQty+l.qty));await ctx.db.patch("products", l.productId,{currentQty:newQty,lastPurchaseCost:l.unitCost,lastPurchaseDate:a.purchaseDate,lastSupplierId:a.supplierId,weightedAvgCost:avg});await ctx.db.insert("purchaseLines",{purchaseId:id,productId:l.productId,qty:l.qty,qtyStr:String(l.qty),unitCost:l.unitCost,unitCostStr:String(l.unitCost),lineTotal:l.total,lineTotalStr:String(l.total),discount:0,receivedQty:l.qty});await ctx.db.insert("stockMovements",{...scope,movementDate:a.purchaseDate,productId:l.productId,movementType:"purchase",referenceId:String(id),referenceType:"purchase",qtyIn:l.qty,qtyOut:0,runningBalance:newQty,unitCost:l.unitCost,supplierId:a.supplierId,createdBy:u._id});await ctx.db.insert("purchasePriceHistory",{productId:l.productId,purchaseId:id,supplierId:a.supplierId,cost:l.unitCost,date:a.purchaseDate,previousCost:oldCost});}
+ for(const l of lines){const p=await ctx.db.get("products", l.productId);if(!p)throw new ConvexError("Bidhaa haipo.");const newQty=p.currentQty+l.qty;const oldQty=p.currentQty;const oldCost=p.weightedAvgCost??p.lastPurchaseCost??0;const baseQty=Math.max(0,oldQty);const avg=round((baseQty*oldCost+l.qty*l.unitCost)/(baseQty+l.qty));await ctx.db.patch("products", l.productId,{currentQty:newQty,lastPurchaseCost:l.unitCost,lastPurchaseDate:a.purchaseDate,lastSupplierId:a.supplierId,weightedAvgCost:avg});await ctx.db.insert("purchaseLines",{purchaseId:id,productId:l.productId,qty:l.qty,qtyStr:String(l.qty),unitCost:l.unitCost,unitCostStr:String(l.unitCost),lineTotal:l.total,lineTotalStr:String(l.total),discount:0,receivedQty:l.qty});await ctx.db.insert("stockMovements",{...scope,movementDate:a.purchaseDate,productId:l.productId,movementType:"purchase",referenceId:String(id),referenceType:"purchase",qtyIn:l.qty,qtyOut:0,runningBalance:newQty,unitCost:l.unitCost,supplierId:a.supplierId,createdBy:u._id});await ctx.db.insert("purchasePriceHistory",{productId:l.productId,purchaseId:id,supplierId:a.supplierId,cost:l.unitCost,date:a.purchaseDate,previousCost:oldCost});}
  if(paid>0){const receiptNo=`RC-${Date.now().toString(36).toUpperCase()}`;for(const sp of (norm?.splits??[{method:a.paymentMethod??"cash",amount:paid,methodId:undefined,reference:undefined}]))await ctx.db.insert("supplierPayments",{...scope,paymentDate:a.purchaseDate,supplierId:a.supplierId,purchaseId:id,amount:sp.amount,paymentMethod:sp.method,paymentMethodId:sp.methodId,receiptNo,reference:sp.reference,createdBy:u._id,notes:"Malipo wakati wa kupokea bidhaa"});}
  const inventory=await getSystemAccount(ctx,scope,"1200","Inventory","asset"),payable=await getSystemAccount(ctx,scope,"2000","Accounts payable","liability");
  const paidLines=[] as {accountId:Awaited<ReturnType<typeof methodAccount>>;debit:number;credit:number;description:string}[];for(const sp of (norm?.splits??(paid>0?[{method:a.paymentMethod??"cash",methodId:undefined,amount:paid}]:[])))paidLines.push({accountId:await methodAccount(ctx,scope,{methodId:sp.methodId,method:sp.method}),debit:0,credit:sp.amount,description:`Supplier paid - ${sp.method}`}); // each method is paid out of its own account
@@ -39,7 +39,7 @@ export const supplierStatement = query({
   handler: async (ctx, a) => {
     const u = await requirePermission(ctx, "purchasing.view", "purchasing");
     const supplier = await ctx.db.get("suppliers", a.supplierId);
-    if (!canAccessBusinessRecord(u, supplier)) throw new Error("Supplier hayupo kwenye scope yako.");
+    if (!canAccessBusinessRecord(u, supplier)) throw new ConvexError("Supplier hayupo kwenye scope yako.");
     const purchases = filterScoped(u, await ctx.db.query("purchases").withIndex("by_supplier", q => q.eq("supplierId", a.supplierId)).collect())
       .filter(x => x.status === "posted" && (!a.startDate || x.purchaseDate >= a.startDate) && (!a.endDate || x.purchaseDate <= a.endDate));
     const payments = filterScoped(u, await ctx.db.query("supplierPayments").withIndex("by_supplier", q => q.eq("supplierId", a.supplierId)).collect())
@@ -67,10 +67,10 @@ export const recordSupplierPayment = mutation({
   args: { supplierId:v.id("suppliers"), paymentDate:v.string(), amount:v.optional(v.number()), paymentMethod:v.optional(v.string()), splits:v.optional(v.array(splitValidator)), reference:v.optional(v.string()), notes:v.optional(v.string()) },
   handler: async (ctx,a) => {
     const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"), scope=await resolveWriteScope(ctx, u); const supplier=await ctx.db.get("suppliers", a.supplierId);
-    if(!canAccessBusinessRecord(u,supplier)) throw new Error("Supplier hayupo kwenye scope yako.");
+    if(!canAccessBusinessRecord(u,supplier)) throw new ConvexError("Supplier hayupo kwenye scope yako.");
     assertDate(a.paymentDate,"Tarehe ya malipo");
     const {splits,total:amount}=await normaliseSplits(ctx,u,a.splits??[{method:a.paymentMethod??"cash",amount:a.amount??NaN,reference:a.reference}]);
-    if(amount<=0) throw new Error("Kiasi cha malipo lazima kiwe zaidi ya sifuri.");
+    if(amount<=0) throw new ConvexError("Kiasi cha malipo lazima kiwe zaidi ya sifuri.");
     const receiptNo=`RC-${Date.now().toString(36).toUpperCase()}`; const paymentIds=[] as Id<"supplierPayments">[];
     for(const sp of splits) paymentIds.push(await ctx.db.insert("supplierPayments",{...scope,supplierId:a.supplierId,paymentDate:a.paymentDate,amount:sp.amount,paymentMethod:sp.method,paymentMethodId:sp.methodId,receiptNo,reference:sp.reference,notes:a.notes,createdBy:u._id}));
     const paymentId=paymentIds[0];
@@ -136,15 +136,15 @@ export const createPurchaseOrder = mutation({
   handler: async (ctx, a) => {
     const u = await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"), scope = await resolveWriteScope(ctx, u);
     const supplier = await ctx.db.get("suppliers", a.supplierId);
-    if (!canAccessBusinessRecord(u, supplier)) throw new Error("Supplier hayupo kwenye branch yako.");
-    if (!a.lines.length) throw new Error("Ongeza angalau bidhaa moja.");
+    if (!canAccessBusinessRecord(u, supplier)) throw new ConvexError("Supplier hayupo kwenye branch yako.");
+    if (!a.lines.length) throw new ConvexError("Ongeza angalau bidhaa moja.");
     assertDate(a.orderDate, "Tarehe ya order"); if (a.expectedDelivery) assertDate(a.expectedDelivery, "Tarehe ya kupokea");
     let subtotal = 0;
     const validated = [] as Array<{productId: typeof a.lines[number]["productId"]; qty:number; unitCost:number; lineTotal:number}>;
     for (const line of a.lines) {
-      if (!Number.isFinite(line.qty) || line.qty <= 0 || !Number.isFinite(line.unitCost) || line.unitCost < 0) throw new Error("Kiasi au gharama si sahihi.");
+      if (!Number.isFinite(line.qty) || line.qty <= 0 || !Number.isFinite(line.unitCost) || line.unitCost < 0) throw new ConvexError("Kiasi au gharama si sahihi.");
       const product = await ctx.db.get("products", line.productId);
-      if (!canAccessRecord(u, product) || !product?.isActive) throw new Error("Bidhaa haipatikani kwenye branch yako.");
+      if (!canAccessRecord(u, product) || !product?.isActive) throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");
       const lineTotal = round(line.qty * line.unitCost); subtotal = round(subtotal + lineTotal);
       validated.push({...line, lineTotal});
     }
@@ -161,8 +161,8 @@ export const approvePurchaseOrder = mutation({
   args: { orderId: v.id("purchaseOrders") },
   handler: async (ctx, a) => {
     const u = await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"); const order = await ctx.db.get("purchaseOrders", a.orderId);
-    if (!canAccessRecord(u, order) || !order) throw new Error("Purchase Order haipatikani.");
-    if (order.status !== "pending_approval" && order.status !== "draft") throw new Error("Order hii haiwezi kuidhinishwa katika status yake ya sasa.");
+    if (!canAccessRecord(u, order) || !order) throw new ConvexError("Purchase Order haipatikani.");
+    if (order.status !== "pending_approval" && order.status !== "draft") throw new ConvexError("Order hii haiwezi kuidhinishwa katika status yake ya sasa.");
     await ctx.db.patch("purchaseOrders", a.orderId,{status:"approved",approvedBy:u._id,approvedAt:new Date().toISOString()});
     return {success:true};
   }
@@ -173,15 +173,15 @@ export const createGoodsReceivedNote = mutation({
   args: { purchaseOrderId:v.id("purchaseOrders"), receiptDate:v.string(), notes:v.optional(v.string()), lines:v.array(v.object({productId:v.id("products"),qtyReceived:v.number(),qtyRejected:v.optional(v.number())})) },
   handler: async (ctx,a) => {
     const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"), scope=await resolveWriteScope(ctx, u); const order=await ctx.db.get("purchaseOrders", a.purchaseOrderId);
-    if(!canAccessRecord(u,order)||!order) throw new Error("Purchase Order haipatikani.");
-    if(!["approved","partially_received"].includes(order.status)) throw new Error("Purchase Order lazima iwe approved kabla ya kupokea bidhaa.");
-    if(!a.lines.length) throw new Error("Ongeza bidhaa za kupokea."); assertDate(a.receiptDate,"Tarehe ya kupokea");
+    if(!canAccessRecord(u,order)||!order) throw new ConvexError("Purchase Order haipatikani.");
+    if(!["approved","partially_received"].includes(order.status)) throw new ConvexError("Purchase Order lazima iwe approved kabla ya kupokea bidhaa.");
+    if(!a.lines.length) throw new ConvexError("Ongeza bidhaa za kupokea."); assertDate(a.receiptDate,"Tarehe ya kupokea");
     const poLines=await ctx.db.query("purchaseOrderLines").withIndex("by_order",q=>q.eq("orderId",a.purchaseOrderId)).collect();
     const clean=[] as Array<{productId:typeof a.lines[number]["productId"];qtyReceived:number;qtyRejected:number;qtyOrdered:number;unitCost:number}>;
     for(const line of a.lines){
-      const poLine=poLines.find(x=>x.productId===line.productId); if(!poLine) throw new Error("Bidhaa haipo kwenye Purchase Order.");
-      const rejected=line.qtyRejected??0; if(!Number.isFinite(line.qtyReceived)||line.qtyReceived<0||!Number.isFinite(rejected)||rejected<0||line.qtyReceived+rejected<=0) throw new Error("Kiasi kilichopokelewa/kukataliwa si sahihi.");
-      if(line.qtyReceived+rejected>poLine.qtyOrdered-poLine.qtyReceived+1e-8) throw new Error("Kiasi kinazidi salio la Purchase Order.");
+      const poLine=poLines.find(x=>x.productId===line.productId); if(!poLine) throw new ConvexError("Bidhaa haipo kwenye Purchase Order.");
+      const rejected=line.qtyRejected??0; if(!Number.isFinite(line.qtyReceived)||line.qtyReceived<0||!Number.isFinite(rejected)||rejected<0||line.qtyReceived+rejected<=0) throw new ConvexError("Kiasi kilichopokelewa/kukataliwa si sahihi.");
+      if(line.qtyReceived+rejected>poLine.qtyOrdered-poLine.qtyReceived+1e-8) throw new ConvexError("Kiasi kinazidi salio la Purchase Order.");
       clean.push({productId:line.productId,qtyReceived:line.qtyReceived,qtyRejected:rejected,qtyOrdered:poLine.qtyOrdered,unitCost:poLine.unitCost});
     }
     const existing=await scopedRows(ctx,u,"goodsReceivedNotes"); const grnRef=`GRN-${existing.length+1}-${Date.now().toString(36).toUpperCase()}`;
@@ -195,13 +195,13 @@ export const confirmGoodsReceivedNote = mutation({
   args:{grnId:v.id("goodsReceivedNotes")},
   handler:async(ctx,a)=>{
     const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"),scope=await resolveWriteScope(ctx, u);const grn=await ctx.db.get("goodsReceivedNotes", a.grnId);
-    if(!canAccessRecord(u,grn)||!grn) throw new Error("GRN haipatikani."); if(grn.status!=="draft") throw new Error("GRN hii tayari imethibitishwa.");
-    const lines=await ctx.db.query("grnLines").withIndex("by_grn",q=>q.eq("grnId",a.grnId)).collect();if(!lines.length)throw new Error("GRN haina bidhaa.");
+    if(!canAccessRecord(u,grn)||!grn) throw new ConvexError("GRN haipatikani."); if(grn.status!=="draft") throw new ConvexError("GRN hii tayari imethibitishwa.");
+    const lines=await ctx.db.query("grnLines").withIndex("by_grn",q=>q.eq("grnId",a.grnId)).collect();if(!lines.length)throw new ConvexError("GRN haina bidhaa.");
     const order=grn.purchaseOrderId?await ctx.db.get("purchaseOrders", grn.purchaseOrderId):null;
     let receivedValue=0;
     for(const line of lines){
       receivedValue=round(receivedValue+round(line.qtyReceived*line.unitCost));
-      const product=await ctx.db.get("products", line.productId);if(!canAccessRecord(u,product)||!product)throw new Error("Bidhaa haipatikani.");
+      const product=await ctx.db.get("products", line.productId);if(!canAccessRecord(u,product)||!product)throw new ConvexError("Bidhaa haipatikani.");
       const newQty=product.currentQty+line.qtyReceived,oldQty=product.currentQty,oldCost=product.weightedAvgCost??product.lastPurchaseCost??0;
       const baseQty=Math.max(0,oldQty);const avg=line.qtyReceived>0?round((baseQty*oldCost+line.qtyReceived*line.unitCost)/(baseQty+line.qtyReceived)):oldCost;
       await ctx.db.patch("products", line.productId,{currentQty:newQty,lastPurchaseCost:line.unitCost,lastPurchaseDate:grn.receiptDate,lastSupplierId:grn.supplierId,weightedAvgCost:avg});
@@ -227,16 +227,16 @@ export const postPurchaseReturn = mutation({
   args:{purchaseId:v.id("purchases"),returnDate:v.string(),reason:v.optional(v.string()),lines:v.array(v.object({productId:v.id("products"),qty:v.number()}))},
   handler:async(ctx,a)=>{
     const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"),scope=await resolveWriteScope(ctx, u);const purchase=await ctx.db.get("purchases", a.purchaseId);
-    if(!canAccessRecord(u,purchase)||!purchase||purchase.status!=="posted")throw new Error("Purchase invoice haipatikani au haijapostiwa.");
-    if(!a.lines.length)throw new Error("Ongeza bidhaa za kurudisha."); assertDate(a.returnDate,"Tarehe ya return");
+    if(!canAccessRecord(u,purchase)||!purchase||purchase.status!=="posted")throw new ConvexError("Purchase invoice haipatikani au haijapostiwa.");
+    if(!a.lines.length)throw new ConvexError("Ongeza bidhaa za kurudisha."); assertDate(a.returnDate,"Tarehe ya return");
     const purchaseLines=await ctx.db.query("purchaseLines").withIndex("by_purchase",q=>q.eq("purchaseId",a.purchaseId)).collect();
     const previousReturns=filterScoped(u,await ctx.db.query("purchaseReturns").withIndex("by_purchase",q=>q.eq("purchaseId",a.purchaseId)).collect()).filter(r=>r.status==="posted");
     const priorLines=(await Promise.all(previousReturns.map(r=>ctx.db.query("purchaseReturnLines").withIndex("by_return",q=>q.eq("returnId",r._id)).collect()))).flat();
     const clean=[] as Array<{productId:typeof a.lines[number]["productId"];qty:number;unitCost:number;lineTotal:number}>;let total=0;
-    for(const line of a.lines){if(!Number.isFinite(line.qty)||line.qty<=0)throw new Error("Kiasi cha return si sahihi.");const bought=purchaseLines.find(x=>x.productId===line.productId);if(!bought)throw new Error("Bidhaa hii haipo kwenye invoice.");const already=priorLines.filter(x=>x.productId===line.productId).reduce((s,x)=>s+x.qty,0);if(line.qty> bought.qty-already+1e-8)throw new Error("Return inazidi kiasi kilichonunuliwa.");const product=await ctx.db.get("products", line.productId);if(!canAccessRecord(u,product)||!product)throw new Error("Bidhaa haipatikani.");if(product.currentQty+1e-8<line.qty)throw new Error(`Stock haitoshi kurudisha ${product.name}.`);const lineTotal=round(line.qty*bought.unitCost);total=round(total+lineTotal);clean.push({productId:line.productId,qty:line.qty,unitCost:bought.unitCost,lineTotal});}
+    for(const line of a.lines){if(!Number.isFinite(line.qty)||line.qty<=0)throw new ConvexError("Kiasi cha return si sahihi.");const bought=purchaseLines.find(x=>x.productId===line.productId);if(!bought)throw new ConvexError("Bidhaa hii haipo kwenye invoice.");const already=priorLines.filter(x=>x.productId===line.productId).reduce((s,x)=>s+x.qty,0);if(line.qty> bought.qty-already+1e-8)throw new ConvexError("Return inazidi kiasi kilichonunuliwa.");const product=await ctx.db.get("products", line.productId);if(!canAccessRecord(u,product)||!product)throw new ConvexError("Bidhaa haipatikani.");if(product.currentQty+1e-8<line.qty)throw new ConvexError(`Stock haitoshi kurudisha ${product.name}.`);const lineTotal=round(line.qty*bought.unitCost);total=round(total+lineTotal);clean.push({productId:line.productId,qty:line.qty,unitCost:bought.unitCost,lineTotal});}
     const existing=await scopedRows(ctx,u,"purchaseReturns");const returnRef=`PR-${existing.length+1}-${Date.now().toString(36).toUpperCase()}`;
     const returnId=await ctx.db.insert("purchaseReturns",{...scope,returnDate:a.returnDate,supplierId:purchase.supplierId,purchaseId:a.purchaseId,returnRef,total,reason:a.reason,status:"posted",createdBy:u._id});
-    for(const line of clean){const p=await ctx.db.get("products", line.productId);if(!p)throw new Error("Bidhaa haipo.");const newQty=p.currentQty-line.qty;await ctx.db.patch("products", line.productId,{currentQty:newQty});await ctx.db.insert("purchaseReturnLines",{returnId,productId:line.productId,qty:line.qty,unitCost:line.unitCost,lineTotal:line.lineTotal});await ctx.db.insert("stockMovements",{...scope,movementDate:a.returnDate,productId:line.productId,movementType:"purchase_return",referenceId:String(returnId),referenceType:"purchaseReturn",qtyIn:0,qtyOut:line.qty,runningBalance:newQty,unitCost:line.unitCost,supplierId:purchase.supplierId,notes:returnRef,createdBy:u._id});}
+    for(const line of clean){const p=await ctx.db.get("products", line.productId);if(!p)throw new ConvexError("Bidhaa haipo.");const newQty=p.currentQty-line.qty;await ctx.db.patch("products", line.productId,{currentQty:newQty});await ctx.db.insert("purchaseReturnLines",{returnId,productId:line.productId,qty:line.qty,unitCost:line.unitCost,lineTotal:line.lineTotal});await ctx.db.insert("stockMovements",{...scope,movementDate:a.returnDate,productId:line.productId,movementType:"purchase_return",referenceId:String(returnId),referenceType:"purchaseReturn",qtyIn:0,qtyOut:line.qty,runningBalance:newQty,unitCost:line.unitCost,supplierId:purchase.supplierId,notes:returnRef,createdBy:u._id});}
     // Returns reduce the supplier payable. A return exceeding the remaining payable creates a supplier credit.
     const inventory=await getSystemAccount(ctx,scope,"1200","Inventory","asset"),payable=await getSystemAccount(ctx,scope,"2000","Accounts payable","liability");
     await postSystemJournal(ctx,{scope,userId:u._id,date:a.returnDate,reference:returnRef,description:`Supplier purchase return ${returnRef}`,sourceType:"purchase_return",sourceId:String(returnId),lines:[{accountId:payable,debit:total,credit:0,description:"Reduce supplier payable"},{accountId:inventory,debit:0,credit:total,description:"Goods returned to supplier"}]});

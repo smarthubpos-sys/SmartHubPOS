@@ -7,6 +7,7 @@ import { api } from "@/convex/_generated/api.js";
 import { Button } from "@/components/ui/button.tsx";
 import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, Table } from "@/components/page-kit.tsx";
 import { localDate, tzOffset } from "@/lib/format.ts";
+import { useMoney } from "@/hooks/use-money.ts";
 import { errorText, getLocale, tr } from "@/lib/i18n.ts";
 import { biometricError, biometricSupported, getAssertion, platformBiometricAvailable } from "@/lib/webauthn.ts";
 
@@ -27,9 +28,17 @@ export default function AttendancePage({ kind: initial }: { kind: "in" | "out" }
   const authenticate = useMutation(api.biometric.authenticate);
   const recordManual = useMutation(api.attendance.recordManual);
   const { run } = useSubmit();
+  const waiveLate = useMutation(api.schedules.waiveLate);
+  const { money } = useMoney();
 
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
   useEffect(() => { void platformBiometricAvailable().then(setPlatform); }, []);
+
+  /** On time = green; late = amber, with how late and what will be deducted. */
+  function signInResult(r: { employeeName: string; time: string; scheduledStart?: string; lateMinutes?: number; lateDeduction?: number }): Result {
+    if ((r.lateMinutes ?? 0) > 0) return { ok: false, text: tr("{0}: umeingia saa {1}, umechelewa dakika {2} (ulitakiwa {3}). Utakatwa {4}.", [r.employeeName, r.time, r.lateMinutes ?? 0, r.scheduledStart ?? "", money(r.lateDeduction ?? 0)]) };
+    return { ok: true, text: tr("{0}: umeingia kazini saa {1}.", [r.employeeName, r.time]) };
+  }
 
   const verb = (k: "in" | "out") => (k === "in" ? tr("Ingia kazini") : tr("Toka kazini"));
 
@@ -43,7 +52,7 @@ export default function AttendancePage({ kind: initial }: { kind: "in" | "out" }
       let assertion;
       try { assertion = await getAssertion(challenge, ids); } catch (e) { throw biometricError(e); }
       const r = await authenticate({ challenge, ...assertion, kind, tzOffset: tzOffset() });
-      setResult({ ok: true, text: kind === "in" ? tr("{0}: umeingia kazini saa {1}.", [r.employeeName, r.time]) : tr("{0}: umetoka kazini saa {1} (masaa {2}).", [r.employeeName, r.time, (r as { hoursWorked?: number }).hoursWorked ?? 0]) });
+      setResult(kind === "in" ? signInResult(r) : { ok: true, text: tr("{0}: umetoka kazini saa {1} (masaa {2}).", [r.employeeName, r.time, (r as { hoursWorked?: number }).hoursWorked ?? 0]) });
     } catch (e) { setResult({ ok: false, text: errorText(e, "Uthibitisho wa alama umeshindikana.") }); }
     finally { setBusy(false); }
   }
@@ -77,15 +86,15 @@ export default function AttendancePage({ kind: initial }: { kind: "in" | "out" }
             <SelectBox value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}><option value="">{tr("-- Select --")}</option>{(today ?? []).map((e) => <option key={e.employeeId} value={e.employeeId}>{e.name}</option>)}</SelectBox>
           </FormField>
           <div className="flex items-end md:col-span-2">
-            <Button variant="outline" disabled={!employeeId} onClick={() => void run(async () => { const r = await recordManual({ employeeId: employeeId as never, kind, tzOffset: tzOffset() }); setResult({ ok: true, text: tr("{0}: imerekodiwa saa {1} (bila alama).", [r.employeeName, r.time]) }); }, tr("Imerekodiwa."))}>{tr("Rekodi bila alama (meneja)")}</Button>
+            <Button variant="outline" disabled={!employeeId} onClick={() => void run(async () => { const r = await recordManual({ employeeId: employeeId as never, kind, tzOffset: tzOffset() }); setResult(kind === "in" && (r.lateMinutes ?? 0) > 0 ? signInResult(r) : { ok: true, text: tr("{0}: imerekodiwa saa {1} (bila alama).", [r.employeeName, r.time]) }); }, tr("Imerekodiwa."))}>{tr("Rekodi bila alama (meneja)")}</Button>
           </div>
         </div>
       </Panel>
 
       <Panel title={tr("Mahudhurio ya leo")} actions={<Pill tone="green">{tr("Waliopo: {0}", [present])}</Pill>}>
         {!today || today.length === 0 ? <Empty>{tr("Bado hakuna mfanyakazi.")}</Empty> : (
-          <Table head={[tr("Mfanyakazi"), tr("Muda wa kuingia"), tr("Muda wa kutoka"), tr("Masaa"), tr("Hali")]}>
-            {today.map((r) => <tr key={r.employeeId}><td className="font-medium">{r.name}</td><td>{r.signInTime ?? "-"}</td><td>{r.signOutTime ?? "-"}</td><td>{r.hoursWorked ?? "-"}</td><td>{r.signInTime ? (r.signOutTime ? <Pill>{tr("Ametoka")}</Pill> : <Pill tone="green">{tr("Yupo kazini")}</Pill>) : <Pill tone="amber">{tr("Hajaingia")}</Pill>}</td></tr>)}
+          <Table head={[tr("Mfanyakazi"), tr("Ratiba ya leo"), tr("Muda wa kuingia"), tr("Muda wa kutoka"), tr("Masaa"), tr("Hali"), tr("Kuchelewa")]}>
+            {today.map((r) => <tr key={r.employeeId}><td className="font-medium">{r.name}</td><td className="whitespace-nowrap">{r.dayOff ? <Pill>{tr("Off")}</Pill> : r.scheduledStart ? `${r.scheduledStart}${r.scheduledEnd ? `–${r.scheduledEnd}` : ""}` : "-"}</td><td>{r.signInTime ?? "-"}</td><td>{r.signOutTime ?? "-"}</td><td>{r.hoursWorked ?? "-"}</td><td>{r.signInTime ? (r.signOutTime ? <Pill>{tr("Ametoka")}</Pill> : <Pill tone="green">{tr("Yupo kazini")}</Pill>) : <Pill tone="amber">{tr("Hajaingia")}</Pill>}</td><td className="whitespace-nowrap">{r.lateMinutes > 0 ? (<span className="flex items-center gap-2"><Pill tone="amber">{tr("Dakika {0}", [r.lateMinutes])}{r.lateWaived ? ` · ${tr("Imefutwa")}` : ` · ${money(r.lateDeduction)}`}</Pill>{!r.lateWaived && r.attendanceId && <Button size="sm" variant="ghost" onClick={() => void run(() => waiveLate({ attendanceId: r.attendanceId! }), tr("Kato limefutwa."))}>{tr("Futa kato")}</Button>}</span>) : "-"}</td></tr>)}
           </Table>
         )}
       </Panel>

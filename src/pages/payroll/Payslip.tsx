@@ -54,7 +54,9 @@ export default function Payslip() {
                 <tr><td>{tr("Overtime")}</td><td className="text-right">{money(r.overtime)}</td></tr>
                 <tr className="font-semibold"><td>{tr("Gross")}</td><td className="text-right">{money(r.grossPay)}</td></tr>
                 <tr><td>{tr("Makato")} ({tr("Kodi")})</td><td className="text-right">- {money(r.taxDeduction)}</td></tr>
-                <tr><td>{tr("Makato mengine")}</td><td className="text-right">- {money(r.otherDeductions)}</td></tr>
+                {(r.lateDeductions ?? 0) > 0 && <tr><td>{tr("Kuchelewa kazini")} ({r.lateCount ?? 0})</td><td className="text-right">- {money(r.lateDeductions ?? 0)}</td></tr>}
+                {(r.absentDeductions ?? 0) > 0 && <tr><td>{tr("Kutokuwepo kazini")} ({tr("siku {0}", [r.absentDays ?? 0])})</td><td className="text-right">- {money(r.absentDeductions ?? 0)}</td></tr>}
+                <tr><td>{tr("Makato mengine")}</td><td className="text-right">- {money(Math.max(0, r.otherDeductions - (r.lateDeductions ?? 0) - (r.absentDeductions ?? 0)))}</td></tr>
                 <tr className="text-base font-bold"><td>{tr("Jumla halisi")}</td><td className="text-right">{money(r.netPay)}</td></tr>
               </tbody>
             </table>

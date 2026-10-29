@@ -1,3 +1,4 @@
+import { ConvexError } from "convex/values";
 import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 
@@ -36,15 +37,15 @@ export function planStatus(tenant: { plan?: string; planEndsAt?: string } | null
 /** Sets a business to a 3-day demo, or records a payment (extends from the current end when still running). */
 export async function applyPlan(ctx: MutationCtx, tenantId: Id<"tenants">, opts: { plan: "demo" | "paid"; months?: number; amount?: number; note?: string }, createdBy?: Id<"users">) {
   const tenant = await ctx.db.get("tenants", tenantId);
-  if (!tenant) throw new Error("Biashara haipo");
+  if (!tenant) throw new ConvexError("Biashara haipo");
   const today = tzToday();
   if (opts.plan === "demo") {
     await ctx.db.patch("tenants", tenantId, { plan: "demo", planStartsAt: today, planEndsAt: planEnd(today, "demo"), planMonths: undefined, planAmount: undefined });
     return { plan: "demo" as const, startsAt: today, endsAt: planEnd(today, "demo") };
   }
   const { months, amount } = opts;
-  if (months === undefined || !Number.isInteger(months) || months < 1 || months > 60) throw new Error("Weka idadi ya miezi (1 hadi 60).");
-  if (amount === undefined || !Number.isFinite(amount) || amount <= 0) throw new Error("Weka kiasi kilicholipwa.");
+  if (months === undefined || !Number.isInteger(months) || months < 1 || months > 60) throw new ConvexError("Weka idadi ya miezi (1 hadi 60).");
+  if (amount === undefined || !Number.isFinite(amount) || amount <= 0) throw new ConvexError("Weka kiasi kilicholipwa.");
   const status = planStatus(tenant, today);
   const extending = tenant.plan === "paid" && !!status.endsAt && !status.expired;
   const startsAt = extending ? addDays(status.endsAt!, 1) : today;

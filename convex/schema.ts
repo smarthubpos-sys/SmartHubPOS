@@ -207,6 +207,7 @@ export default defineSchema({
     trackSerialNumbers: v.optional(v.boolean()),
     trackBatchNumbers: v.optional(v.boolean()),
     trackExpiry: v.optional(v.boolean()),
+    showInSales: v.optional(v.boolean()), // ticked = on the sales menu; unticked = hidden (back-office only); unset = automatic (see menuVisibility.ts)
     isActive: v.boolean(),
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_itemCode", ["itemCode"])
@@ -633,6 +634,11 @@ export default defineSchema({
     status: v.string(), // present | absent | late | half_day
     notes: v.optional(v.string()),
     recordedBy: v.id("users"),
+    // Snapshot taken at sign-in, so changing the rules later never rewrites history.
+    scheduledStart: v.optional(v.string()), // "HH:MM" the person was due in
+    lateMinutes: v.optional(v.number()),
+    lateDeduction: v.optional(v.number()),
+    lateWaived: v.optional(v.boolean()), // a manager cancelled the deduction
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_employee", ["employeeId"])
     .index("by_date", ["date"])
@@ -670,9 +676,46 @@ export default defineSchema({
     paymentStatus: v.string(), // pending | paid
     paidAt: v.optional(v.string()),
     notes: v.optional(v.string()),
+    // Part of otherDeductions that came from attendance rules.
+    lateDeductions: v.optional(v.number()),
+    lateCount: v.optional(v.number()),
+    absentDeductions: v.optional(v.number()),
+    absentDays: v.optional(v.number()),
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_period", ["periodId"])
     .index("by_employee", ["employeeId"]),
+
+  // ── STAFF SCHEDULES (weekly timetable, one row per employee per weekday) ──
+  workSchedules: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    branchId: v.optional(v.id("branches")),
+    employeeId: v.id("employees"),
+    weekday: v.number(), // 0 = Sunday ... 6 = Saturday
+    isOff: v.boolean(), // weekly day off: never late, never absent
+    startTime: v.optional(v.string()), // "HH:MM"
+    endTime: v.optional(v.string()), // "HH:MM"
+  }) .index("by_scope", ["tenantId", "branchId"])
+    .index("by_employee", ["employeeId"]),
+
+  // Business-wide closed days (public holidays...): nobody is late or absent on them.
+  offDays: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    branchId: v.optional(v.id("branches")),
+    date: v.string(),
+    reason: v.optional(v.string()),
+  }) .index("by_scope", ["tenantId", "branchId"]),
+
+  // What the business deducts for lateness and absence (one row per business).
+  attendanceRules: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    branchId: v.optional(v.id("branches")),
+    lateMode: v.string(), // fixed (one amount per late arrival) | per_minute
+    lateAmount: v.number(),
+    graceMinutes: v.number(), // 0 = even one minute late is deducted
+    absentEnabled: v.boolean(), // a full day's pay is deducted for a scheduled day with no sign-in, unless off/leave
+    updatedBy: v.optional(v.id("users")),
+    updatedAt: v.optional(v.string()),
+  }) .index("by_scope", ["tenantId", "branchId"]),
 
   // ── CHART OF ACCOUNTS ────────────────────────────────────────
   accounts: defineTable({
@@ -865,8 +908,17 @@ export default defineSchema({
     decidedAt: v.optional(v.string()),
     decisionNote: v.optional(v.string()),
     createdBy: v.id("users"),
+    // Self-service requests (Leave / Ruhusa module): who it was sent to and how it travelled.
+    target: v.optional(v.union(v.literal("manager"), v.literal("hr"))), // missing = entered by a manager in HR
+    requestedAt: v.optional(v.string()), // ISO time the request was sent
+    lateRequest: v.optional(v.boolean()), // asked after the leave had already started (or after the start time that day)
+    receivedAt: v.optional(v.string()), // first time the receiver's screen loaded the request
+    receivedBy: v.optional(v.id("users")),
+    viewedAt: v.optional(v.string()), // the receiver opened and read it
+    viewedBy: v.optional(v.id("users")),
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_employee", ["employeeId"])
+    .index("by_creator", ["createdBy"])
     .index("by_status", ["status"]),
 
   // ── BIOMETRIC (WebAuthn: fingerprint / Face ID / Windows Hello) for attendance ──

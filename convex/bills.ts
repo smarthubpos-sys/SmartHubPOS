@@ -1,5 +1,5 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, resolveWriteScope, scopedRows, requirePermission } from "./access";
 import { getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits } from "./paymentMethods";
@@ -44,14 +44,14 @@ export const create = mutation({
     const user = await requireManager(ctx, "accounts");
     const scope = await resolveWriteScope(ctx, user);
     const exp = EXPENSE[a.category];
-    if (!exp) throw new Error("Aina ya bili si sahihi.");
-    if (!a.vendor.trim()) throw new Error("Jina la mtoa huduma linahitajika.");
-    if (!Number.isFinite(a.amount) || a.amount <= 0) throw new Error("Kiasi lazima kiwe zaidi ya sifuri.");
-    if (a.dueDate < a.billDate) throw new Error("Tarehe ya mwisho lazima iwe baada ya tarehe ya bili.");
+    if (!exp) throw new ConvexError("Aina ya bili si sahihi.");
+    if (!a.vendor.trim()) throw new ConvexError("Jina la mtoa huduma linahitajika.");
+    if (!Number.isFinite(a.amount) || a.amount <= 0) throw new ConvexError("Kiasi lazima kiwe zaidi ya sifuri.");
+    if (a.dueDate < a.billDate) throw new ConvexError("Tarehe ya mwisho lazima iwe baada ya tarehe ya bili.");
     const existing = (await scopedRows(ctx, user, "bills"));
     const next = existing.reduce((m, b) => { const x = /^BILL-(\d+)$/.exec(b.billNumber); return x ? Math.max(m, Number(x[1])) : m; }, 0) + 1;
     const billNumber = a.billNumber?.trim() || `BILL-${String(next).padStart(4, "0")}`;
-    if (existing.some((b) => b.billNumber === billNumber && b.status !== "void")) throw new Error("Namba ya bili imeshatumika.");
+    if (existing.some((b) => b.billNumber === billNumber && b.status !== "void")) throw new ConvexError("Namba ya bili imeshatumika.");
     const amount = roundMoney(a.amount);
     const id = await ctx.db.insert("bills", { ...scope, billNumber, vendor: a.vendor.trim(), category: a.category, billDate: a.billDate, dueDate: a.dueDate, amount, paidAmount: 0, status: "unpaid", notes: a.notes, createdBy: user._id });
     const expense = await getSystemAccount(ctx, scope, exp.code, exp.name, "expense");
@@ -67,13 +67,13 @@ export const pay = mutation({
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "accounts");
     const bill = await ctx.db.get("bills", a.billId);
-    if (!bill || !canAccessRecord(user, bill)) throw new Error("Bili haipatikani.");
-    if (bill.status === "void") throw new Error("Bili hii imebatilishwa.");
-    if (!a.methodId && !PAY[a.method]) throw new Error("Njia ya malipo si sahihi.");
+    if (!bill || !canAccessRecord(user, bill)) throw new ConvexError("Bili haipatikani.");
+    if (bill.status === "void") throw new ConvexError("Bili hii imebatilishwa.");
+    if (!a.methodId && !PAY[a.method]) throw new ConvexError("Njia ya malipo si sahihi.");
     const chosen = a.methodId ? (await normaliseSplits(ctx, user, [{ method: a.method, methodId: a.methodId, amount: 1 }])).splits[0] : null; // validates the method belongs to this business and is active
     const outstanding = roundMoney(bill.amount - bill.paidAmount);
     const amount = roundMoney(a.amount);
-    if (!Number.isFinite(amount) || amount <= 0 || amount > outstanding) throw new Error("Malipo lazima yawe zaidi ya sifuri na yasizidi deni.");
+    if (!Number.isFinite(amount) || amount <= 0 || amount > outstanding) throw new ConvexError("Malipo lazima yawe zaidi ya sifuri na yasizidi deni.");
     const scope = { tenantId: bill.tenantId, branchId: bill.branchId };
     const paymentId = await ctx.db.insert("billPayments", { ...scope, billId: a.billId, paymentDate: a.paymentDate, amount, method: chosen?.method ?? a.method, methodId: chosen?.methodId, reference: a.reference, createdBy: user._id });
     const paid = roundMoney(bill.paidAmount + amount);
@@ -91,8 +91,8 @@ export const voidBill = mutation({
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "accounts");
     const bill = await ctx.db.get("bills", a.billId);
-    if (!bill || !canAccessRecord(user, bill)) throw new Error("Bili haipatikani.");
-    if (bill.paidAmount > 0) throw new Error("Bili iliyolipwa kiasi haiwezi kubatilishwa.");
+    if (!bill || !canAccessRecord(user, bill)) throw new ConvexError("Bili haipatikani.");
+    if (bill.paidAmount > 0) throw new ConvexError("Bili iliyolipwa kiasi haiwezi kubatilishwa.");
     if (bill.status === "void") return a.billId;
     const scope = { tenantId: bill.tenantId, branchId: bill.branchId };
     const exp = EXPENSE[bill.category] ?? EXPENSE.other;

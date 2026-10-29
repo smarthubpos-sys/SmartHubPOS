@@ -1,5 +1,5 @@
 import { mutation, query, type MutationCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { surfaceError } from "./surfaceError";
 import { assertAutoProducible, autoProduceForSale } from "./autoProduce";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -41,9 +41,9 @@ export async function deductStockOnce(
     product.branchId &&
     product.branchId !== scope.branchId)
 ) {
-  throw new Error("Bidhaa haipo kwenye biashara au tawi hili.");
+  throw new ConvexError("Bidhaa haipo kwenye biashara au tawi hili.");
 }
-    if (!allowNegativeStock && product.currentQty + 1e-8 < qty) throw new Error(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, inayohitajika: ${qty}`);
+    if (!allowNegativeStock && product.currentQty + 1e-8 < qty) throw new ConvexError(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, inayohitajika: ${qty}`);
   }
   const now = new Date().toISOString();
   for (const [pid, qty] of need) {
@@ -150,17 +150,17 @@ export const place = mutation({
     try {
     const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
     const scope = await resolveWriteScope(ctx, user);
-    if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
+    if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
     const tenantId = scope.tenantId;
     const settings = await ctx.db.query("tenantSettings")
       .withIndex("by_tenant", q => q.eq("tenantId", tenantId))
       .first();
     if (!waiterOrdersAllowedFor(user.role, settings)) {
-      throw new Error("Waiter Orders imezimwa kwa biashara hii.");
+      throw new ConvexError("Waiter Orders imezimwa kwa biashara hii.");
     }
     const customerName = args.customerName.trim();
-    if (!customerName) throw new Error("Weka jina la mteja.");
-    if (args.lines.length === 0) throw new Error("Ongeza angalau bidhaa moja.");
+    if (!customerName) throw new ConvexError("Weka jina la mteja.");
+    if (args.lines.length === 0) throw new ConvexError("Ongeza angalau bidhaa moja.");
 
     const company = await getCompanySettings(ctx, user);
     const allowNegativeStock = !!company?.allowNegativeStock;
@@ -173,22 +173,22 @@ export const place = mutation({
     const lines = [];
     for (const line of args.lines) {
       if (!Number.isFinite(line.qty) || line.qty <= 0) {
-        throw new Error("Kiasi cha bidhaa lazima kiwe zaidi ya sifuri.");
+        throw new ConvexError("Kiasi cha bidhaa lazima kiwe zaidi ya sifuri.");
       }
       const product = await ctx.db.get("products", line.productId);
       if (!product || product.isActive === false) {
-        throw new Error("Bidhaa haipo au haifanyi kazi.");
+        throw new ConvexError("Bidhaa haipo au haifanyi kazi.");
       }
       if (product.tenantId !== scope.tenantId ||
           (scope.branchId && product.branchId && product.branchId !== scope.branchId)) {
-        throw new Error("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
+        throw new ConvexError("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
       }
       if (!allowNegativeStock && !produceOnSale.has(String(line.productId)) && product.currentQty + 1e-8 < (requested.get(String(line.productId)) ?? line.qty)) {
-        throw new Error(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, unayoweka: ${requested.get(String(line.productId))}`);
+        throw new ConvexError(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, unayoweka: ${requested.get(String(line.productId))}`);
       }
       const unitPrice = product.sellingPrice;
       if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-        throw new Error("Bei ya bidhaa si sahihi.");
+        throw new ConvexError("Bei ya bidhaa si sahihi.");
       }
       lines.push({
         productId: product._id,
@@ -225,10 +225,10 @@ async function ownOrder(ctx: Parameters<typeof resolveWriteScope>[0], orderId: I
   const scope = await resolveWriteScope(ctx, user);
   const order = await ctx.db.get("waiterOrders", orderId);
   if (!order || order.tenantId !== scope.tenantId || order.branchId !== scope.branchId) {
-    throw new Error("Oda haipo kwenye biashara au tawi lako.");
+    throw new ConvexError("Oda haipo kwenye biashara au tawi lako.");
   }
   if (isWaiter(user.role) && order.waiterId !== user._id) {
-    throw new Error("Hii si oda yako.");
+    throw new ConvexError("Hii si oda yako.");
   }
   return { user, order };
 }
@@ -244,7 +244,7 @@ export const sendToCashier = mutation({
       await deductStockOnce(ctx, order, user, { tenantId: order.tenantId, branchId: order.branchId });
       await ctx.db.patch("waiterOrders", order._id, { status: "pending", sentAt: now, updatedAt: now });
     } else if (order.status !== "pending" && order.status !== "accepted") {
-      throw new Error("Oda hii haiwezi kutumwa.");
+      throw new ConvexError("Oda hii haiwezi kutumwa.");
     }
     return order._id;
     } catch (e) { throw surfaceError(e); }
@@ -257,9 +257,9 @@ export const markPrinted = mutation({
   handler: async (ctx, args) => {
     try {
     const { user, order } = await ownOrder(ctx, args.orderId);
-    if (!isWaiter(user.role)) throw new Error("Chapisha oda kutoka kwenye foleni ya cashier.");
+    if (!isWaiter(user.role)) throw new ConvexError("Chapisha oda kutoka kwenye foleni ya cashier.");
     if (order.status === "printed") return order._id;
-    if (order.status !== "placed") throw new Error("Oda hii tayari imetumwa au haiwezi kuchapishwa hapa.");
+    if (order.status !== "placed") throw new ConvexError("Oda hii tayari imetumwa au haiwezi kuchapishwa hapa.");
     const now = new Date().toISOString();
     await deductStockOnce(ctx, order, user, { tenantId: order.tenantId, branchId: order.branchId });
     await ctx.db.patch("waiterOrders", order._id, { status: "printed", printedAt: now, updatedAt: now });
@@ -273,15 +273,15 @@ export const markHandled = mutation({
   handler: async (ctx, args) => {
     try {
     const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
-    if (isWaiter(user.role) || isSuper(user.role)) throw new Error("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
+    if (isWaiter(user.role) || isSuper(user.role)) throw new ConvexError("Cashier pekee ndiye anayeweza kupokea oda iliyotumwa.");
     const scope = await viewScope(ctx, user);
     const order = await ctx.db.get("waiterOrders", args.orderId);
     if (!order || !orderInScope(user, scope, order)) {
-      throw new Error("Oda haipo kwenye biashara au tawi lako.");
+      throw new ConvexError("Oda haipo kwenye biashara au tawi lako.");
     }
     if (order.status === "accepted") return order._id; // printing again is harmless
     if (order.status !== "pending") {
-      throw new Error("Oda hii bado haijatumwa na mhudumu.");
+      throw new ConvexError("Oda hii bado haijatumwa na mhudumu.");
     }
     const now = new Date().toISOString();
     await ctx.db.patch("waiterOrders", order._id, {
@@ -307,15 +307,15 @@ export const cancel = mutation({
   handler: async (ctx, args) => {
     try {
     const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
-    if (!(await roleHasPermission(ctx, user, "sales.void"))) throw new Error("Huna ruhusa ya kufuta oda.");
+    if (!(await roleHasPermission(ctx, user, "sales.void"))) throw new ConvexError("Huna ruhusa ya kufuta oda.");
     const scope = await viewScope(ctx, user);
     const order = await ctx.db.get("waiterOrders", args.orderId);
     if (!order || !orderInScope(user, scope, order)) {
-      throw new Error("Oda haipo kwenye biashara au tawi lako.");
+      throw new ConvexError("Oda haipo kwenye biashara au tawi lako.");
     }
     if (order.status === "cancelled") return order._id;
-    if (order.settledAt) throw new Error("Oda hii tayari imelipwa kwa cashier; haiwezi kufutwa (mauzo na fedha vimeshahesabiwa).");
-    if ((order.paidAmount ?? 0) > 0) throw new Error("Oda hii imeshalipiwa kiasi kwa cashier; haiwezi kufutwa. Maliza deni lililobaki.");
+    if (order.settledAt) throw new ConvexError("Oda hii tayari imelipwa kwa cashier; haiwezi kufutwa (mauzo na fedha vimeshahesabiwa).");
+    if ((order.paidAmount ?? 0) > 0) throw new ConvexError("Oda hii imeshalipiwa kiasi kwa cashier; haiwezi kufutwa. Maliza deni lililobaki.");
     const now = new Date().toISOString();
     if (order.stockDeducted) {
       for (const line of order.lines) {
@@ -363,32 +363,32 @@ export const submit = mutation({
     try {
     const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
     const scope = await resolveWriteScope(ctx, user);
-    if (!scope.tenantId) throw new Error("Chagua biashara kwanza.");
+    if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
     const tenantId = scope.tenantId;
     const key = args.clientKey.trim();
-    if (key.length < 8 || key.length > 80) throw new Error("Ombi si sahihi. Fungua ukurasa upya.");
+    if (key.length < 8 || key.length > 80) throw new ConvexError("Ombi si sahihi. Fungua ukurasa upya.");
     const existing = await ctx.db.query("waiterOrders").withIndex("by_client_key", q => q.eq("waiterId", user._id).eq("clientKey", key)).first();
     if (existing) return { orderId: existing._id, status: existing.status, duplicate: true };
     const settings = await ctx.db.query("tenantSettings").withIndex("by_tenant", q => q.eq("tenantId", tenantId)).first();
-    if (!waiterOrdersAllowedFor(user.role, settings)) throw new Error("Selling Point imezimwa kwa biashara hii.");
-    if (args.lines.length === 0) throw new Error("Ongeza angalau bidhaa moja.");
+    if (!waiterOrdersAllowedFor(user.role, settings)) throw new ConvexError("Selling Point imezimwa kwa biashara hii.");
+    if (args.lines.length === 0) throw new ConvexError("Ongeza angalau bidhaa moja.");
 
     const merged = new Map<string, { qty: number; discount: number }>(); // the same product tapped many times = one line
     for (const l of args.lines) {
-      if (!Number.isFinite(l.qty) || l.qty <= 0) throw new Error("Kiasi cha bidhaa lazima kiwe zaidi ya sifuri.");
+      if (!Number.isFinite(l.qty) || l.qty <= 0) throw new ConvexError("Kiasi cha bidhaa lazima kiwe zaidi ya sifuri.");
       const d = l.discount ?? 0;
-      if (!Number.isFinite(d) || d < 0) throw new Error("Punguzo la bei si sahihi.");
+      if (!Number.isFinite(d) || d < 0) throw new ConvexError("Punguzo la bei si sahihi.");
       const prev = merged.get(String(l.productId));
       merged.set(String(l.productId), { qty: (prev?.qty ?? 0) + l.qty, discount: (prev?.discount ?? 0) + d });
     }
     const lines = [];
     for (const [pid, { qty, discount }] of merged) {
       const product = await ctx.db.get("products", pid as Id<"products">);
-      if (!product || product.isActive === false) throw new Error("Bidhaa haipo au haifanyi kazi.");
-      if (product.tenantId !== scope.tenantId || (scope.branchId && product.branchId && product.branchId !== scope.branchId)) throw new Error("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
-      if (!Number.isFinite(product.sellingPrice) || product.sellingPrice < 0) throw new Error("Bei ya bidhaa si sahihi.");
+      if (!product || product.isActive === false) throw new ConvexError("Bidhaa haipo au haifanyi kazi.");
+      if (product.tenantId !== scope.tenantId || (scope.branchId && product.branchId && product.branchId !== scope.branchId)) throw new ConvexError("Huna ruhusa ya kutumia bidhaa hiyo kwenye tawi hili.");
+      if (!Number.isFinite(product.sellingPrice) || product.sellingPrice < 0) throw new ConvexError("Bei ya bidhaa si sahihi.");
       const gross = Math.round(qty * product.sellingPrice * 100) / 100;
-      if (discount > gross + 1e-8) throw new Error(`Punguzo la ${product.name} linazidi bei ya mstari.`);
+      if (discount > gross + 1e-8) throw new ConvexError(`Punguzo la ${product.name} linazidi bei ya mstari.`);
       lines.push({ productId: product._id, productName: product.name, qty, unitPrice: product.sellingPrice, ...(discount > 0 ? { discount } : {}), lineTotal: Math.round((gross - discount) * 100) / 100 });
     }
     const now = new Date().toISOString();
@@ -446,8 +446,8 @@ export const billSummary = query({
     let total = 0;
     for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
       const o = await ctx.db.get("waiterOrders", id);
-      if (!o || !orderInScope(user, scope, o) || o.status === "cancelled") throw new Error("Oda haipo kwenye biashara au tawi lako.");
-      if (!billVisible(user, o)) throw new Error("Hii si bili yako.");
+      if (!o || !orderInScope(user, scope, o) || o.status === "cancelled") throw new ConvexError("Oda haipo kwenye biashara au tawi lako.");
+      if (!billVisible(user, o)) throw new ConvexError("Hii si bili yako.");
       if (o.tableNumber) tables.add(o.tableNumber);
       for (const l of o.lines) {
         const k = `${l.productId}|${l.unitPrice}`;
@@ -471,10 +471,10 @@ export const markBillPrinted = mutation({
       for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
         const order = await ctx.db.get("waiterOrders", id);
         if (!order || !orderInScope(user, scope, order) || order.status === "cancelled") {
-          throw new Error("Oda haipo kwenye biashara au tawi lako.");
+          throw new ConvexError("Oda haipo kwenye biashara au tawi lako.");
         }
         if (!billVisible(user, order)) {
-          throw new Error("Hii si bili yako.");
+          throw new ConvexError("Hii si bili yako.");
         }
         if (!order.billPrintedAt) {
           await ctx.db.patch("waiterOrders", order._id, {
@@ -500,15 +500,15 @@ export const sendBillToCashier = mutation({
   handler: async (ctx, args) => {
     try {
       const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
-      if (!isWaiter(user.role)) throw new Error("Ni mhudumu pekee anayetuma bili kwa cashier.");
+      if (!isWaiter(user.role)) throw new ConvexError("Ni mhudumu pekee anayetuma bili kwa cashier.");
       const scope = await viewScope(ctx, user);
-      if (args.orderIds.length === 0) throw new Error("Chagua angalau oda moja.");
+      if (args.orderIds.length === 0) throw new ConvexError("Chagua angalau oda moja.");
       const now = new Date().toISOString();
       for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
         const order = await ctx.db.get("waiterOrders", id);
-        if (!order || !orderInScope(user, scope, order) || order.status === "cancelled" || order.status === "placed") throw new Error("Oda haipo kwenye biashara au tawi lako.");
-        if (order.waiterId !== user._id) throw new Error("Hii si oda yako.");
-        if (order.billPrintedAt) throw new Error("Bili hii tayari imechapishwa.");
+        if (!order || !orderInScope(user, scope, order) || order.status === "cancelled" || order.status === "placed") throw new ConvexError("Oda haipo kwenye biashara au tawi lako.");
+        if (order.waiterId !== user._id) throw new ConvexError("Hii si oda yako.");
+        if (order.billPrintedAt) throw new ConvexError("Bili hii tayari imechapishwa.");
         if (!order.billSentAt) await ctx.db.patch("waiterOrders", order._id, { billSentAt: now, billSentBy: user._id, updatedAt: now });
       }
       await logAudit(ctx, user, { action: "send_bill_to_cashier", module: "sales", details: `oda ${args.orderIds.length}` });

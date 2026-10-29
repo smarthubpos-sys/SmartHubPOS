@@ -124,16 +124,16 @@ describe("Sales and Selling Point permissions are independent", () => {
 });
 
 describe("permission matrix (what each role really gets)", () => {
-  it("cashier: sell, view and print only - no reports, stock, accounts, purchasing, payroll, maintenance", async () => {
+  it("cashier: sell, view and print (plus asking for leave) only - no reports, stock, accounts, purchasing, payroll, maintenance", async () => {
     const { as, cashier } = await setup();
     const p = await as(cashier).query(api.maintenance.myPermissions, {});
-    expect(p.sort()).toEqual(["sales.manage", "sales.print", "sales.view", "waiterOrders.manage", "waiterOrders.view"]);
+    expect(p.sort()).toEqual(["leave.request", "sales.manage", "sales.print", "sales.view", "waiterOrders.manage", "waiterOrders.view"]);
   });
 
   it("accountant: every financial view (incl. profit/loss, cost, margins) and nothing that changes sales, stock, purchases or users", async () => {
     const { as, accountant } = await setup();
     const p = await as(accountant).query(api.maintenance.myPermissions, {});
-    expect(p.sort()).toEqual(["accounts.export", "accounts.print", "accounts.reports.view", "accounts.view", "maintenance.audit.view", "maintenance.periods", "payroll.export", "payroll.print", "payroll.reports.view", "payroll.view", "purchasing.export", "purchasing.print", "purchasing.reports.view", "purchasing.view", "sales.export", "sales.print", "sales.reports.view", "sales.view", "stock.export", "stock.print", "stock.reports.view", "stock.view", "suppliers.view"]);
+    expect(p.sort()).toEqual(["accounts.export", "accounts.print", "accounts.reports.view", "accounts.view", "leave.request", "maintenance.audit.view", "maintenance.periods", "payroll.export", "payroll.print", "payroll.reports.view", "payroll.view", "purchasing.export", "purchasing.print", "purchasing.reports.view", "purchasing.view", "sales.export", "sales.print", "sales.reports.view", "sales.view", "stock.export", "stock.print", "stock.reports.view", "stock.view", "suppliers.view"]);
     for (const banned of ["sales.manage", "sales.edit", "sales.void", "stock.manage", "stock.adjust", "purchasing.manage", "purchasing.edit", "purchasing.delete", "maintenance.users", "maintenance.roles", "payroll.manage", "accounts.approve"]) expect(p).not.toContain(banned);
   });
 
@@ -149,9 +149,9 @@ describe("permission matrix (what each role really gets)", () => {
     await expect(a.mutation(api.sales.createInvoice, { clientId: clientA, invoiceDate: DAY, lines: [] } as never)).rejects.toThrow(/sales\.manage/);
   });
 
-  it("waiter and waitress: everyday sales only (view, sell, print) - same for both, nothing else", async () => {
+  it("waiter and waitress: everyday sales only (view, sell, print, ask for leave) - same for both, nothing else", async () => {
     const { as, waiter, waitress } = await setup();
-    for (const id of [waiter, waitress]) expect((await as(id).query(api.maintenance.myPermissions, {})).sort()).toEqual(["sales.manage", "sales.print", "sales.view", "waiterOrders.manage", "waiterOrders.view"]);
+    for (const id of [waiter, waitress]) expect((await as(id).query(api.maintenance.myPermissions, {})).sort()).toEqual(["leave.request", "sales.manage", "sales.print", "sales.view", "waiterOrders.manage", "waiterOrders.view"]);
   });
 
   it("waiter works through normal sales screens but every financial report and finance screen is refused", async () => {

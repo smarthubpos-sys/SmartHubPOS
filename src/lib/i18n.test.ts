@@ -6,7 +6,8 @@ import { ACCESS_DICT } from "./i18n-dict-access.ts";
 import { SUPERADMIN_DICT, INVOICING_DICT, DEPT_DICT } from "./i18n-dict-superadmin.ts";
 import { PREPORT_DICT } from "./i18n-dict-preports.ts";
 import { IMPORT_DICT } from "./i18n-dict-import.ts";
-import { tr, trMessage, trValue, errorText, getLang, setLang } from "./i18n.ts";
+import { FRIENDLY_DICT } from "./i18n-dict-friendly.ts";
+import { tr, trMessage, trValue, errorText, errorKind, getLang, setLang } from "./i18n.ts";
 
 const placeholders = (s: string) => (s.match(/\{\d+\}/g) ?? []).sort().join(",");
 
@@ -56,5 +57,60 @@ describe("single-language dictionary", () => {
     setLang("en", { reload: false });
     expect(errorText(stale, "x")).toBe("The server is not up to date: function 'waiterOrders:listForBills' does not exist on this system. Contact your system administrator.");
     setLang("sw", { reload: false });
+  });
+});
+
+describe("friendly permission and mistake messages", () => {
+  // What a ConvexError looks like on the screen: the text sits in `data` (a plain Error would only say "Server Error" in production).
+  const denied = (text: string) => Object.assign(new Error("[CONVEX M(x)] [Request ID: y] Server Error"), { data: text });
+
+  it("keeps a matching Kiswahili and English text, with the same placeholders, for every friendly entry", () => {
+    for (const [key, v] of Object.entries(FRIENDLY_DICT)) {
+      expect(v.sw, key).toBeTruthy();
+      expect(v.en, key).toBeTruthy();
+      expect(placeholders(v.sw), key).toBe(placeholders(key));
+      expect(placeholders(v.en), key).toBe(placeholders(key));
+    }
+  });
+
+  it("says plainly that the person has no permission (and what to do), in the system language, not as a system fault", () => {
+    const e = denied("Forbidden: manager permission required");
+    expect(errorKind(e)).toBe("permission");
+    expect(errorText(e, "Imeshindikana kuhifadhi taarifa.")).toBe("Huna ruhusa ya kufanya kitendo hiki; ni meneja pekee anayeweza. Muombe meneja au msimamizi akupe ruhusa.");
+    setLang("en", { reload: false });
+    expect(errorText(e, "Imeshindikana kuhifadhi taarifa.")).toBe("You do not have permission to do this; only a manager can. Ask a manager or administrator to give you permission.");
+    setLang("sw", { reload: false });
+  });
+
+  it("names the missing permission so the administrator knows what to grant", () => {
+    const e = denied('Forbidden: permission "stock.adjust" required');
+    expect(errorKind(e)).toBe("permission");
+    expect(errorText(e)).toContain("stock.adjust");
+    expect(errorText(e)).toMatch(/^Huna ruhusa/);
+    setLang("en", { reload: false });
+    expect(errorText(e)).toMatch(/^You do not have permission/);
+    setLang("sw", { reload: false });
+  });
+
+  it("treats an ended session as a sign-in problem, and a mistake as neither", () => {
+    expect(errorKind(denied("Unauthenticated"))).toBe("signin");
+    expect(errorText(denied("Unauthenticated"))).toMatch(/Ingia tena/);
+    expect(errorKind(denied("Weka jina la mteja."))).toBeNull();
+    expect(errorKind(new Error("Cannot read properties of undefined"))).toBeNull();
+  });
+
+  it("tells a person who made a mistake what is wrong and what to do, in English when English is the system language", () => {
+    setLang("en", { reload: false });
+    expect(errorText(denied("Weka jina la mteja."))).toBe("Enter the customer's name.");
+    expect(errorText(denied("Stock haitoshi kwa Bia. Iliyopo: 2, inahitajika: 5."))).toBe("Not enough stock for Bia. Available: 2, needed: 5. Reduce the quantity or receive more stock.");
+    expect(errorText(denied("Mteja amefikia kikomo cha mkopo. Deni la mteja lingekuwa 900, kikomo cha mkopo ni 500. Lipa sehemu ya deni kwanza."))).toBe("The customer has reached the credit limit. The customer's debt would be 900, the credit limit is 500. Pay part of the debt first.");
+    expect(errorText(denied("Kipindi cha hesabu \"Oktoba\" kimefungwa (2026-10-01 hadi 2026-10-31); huwezi kuweka miamala ya tarehe 2026-10-15. Mwombe meneja afungue kipindi kwanza."))).toMatch(/^The accounting period "Oktoba" is closed/);
+    setLang("sw", { reload: false });
+  });
+
+  it("only a real unexpected fault falls back to the generic message, which still says what to do", () => {
+    const hidden = new Error("[CONVEX M(x)] [Request ID: y] Server Error");
+    expect(errorKind(hidden)).toBeNull();
+    expect(errorText(hidden, "Imeshindikana kuhifadhi taarifa.")).toMatch(/jaribu tena/i);
   });
 });

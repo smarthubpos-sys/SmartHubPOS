@@ -1,3 +1,4 @@
+import { ConvexError } from "convex/values";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
 import { SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, effectiveModules, permissionsWithNewDefaults } from "./permissions";
@@ -51,19 +52,19 @@ export async function getCurrentProfile(ctx: QueryCtx) {
  */
 export async function requireActiveUser(ctx: QueryCtx, module?: string, opts: { allowPasswordChange?: boolean } = {}) {
   const identity = await ctx.auth.getUserIdentity();
-  if (!identity) throw new Error("Unauthenticated");
+  if (!identity) throw new ConvexError("Unauthenticated");
   const user = await getCurrentProfile(ctx);
-  if (!user || user.isActive === false) throw new Error("Forbidden: active user account required");
+  if (!user || user.isActive === false) throw new ConvexError("Forbidden: active user account required");
   // A user told to change the password must do so first: the screen alone is not a protection, the server refuses everything else too.
-  if (user.requirePasswordChange === true && !opts.allowPasswordChange) throw new Error("Forbidden: password change required");
+  if (user.requirePasswordChange === true && !opts.allowPasswordChange) throw new ConvexError("Forbidden: password change required");
   // Users of a stopped business cannot use the system (Super Admin is never blocked).
   if (!isSuperAdmin(user) && user.tenantId) {
     const tenant = await ctx.db.get("tenants", user.tenantId);
-    if (tenant && tenant.isActive === false) throw new Error("Forbidden: business suspended");
-    if (tenant && planStatus(tenant, tzToday()).expired) throw new Error("Forbidden: subscription expired");
+    if (tenant && tenant.isActive === false) throw new ConvexError("Forbidden: business suspended");
+    if (tenant && planStatus(tenant, tzToday()).expired) throw new ConvexError("Forbidden: subscription expired");
     if (module) {
       const allowed = effectiveModules(tenant?.modules, user.menuAccess);
-      if (allowed && !allowed.includes(module)) throw new Error("Forbidden: module not available for your account");
+      if (allowed && !allowed.includes(module)) throw new ConvexError("Forbidden: module not available for your account");
     }
   }
   return user;
@@ -99,7 +100,7 @@ export async function requireManager(ctx: QueryCtx, module?: string) {
   if (!["super_admin", "superadmin", "admin", "administrator", "manager", "owner", "business_owner"].includes(role)) {
     // Custom roles created in Maintenance > Role Management may carry the "system.manager" permission.
     if (await roleHasPermission(ctx, user, "system.manager")) return user;
-    throw new Error("Forbidden: manager permission required");
+    throw new ConvexError("Forbidden: manager permission required");
   }
   return user;
 }
@@ -126,7 +127,7 @@ export async function roleHasPermission(ctx: QueryCtx, user: MaybeUser, permissi
 
 export async function requirePermission(ctx: QueryCtx, permission: string, module?: string) {
   const user = await requireActiveUser(ctx, module);
-  if (!(await roleHasPermission(ctx, user, permission))) throw new Error(`Forbidden: permission "${permission}" required`);
+  if (!(await roleHasPermission(ctx, user, permission))) throw new ConvexError(`Forbidden: permission "${permission}" required`);
   return user;
 }
 
@@ -138,12 +139,12 @@ export async function requireManagerOrPermission(ctx: QueryCtx, permission: stri
   const user = await requireActiveUser(ctx, module);
   if (await isManagerRole(ctx, user)) return user;
   if (await roleHasPermission(ctx, user, permission)) return user;
-  throw new Error(`Forbidden: manager permission required (or permission "${permission}")`);
+  throw new ConvexError(`Forbidden: manager permission required (or permission "${permission}")`);
 }
 
 export async function requireSuperAdminUser(ctx: QueryCtx) {
   const user = await requireActiveUser(ctx);
-  if (!isSuperAdmin(user)) throw new Error("Forbidden: Super Admin only");
+  if (!isSuperAdmin(user)) throw new ConvexError("Forbidden: Super Admin only");
   return user;
 }
 
@@ -157,7 +158,7 @@ export async function resolveWriteScope(ctx: QueryCtx, user: UserLike, opts: { t
   const tenants = await ctx.db.query("tenants").withIndex("by_active", (q) => q.eq("isActive", true)).collect();
   if (!tenants.length) return {};
   // Never guess the business: with several businesses a Super Admin must pick one first, otherwise records could be saved into the wrong one.
-  if (tenants.length > 1) throw new Error("Chagua biashara (ofisi) unayofanyia kazi kwanza kabla ya kuhifadhi.");
+  if (tenants.length > 1) throw new ConvexError("Chagua biashara (ofisi) unayofanyia kazi kwanza kabla ya kuhifadhi.");
   const tenant = tenants[0];
   const branches = await ctx.db.query("branches").withIndex("by_tenant", (q) => q.eq("tenantId", tenant._id)).collect();
   const branch = branches.find((b) => b.isActive);
@@ -172,7 +173,7 @@ export async function resolveWriteScope(ctx: QueryCtx, user: UserLike, opts: { t
 async function withDepartment(ctx: QueryCtx, user: UserLike, scope: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, opts: { tenantWide?: boolean }) {
   if (scope.branchId || opts.tenantWide || !scope.tenantId) return scope;
   const departments = await activeDepartments(ctx, scope.tenantId);
-  if (departments.length > 0) throw new Error("Chagua idara (sehemu) unayofanyia kazi kwenye menyu ya juu kabla ya kuhifadhi.");
+  if (departments.length > 0) throw new ConvexError("Chagua idara (sehemu) unayofanyia kazi kwenye menyu ya juu kabla ya kuhifadhi.");
   return scope;
 }
 
@@ -237,7 +238,7 @@ export async function businessRows<T extends TableNames>(ctx: QueryCtx, user: Us
 export function requireBusinessScope(user: UserLike) {
   const superAdmin = isSuperAdmin(user);
   if (!user.tenantId) {
-    throw new Error(superAdmin ? "Super Admin lazima achague biashara kwa shughuli za biashara." : "Akaunti haijaunganishwa na ofisi (tenant).");
+    throw new ConvexError(superAdmin ? "Super Admin lazima achague biashara kwa shughuli za biashara." : "Akaunti haijaunganishwa na ofisi (tenant).");
   }
   return user.branchId === undefined ? { tenantId: user.tenantId } : { tenantId: user.tenantId, branchId: user.branchId };
 }
