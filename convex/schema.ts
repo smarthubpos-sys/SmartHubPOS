@@ -179,6 +179,7 @@ export default defineSchema({
     totalCost: v.number(),
     unitCost: v.number(),
     notes: v.optional(v.string()),
+    returnedQty: v.optional(v.number()), // output returned to stock as ingredients (see production.returnToStock); the batch itself is never edited
     createdAt: v.string(),
     createdBy: v.id("users"),
   }).index("by_scope", ["tenantId", "branchId"])

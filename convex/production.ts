@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { requireActiveUser, requireManagerOrPermission, resolveWriteScope } from "./access";
+import { logAudit, requireActiveUser, requireManagerOrPermission, resolveWriteScope } from "./access";
 
 type Scope = { tenantId?: Id<"tenants">; branchId?: Id<"branches"> };
 const now = () => new Date().toISOString();
@@ -118,6 +118,57 @@ export const produceBatch = mutation({
       notes: "Bidhaa iliyokamilika kutoka production", createdBy: user._id,
     });
     return { batchId, producedQty: args.quantity, totalCost, unitCost: totalCost / args.quantity };
+  },
+});
+
+/**
+ * Take finished product back into the raw stock it was made from (unsold or spoiled-recipe batches, wrong batch quantity).
+ * The finished product goes down and each ingredient goes up by the batch recipe, in proportion. The batch record is kept;
+ * only its returnedQty grows, and every step is a stock movement so reports still reconcile.
+ */
+export const returnToStock = mutation({
+  args: { batchId: v.id("productionBatches"), quantity: v.number(), reason: v.string() },
+  handler: async (ctx, args) => {
+    const user = await requireManagerOrPermission(ctx, "stock.manage", "stock");
+    const scope = await resolveWriteScope(ctx, user);
+    if (!scope.tenantId) throw new ConvexError("Chagua biashara kabla ya kurudisha stock.");
+    const batch = await ctx.db.get("productionBatches", args.batchId);
+    if (!batch || !belongsToScope(batch, scope)) throw new ConvexError("Batch haipatikani kwenye biashara/department hii.");
+    const reason = args.reason.trim();
+    if (reason.length < 3) throw new ConvexError("Andika sababu ya kurudisha bidhaa kwenye stock.");
+    if (!Number.isFinite(args.quantity) || args.quantity <= 0) throw new ConvexError("Kiasi cha kurudisha lazima kiwe zaidi ya sifuri.");
+    const remaining = batch.producedQty - (batch.returnedQty ?? 0);
+    if (args.quantity > remaining + 1e-8) throw new ConvexError(`Unaweza kurudisha hadi ${remaining} tu kutoka kwenye batch hii.`);
+    const output = await ctx.db.get("products", batch.outputProductId);
+    if (!output || !belongsToScope(output, scope)) throw new ConvexError("Bidhaa ya mwisho haipo kwenye biashara/department hii.");
+    if (output.currentQty + 1e-8 < args.quantity) throw new ConvexError(`Stock ya ${output.name} haitoshi. Iliyopo: ${output.currentQty}, unayotaka kurudisha: ${args.quantity}. Huenda imeshauzwa.`);
+    const factor = args.quantity / batch.producedQty;
+    const lines = [];
+    for (const l of batch.recipeSnapshot) {
+      const product = await ctx.db.get("products", l.productId);
+      if (!product || !belongsToScope(product, scope)) throw new ConvexError(`Malighafi ${l.productName} haipatikani kwenye department hii.`);
+      lines.push({ product, qty: l.qty * factor, unitCost: l.unitCost });
+    }
+    const createdAt = now();
+    const date = createdAt.slice(0, 10);
+    const outBalance = output.currentQty - args.quantity;
+    await ctx.db.patch("products", output._id, { currentQty: outBalance });
+    await ctx.db.insert("stockMovements", {
+      ...scope, movementDate: date, productId: output._id, movementType: "production_return_output", referenceId: String(batch._id), referenceType: "productionBatch",
+      qtyIn: 0, qtyOut: args.quantity, runningBalance: outBalance, unitCost: batch.unitCost, notes: `Imerudishwa kwenye stock ya malighafi: ${reason}`, createdBy: user._id,
+    });
+    for (const { product, qty, unitCost } of lines) {
+      const balance = product.currentQty + qty;
+      const avg = product.weightedAvgCost !== undefined && product.currentQty > 0 ? (product.currentQty * product.weightedAvgCost + qty * unitCost) / balance : unitCost || product.weightedAvgCost;
+      await ctx.db.patch("products", product._id, { currentQty: balance, ...(avg !== undefined ? { weightedAvgCost: avg } : {}) });
+      await ctx.db.insert("stockMovements", {
+        ...scope, movementDate: date, productId: product._id, movementType: "production_return_ingredient", referenceId: String(batch._id), referenceType: "productionBatch",
+        qtyIn: qty, qtyOut: 0, runningBalance: balance, unitCost, notes: `Imerudi kutoka ${output.name}: ${reason}`, createdBy: user._id,
+      });
+    }
+    await ctx.db.patch("productionBatches", batch._id, { returnedQty: (batch.returnedQty ?? 0) + args.quantity });
+    await logAudit(ctx, user, { action: "production_return", module: "stock", referenceId: String(batch._id), details: `${output.name} x${args.quantity}: ${reason}` });
+    return { returned: args.quantity, remaining: remaining - args.quantity, ingredients: lines.map((l) => ({ name: l.product.name, qty: l.qty })) };
   },
 });
 

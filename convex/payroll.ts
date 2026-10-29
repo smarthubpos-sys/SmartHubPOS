@@ -1,4 +1,4 @@
-﻿import { mutation, query } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { canAccessRecord, filterScoped, requireActiveUser, resolveWriteScope, requireManager, scopedRows } from "./access";
