@@ -13,7 +13,7 @@ import { type Paper } from "@/lib/print-area.ts";
 import { billReceiptHtml, type PrintableBill } from "@/lib/print-bill.ts";
 import { receiptScale } from "@/lib/receipt-layout.ts";
 import { printHtmlViaQz } from "@/lib/printers.ts";
-import { resolvePaper, shouldSchedulePrint } from "@/lib/print-policy.ts";
+import { shouldSchedulePrint } from "@/lib/print-policy.ts";
 import { tr } from "@/lib/i18n.ts";
 import { stamp } from "@/lib/receipt-branding.ts";
 
@@ -111,7 +111,10 @@ export default function BillSheet({
       return false;
     }
     try {
-      const usedPaper = resolvePaper(hardware.paperWidth);
+      // The paper prop is the exact size shown by this sheet preview. Do not resolve it
+      // again from localStorage here: a stale per-device value can silently shrink the
+      // physical print while the preview is showing 80mm (or A4).
+      const usedPaper = paper;
       const html = billReceiptHtml(buildPrintable(bill, kind, new Date()), usedPaper);
       await printHtmlViaQz(printerName, html, usedPaper);
       toast.success(tr("Ombi la kuchapa limetumwa kwa QZ Tray."));
@@ -121,7 +124,7 @@ export default function BillSheet({
       toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha programu imewashwa na printer iko tayari.")} ${error instanceof Error ? error.message : String(error ?? "")}`);
       return false;
     }
-  }, [bill, kind, printerName, hardware.printerSource, hardware.paperWidth]);
+  }, [bill, kind, paper, printerName, hardware.printerSource]);
 
   useEffect(() => {
     if (settings === undefined) return;
