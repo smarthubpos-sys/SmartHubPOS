@@ -114,12 +114,25 @@ const BUILTIN_ROLE_PERMISSIONS: Record<string, string[]> = {
   business_owner: [ALL_PERMISSIONS_FOR_ADMIN],
 };
 
+/**
+ * Roles belong to ONE business: changing "Manager" in business A never touches business B.
+ * A business's own row wins; an old shared row (saved before roles were per business) is only a fallback until
+ * the business has its own copy. Without a row the built-in defaults apply.
+ */
+export async function findRoleRow(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, name: string) {
+  if (tenantId) {
+    const own = await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", tenantId).eq("name", name)).first();
+    if (own) return own;
+  }
+  return await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", undefined).eq("name", name)).first();
+}
+
 export async function roleHasPermission(ctx: QueryCtx, user: MaybeUser, permission: string) {
   if (isSuperAdmin(user)) return true;
   // A permission given to this one user directly (Users form), limited to the grantable list.
   if (user?.extraPermissions?.includes(permission) && USER_GRANTABLE_PERMISSIONS.some((g) => g.key === permission)) return true;
   const name = normalizeRole(user?.role);
-  const row = await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", name)).first();
+  const row = await findRoleRow(ctx, user?.tenantId, name);
   const perms: string[] = row ? permissionsWithNewDefaults(name, row.permissions, row.knownKeys) : BUILTIN_ROLE_PERMISSIONS[name] ?? [];
   // The "owner" wildcard never covers a permission that must be given on purpose (e.g. stock.adjust).
   return (perms.includes(ALL_PERMISSIONS_FOR_ADMIN) && !SUPER_ADMIN_ONLY_PERMISSIONS.includes(permission)) || perms.includes(permission);

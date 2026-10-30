@@ -136,7 +136,7 @@ describe("changing / deleting stock is a permission given by the Super Admin", (
       await ctx.db.insert("roles", { name: "rolesmanager", displayName: "Roles", permissions: ["maintenance.roles"], isSystem: false });
       return await ctx.db.insert("users", { name: "RM", username: "rm", role: "rolesmanager", tenantId, isActive: true });
     });
-    const boss = await t.run((ctx) => ctx.db.insert("users", { name: "Boss", username: "boss", role: "super_admin", isActive: true }));
+    const boss = await t.run((ctx) => ctx.db.insert("users", { name: "Boss", username: "boss", role: "super_admin", tenantId, isActive: true }));
     const asRm = t.withIdentity({ subject: rm, tokenIdentifier: "x|7" });
     const asBoss = t.withIdentity({ subject: boss, tokenIdentifier: "x|8" });
     const role = { name: "cashier", displayName: "Cashier", permissions: ["sales.manage", "stock.adjust"] };

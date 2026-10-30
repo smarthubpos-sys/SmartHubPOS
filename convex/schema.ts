@@ -75,7 +75,8 @@ export default defineSchema({
     permissions: v.array(v.string()),
     isSystem: v.boolean(),
     knownKeys: v.optional(v.array(v.string())), // permission keys that existed when the role was last saved (new keys get the built-in default)
-  }).index("by_name", ["name"]),
+    tenantId: v.optional(v.id("tenants")), // the business this role belongs to; missing = old shared row (copied into each business, see maintenance.splitRolesPerBusiness)
+  }).index("by_name", ["name"]).index("by_tenant_name", ["tenantId", "name"]),
 
   // ── DASHBOARD ROLL-UPS (small pre-computed numbers so the dashboard never scans invoices/products) ──
   // One row per business + department (branchId empty = records without a department).

@@ -215,6 +215,7 @@ export default function BusinessPicker() {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-xs font-bold text-white" title={b.name}>{b.name}</span>
                     <span className="block truncate text-[10px] text-blue-200">{b.code} · {tr("Idara: {0}", [b.branchCount])}</span>
+                    <span className={`block truncate text-[10px] ${b.statsReady ? "text-emerald-200" : "text-amber-300"}`}>{b.statsReady ? tr("Leo: {0} TZS · Invoice {1}", [b.todaySales.toLocaleString(), b.todayInvoices]) : tr("Namba za dashboard hazijahesabiwa")}{b.lastInvoiceDate ? ` · ${tr("Mauzo ya mwisho: {0}", [b.lastInvoiceDate])}` : ""}</span>
                   </span>
                   <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
                 </button>

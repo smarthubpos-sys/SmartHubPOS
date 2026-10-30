@@ -1,3 +1,4 @@
+import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { useRun } from "./helpers.ts";
 import { useState } from "react";
 import { useAction, useConvex, useMutation, useQuery } from "convex/react";
@@ -64,27 +65,31 @@ npx convex import --replace-all backup.zip`)}</pre>
 export function AuditPage() {
   const [module, setModule] = useState("");
   const [q, setQ] = useState("");
-  const logs = useQuery(api.maintenance.listAudit, { module: module || undefined, limit: 500 });
+  const [tenantFilter, setTenantFilter] = useState("");
+  const me = useQuery(api.tenants.current, {});
+  const businesses = useQuery(api.tenants.list, me?.isSuperAdmin ? {} : "skip");
+  const logs = useQuery(api.maintenance.listAudit, { module: module || undefined, limit: 500, ...(tenantFilter ? { tenantId: tenantFilter as Id<"tenants"> } : {}) });
   const rows = (logs ?? []).filter((l) => !q || `${l.userName} ${l.action} ${l.details ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   return (
     <PageShell title={tr("Audit Trail")} subtitle={tr("Kumbukumbu ya shughuli za mfumo (mpya kwanza)")}>
       <div className="grid gap-4 md:grid-cols-3">
         <SelectField label={tr("Moduli")} value={module} onChange={setModule} options={[["", tr("Zote")], ["maintenance", tr("Maintenance")], ["purchasing", tr("Purchasing")], ["sales", tr("Sales")], ["stock", tr("Stock")], ["payroll", tr("Payroll")], ["accounts", tr("Accounts")]]} />
+        {me?.isSuperAdmin && <SelectField label={tr("Biashara")} value={tenantFilter} onChange={setTenantFilter} options={[["", me.tenant ? tr("Biashara niliyoichagua") : tr("Zote")], ...(businesses ?? []).map((b): [string, string] => [String(b._id), b.name])]} />}
         <TextField label={tr("Tafuta")} value={q} onChange={setQ} placeholder={tr("mtumiaji, kitendo, maelezo…")} />
       </div>
       <section className="overflow-x-auto rounded-xl border">
         {!logs ? <div className="p-4"><Loading /></div> : (
           <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-left"><tr>{[tr("Muda"), tr("Mtumiaji"), tr("Moduli"), tr("Kitendo"), tr("Maelezo"), tr("Matokeo")].map((h) => <th key={h} className="p-3">{h}</th>)}</tr></thead>
+            <thead className="bg-muted/50 text-left"><tr>{[tr("Muda"), ...(me?.isSuperAdmin ? [tr("Biashara")] : []), tr("Mtumiaji"), tr("Moduli"), tr("Kitendo"), tr("Maelezo"), tr("Matokeo")].map((h) => <th key={h} className="p-3">{h}</th>)}</tr></thead>
             <tbody>
               {rows.map((l) => (
                 <tr key={l._id} className="border-t align-top">
-                  <td className="whitespace-nowrap p-3">{new Date(l.timestamp).toLocaleString()}</td><td className="p-3">{l.userName}</td>
+                  <td className="whitespace-nowrap p-3">{new Date(l.timestamp).toLocaleString()}</td>{me?.isSuperAdmin && <td className="p-3">{l.tenantName}</td>}<td className="p-3">{l.userName}</td>
                   <td className="p-3">{l.module}</td><td className="p-3 font-mono text-xs">{l.action}</td><td className="p-3">{l.details ?? "—"}</td>
                   <td className="p-3">{l.result}</td>
                 </tr>
               ))}
-              {!rows.length && <tr><td colSpan={6} className="p-4 text-muted-foreground">{tr("Hakuna kumbukumbu.")}</td></tr>}
+              {!rows.length && <tr><td colSpan={7} className="p-4 text-muted-foreground">{tr("Hakuna kumbukumbu.")}</td></tr>}
             </tbody>
           </table>
         )}

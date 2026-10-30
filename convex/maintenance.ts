@@ -1,13 +1,13 @@
 import { action, internalMutation, internalQuery, mutation, query } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { v, ConvexError } from "convex/values";
 import { hashStaffPin, PIN_PATTERN, pinLookupKey } from "./pinCrypto";
 import { surfaceError } from "./surfaceError";
 import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
 import {
-  activeDepartments, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
+  activeDepartments, findRoleRow, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
   requireSuperAdminUser, resolveWriteScope, roleHasPermission, scopedRows } from "./access";
 import type { UserLike } from "./access";
 import { ALL_PERMISSION_KEYS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
@@ -235,11 +235,49 @@ export const deletePeriod = mutation({
 
 /* ───────────────────────── Roles ───────────────────────── */
 
+/** Roles of ONE business: its own rows, with the old shared rows (no tenantId) used only for names the business has not saved itself. */
+async function rolesOfBusiness(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined): Promise<Doc<"roles">[]> {
+  const legacy = await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", undefined)).collect();
+  const own = tenantId ? await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", tenantId)).collect() : [];
+  const byName = new Map<string, Doc<"roles">>();
+  for (const r of legacy) byName.set(r.name, r);
+  for (const r of own) byName.set(r.name, r);
+  return [...byName.values()];
+}
+
+/** Gives a business its own copy of every old shared role it does not have yet (nothing changes for its users). */
+async function copyLegacyRolesToBusiness(ctx: MutationCtx, tenantId: Id<"tenants">): Promise<number> {
+  const legacy = await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", undefined)).collect();
+  const own = new Set((await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", tenantId)).collect()).map((r) => r.name));
+  let n = 0;
+  for (const r of legacy) {
+    if (own.has(r.name)) continue;
+    await ctx.db.insert("roles", { name: r.name, displayName: r.displayName, permissions: r.permissions, isSystem: r.isSystem, knownKeys: r.knownKeys, tenantId });
+    n++;
+  }
+  return n;
+}
+
+/**
+ * One-time migration (run once after deploying):  npx convex run maintenance:splitRolesPerBusiness
+ * Copies the old shared roles into every business and removes the shared rows, so no business depends on another any more.
+ */
+export const splitRolesPerBusiness = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let copied = 0;
+    for (const t of await ctx.db.query("tenants").collect()) copied += await copyLegacyRolesToBusiness(ctx, t._id);
+    const legacy = await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", undefined)).collect();
+    for (const r of legacy) await ctx.db.delete("roles", r._id);
+    return { copied, sharedRowsRemoved: legacy.length };
+  },
+});
+
 export const listRoles = query({
   args: {},
   handler: async (ctx) => {
-    await requirePermission(ctx, "maintenance.roles");
-    const rows = await ctx.db.query("roles").collect();
+    const user = await requirePermission(ctx, "maintenance.roles");
+    const rows = await rolesOfBusiness(ctx, user.tenantId);
     const byName = new Map(rows.map((r) => [r.name, r]));
     const system = SYSTEM_ROLES.map((r) => {
       const row = byName.get(r.name);
@@ -269,6 +307,8 @@ export const saveRole = mutation({
   args: { name: v.string(), displayName: v.string(), permissions: v.array(v.string()) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.roles");
+    const tenantId = user.tenantId;
+    if (!tenantId) throw new ConvexError("Chagua biashara kwanza: roles ni za kila biashara peke yake.");
     const name = normalizeRole(a.name);
     if (!/^[a-z][a-z0-9_]{1,30}$/.test(name)) throw new ConvexError("Jina la role: herufi ndogo/namba/underscore (2–31), likianza na herufi.");
     if (["super_admin", "superadmin"].includes(name)) throw new ConvexError("Role ya Super Admin imehifadhiwa na haiwezi kubadilishwa.");
@@ -276,11 +316,12 @@ export const saveRole = mutation({
     const bad = a.permissions.filter((p) => !ALL_PERMISSION_KEYS.includes(p));
     if (bad.length) throw new ConvexError(`Permission zisizojulikana: ${bad.join(", ")}`);
     const permissions = [...new Set(a.permissions)];
-    const existing = await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", name)).first();
+    await copyLegacyRolesToBusiness(ctx, tenantId);
+    const existing = await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", tenantId).eq("name", name)).first();
     const isSystem = SYSTEM_ROLES.some((r) => r.name === name);
     assertSuperAdminKeysUnchanged(user, existing?.permissions ?? SYSTEM_ROLES.find((r) => r.name === name)?.permissions, permissions);
     if (existing) await ctx.db.patch("roles", existing._id, { displayName: a.displayName.trim(), permissions, knownKeys: ALL_PERMISSION_KEYS });
-    else await ctx.db.insert("roles", { name, displayName: a.displayName.trim(), permissions, isSystem, knownKeys: ALL_PERMISSION_KEYS });
+    else await ctx.db.insert("roles", { name, displayName: a.displayName.trim(), permissions, isSystem, knownKeys: ALL_PERMISSION_KEYS, tenantId });
     await logAudit(ctx, user, { action: "save_role", module: "maintenance", referenceId: name, details: `${permissions.length} permissions` });
     return name;
   },
@@ -290,10 +331,13 @@ export const deleteRole = mutation({
   args: { name: v.string() },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.roles");
+    const tenantId = user.tenantId;
+    if (!tenantId) throw new ConvexError("Chagua biashara kwanza: roles ni za kila biashara peke yake.");
     const name = normalizeRole(a.name);
-    const inUse = (await ctx.db.query("users").collect()).some((u) => u.tokenIdentifier === undefined && normalizeRole(u.role) === name);
+    const inUse = (await ctx.db.query("users").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect()).some((u) => u.tokenIdentifier === undefined && normalizeRole(u.role) === name);
     if (inUse) throw new ConvexError("Role hii inatumika na watumiaji. Wabadilishie role kwanza.");
-    const existing = await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", name)).first();
+    await copyLegacyRolesToBusiness(ctx, tenantId);
+    const existing = await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", tenantId).eq("name", name)).first();
     if (!existing) return false;
     await ctx.db.delete("roles", existing._id); // for system roles this resets them to built-in defaults
     await logAudit(ctx, user, { action: "delete_role", module: "maintenance", referenceId: name });
@@ -301,9 +345,6 @@ export const deleteRole = mutation({
   },
 });
 
-/* ───────────────────────── Users ───────────────────────── */
-
-/** Keeps only modules the business actually has (the Super Admin decides that per business). */
 /** Permissions such as stock.adjust can be given or taken away by a Super Admin only (role or single user). */
 function assertSuperAdminKeysUnchanged(actor: Parameters<typeof isSuperAdmin>[0], before: string[] | undefined, after: string[] | undefined) {
   if (isSuperAdmin(actor)) return;
@@ -489,7 +530,7 @@ async function assertCanAssign(ctx: QueryCtx, actor: UserLike, target: { role?: 
   if (role && ["super_admin", "superadmin"].includes(role) && !isSuperAdmin(actor)) throw new ConvexError("Super Admin pekee ndiye anaweza kutoa role ya Super Admin.");
   if (existing && isSuperAdmin(existing) && !isSuperAdmin(actor)) throw new ConvexError("Huwezi kubadilisha akaunti ya Super Admin.");
   if (role && !["super_admin", "superadmin"].includes(role)) {
-    const known = SYSTEM_ROLES.some((r) => r.name === role) || (await ctx.db.query("roles").withIndex("by_name", (q) => q.eq("name", role)).first());
+    const known = SYSTEM_ROLES.some((r) => r.name === role) || (await findRoleRow(ctx, target.tenantId ?? actor.tenantId, role));
     if (!known) throw new ConvexError(`Role "${role}" haipo.`);
   }
   if (!isSuperAdmin(actor)) {
@@ -853,21 +894,29 @@ export const markPasswordChanged = internalMutation({
 /* ───────────────────────── Audit trail ───────────────────────── */
 
 export const listAudit = query({
-  args: { module: v.optional(v.string()), limit: v.optional(v.number()) },
+  args: { module: v.optional(v.string()), limit: v.optional(v.number()), tenantId: v.optional(v.id("tenants")) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "maintenance.audit.view");
     const limit = Math.min(Math.max(a.limit ?? 300, 1), 1000);
-    // Read through the (tenantId, timestamp) index so a business only ever scans its OWN logs; before, the newest logs of
-    // every business were loaded and then filtered, so with many businesses a manager could see few or no rows.
     const mod = a.module;
-    if (isSuperAdmin(user)) {
+    // Business-level logs are read through the (tenantId, timestamp) index so a business only ever scans its OWN logs.
+    // Super Admin: the business he chose in the filter, else the business he is working in, else every business.
+    // Without this a busy business filled the newest rows and the quieter ones never appeared.
+    const tenantId = isSuperAdmin(user) ? (a.tenantId ?? user.tenantId) : user.tenantId;
+    let rows;
+    if (tenantId) {
+      const q = ctx.db.query("auditLogs").withIndex("by_scope", (i) => i.eq("tenantId", tenantId)).order("desc");
+      rows = await (mod ? q.filter((f) => f.eq(f.field("module"), mod)) : q).take(limit);
+    } else if (isSuperAdmin(user)) {
       const q = ctx.db.query("auditLogs").withIndex("by_timestamp").order("desc");
-      return await (mod ? q.filter((f) => f.eq(f.field("module"), mod)) : q).take(limit);
+      rows = await (mod ? q.filter((f) => f.eq(f.field("module"), mod)) : q).take(limit);
+    } else {
+      return [];
     }
-    if (!user.tenantId) return [];
-    const tenantId = user.tenantId;
-    const q = ctx.db.query("auditLogs").withIndex("by_scope", (i) => i.eq("tenantId", tenantId)).order("desc");
-    return await (mod ? q.filter((f) => f.eq(f.field("module"), mod)) : q).take(limit);
+    // Every row says which business it belongs to (Super Admin looks at many).
+    const names = new Map<string, string>();
+    for (const t of await ctx.db.query("tenants").collect()) names.set(String(t._id), t.name);
+    return rows.map((r) => ({ ...r, tenantName: r.tenantId ? names.get(String(r.tenantId)) ?? "—" : "—" }));
   },
 });
 
