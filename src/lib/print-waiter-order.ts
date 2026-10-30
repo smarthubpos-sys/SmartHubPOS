@@ -3,6 +3,7 @@ import { tr } from "./i18n.ts";
 import { printHtmlViaQz } from "./printers.ts";
 import { resolvePaper } from "./print-policy.ts";
 import { stamp, type ReceiptBranding } from "./receipt-branding.ts";
+import { receiptCss } from "./receipt-layout.ts";
 
 export type PrintableOrder = {
   customerName: string;
@@ -43,26 +44,9 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
     <td class="amount">${escapeHtml(Number(line.lineTotal).toLocaleString())}/=</td>
   </tr>`).join("");
   paperWidth = resolvePaper(paperWidth);
-  const width = paperWidth === "58mm" ? "58mm" : paperWidth === "A4" ? "190mm" : "80mm";
   const info = (label: string, value?: string) => value ? `<div class="row"><span class="lab">${escapeHtml(label)}</span><span>: ${escapeHtml(value)}</span></div>` : "";
   const company = (branding.companyName ?? "").trim();
-  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
-    @page{size:${width} auto;margin:0}*{box-sizing:border-box}
-    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:${width};padding:0 3mm;overflow-wrap:anywhere;color:#000}
-    .c{text-align:center}p{margin:0 0 3px}
-    .title{font-size:15px;font-weight:800;margin:6px 0 2px;padding:3px 0;border-top:1px solid #000;border-bottom:1px solid #000}
-    .head{display:flex;justify-content:space-between;align-items:flex-start;gap:4px}
-    .co{flex:1;min-width:0;text-align:left}.cname{font-size:13px;font-weight:800;line-height:1.2}
-    .logo{flex:none;max-width:${paperWidth === "58mm" ? "28%" : "30%"};max-height:${paperWidth === "58mm" ? "11mm" : paperWidth === "A4" ? "26mm" : "16mm"};object-fit:contain;filter:grayscale(1)}
-    hr{border:0;border-top:1px dashed #000;margin:6px 0}
-    .row{display:flex;gap:2px}.lab{display:inline-block;min-width:22mm}
-    table{width:100%;border-collapse:collapse;table-layout:fixed}
-    th,td{padding:2px 1px;vertical-align:top;text-align:left}th{font-weight:800}
-    .qty{width:12%;overflow-wrap:anywhere}.name{width:56%;overflow-wrap:anywhere;word-break:normal}
-    .amount{width:32%;text-align:right;overflow-wrap:anywhere}th.amount{text-align:right}
-    .total{display:flex;justify-content:space-between;font-weight:800;font-size:14px;margin:2px 0}
-    .sign{display:flex;gap:2px;margin:10px 0 2px}.line{flex:1;border-bottom:1px solid #000}
-  </style></head><body>
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>${receiptCss(paperWidth)}</style></head><body>
     <div class="head">
       <div class="co">
         ${company ? `<p class="cname">${escapeHtml(company.toUpperCase())}</p>` : ""}

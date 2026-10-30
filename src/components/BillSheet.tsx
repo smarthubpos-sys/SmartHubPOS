@@ -1,6 +1,7 @@
 import { qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { MessageCircle, Printer } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/convex/_generated/api.js";
@@ -8,14 +9,47 @@ import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Empty } from "@/components/page-kit.tsx";
 import { formatDate, formatNumber } from "@/lib/format.ts";
-import {
-  buildReceiptHtml,
-  type Paper,
-} from "@/lib/print-area.ts";
+import { type Paper } from "@/lib/print-area.ts";
+import { billReceiptHtml, type PrintableBill } from "@/lib/print-bill.ts";
+import { receiptScale } from "@/lib/receipt-layout.ts";
 import { printHtmlViaQz } from "@/lib/printers.ts";
 import { resolvePaper, shouldSchedulePrint } from "@/lib/print-policy.ts";
 import { tr } from "@/lib/i18n.ts";
 import { stamp } from "@/lib/receipt-branding.ts";
+
+type BillData = FunctionReturnType<typeof api.customerBills.billData>;
+
+/** Turns the loaded bill into the data the shared printout needs (same words as the on-screen sheet). */
+function buildPrintable(bill: BillData, kind: "bill" | "invoice", printedAt: Date): PrintableBill {
+  const isInvoice = kind === "invoice";
+  const number = (n: number) => formatNumber(n, Number.isInteger(n) ? 0 : 2);
+  return {
+    kind,
+    heading: isInvoice ? bill.department?.trim() || "Sales" : tr("BILI YA MTEJA"),
+    company: { name: bill.company.name || tr("Biashara"), address: bill.company.address, phone: bill.company.phone, taxId: bill.company.taxId, logoUrl: bill.company.logoUrl },
+    openedAt: bill.savedAt ? stamp(new Date(bill.savedAt)) : "",
+    printedAt,
+    billId: bill.invoices.map((inv) => inv.invoiceNo).join(", "),
+    cashier: bill.cashier,
+    customer: bill.client.name,
+    department: bill.department ?? "",
+    lines: bill.invoices.flatMap((inv) => inv.lines.map((l) => ({ qty: number(l.qty), name: l.name, amount: number(l.lineTotal) }))),
+    discount: Number(bill.totals.discount) > 0 ? number(bill.totals.discount) : undefined,
+    tax: Number(bill.totals.tax) > 0 ? number(bill.totals.tax) : undefined,
+    totalLabel: isInvoice ? tr("Jumla ya invoice") : tr("JUMLA INAYODAIWA"),
+    total: number(bill.totals.total),
+    paid: bill.totals.paid > 0
+      ? { label: `${tr("Imelipwa")}${bill.paymentMethods.length > 0 ? ` (${bill.paymentMethods.join(", ")})` : ""}`, amount: number(bill.totals.paid), outstanding: number(bill.totals.outstanding) }
+      : undefined,
+    paymentInfo: bill.paymentInfo ?? [],
+    footer: bill.receiptFooter ?? "",
+    labels: {
+      openTime: tr("Muda wa kufungua"), printTime: tr("Muda wa kuchapa"), billNo: tr("Namba ya bili"), waiter: tr("Mhudumu"),
+      customer: tr("Mteja"), department: tr("Idara"), qty: tr("IDADI"), item: tr("BIDHAA"), amount: tr("KIASI"),
+      discount: tr("Punguzo"), tax: tr("Kodi"), outstanding: tr("Deni lililobaki"), notes: tr("Maelezo"),
+    },
+  };
+}
 
 /** One "Label : value" line of the receipt header. The print time is refreshed at the moment of printing. */
 function ReceiptRow({ label, value, printTime }: { label: string; value?: string; printTime?: boolean }) {
@@ -55,7 +89,6 @@ export default function BillSheet({
   const [printedAt] = useState(() => new Date());
   const onPrintedRef = useRef(onPrinted);
   useEffect(() => { onPrintedRef.current = onPrinted; }, [onPrinted]);
-  const articleRef = useRef<HTMLElement>(null);
   const settings = useQuery(api.maintenance.getSettings, {});
   const hardware = (settings?.app?.hardware ?? {}) as {
     printerSource?: string;
@@ -69,8 +102,7 @@ export default function BillSheet({
   const canPrint = !!myPerms && (myPerms.includes("sales.print") || myPerms.includes("waiterOrders.manage"));
 
   const printReceipt = useCallback(async () => {
-    const el = articleRef.current;
-    if (!el) return;
+    if (!bill) return false;
 
     if (!printerName) {
       toast.error(hardware.printerSource === "direct"
@@ -79,9 +111,9 @@ export default function BillSheet({
       return false;
     }
     try {
-      el.querySelectorAll("[data-print-time]").forEach((n) => { n.textContent = `: ${stamp(new Date())}`; });
       const usedPaper = resolvePaper(hardware.paperWidth);
-      await printHtmlViaQz(printerName, buildReceiptHtml(el, usedPaper), usedPaper);
+      const html = billReceiptHtml(buildPrintable(bill, kind, new Date()), usedPaper);
+      await printHtmlViaQz(printerName, html, usedPaper);
       toast.success(tr("Ombi la kuchapa limetumwa kwa QZ Tray."));
       onPrintedRef.current?.();
       return true;
@@ -89,7 +121,7 @@ export default function BillSheet({
       toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha programu imewashwa na printer iko tayari.")} ${error instanceof Error ? error.message : String(error ?? "")}`);
       return false;
     }
-  }, [printerName, paper, hardware.printerSource, hardware.paperWidth]);
+  }, [bill, kind, printerName, hardware.printerSource, hardware.paperWidth]);
 
   useEffect(() => {
     if (settings === undefined) return;
@@ -205,9 +237,9 @@ export default function BillSheet({
         )}
       </div>
       <article
-        ref={articleRef}
         data-paper={paper}
-        className={`print-area mx-auto space-y-2 rounded-2xl border bg-white p-4 text-[12px] font-semibold leading-snug text-black print:rounded-none print:border-0 print:p-0 ${paper === "A4" ? "max-w-xl print:max-w-none" : paper === "58mm" ? "max-w-[58mm]" : "max-w-[80mm]"}`}
+        style={{ fontSize: `${receiptScale(paper).base}px` }}
+        className={`print-area mx-auto space-y-2 rounded-2xl border bg-white p-4 font-semibold leading-snug text-black print:rounded-none print:border-0 print:p-0 ${paper === "A4" ? "max-w-xl print:max-w-none" : paper === "58mm" ? "max-w-[58mm]" : "max-w-[80mm]"}`}
       >
         <header className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1 space-y-0.5 text-left">
