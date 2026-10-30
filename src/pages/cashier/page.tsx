@@ -28,7 +28,7 @@ export default function CashierPage() {
       <header className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-bold">{tr("Cashier")}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{selling ? tr("Mauzo ya counter: chagua bidhaa, pokea malipo na uchapishe risiti.") : tr("Pokea fedha kutoka kwa wahudumu, weka malipo na uone madeni yao.")}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{selling ? tr("Mauzo ya counter: chagua bidhaa kisha Send au Print. Oda inaingia kwenye akaunti yako; pokea malipo baadaye.") : tr("Pokea fedha kutoka kwa wahudumu, weka malipo na uone madeni yao.")}</p>
         </div>
         {business?.waiterOrdersEnabled !== false && <div className="flex items-center gap-3 rounded-xl border px-3 py-2 text-sm font-medium">
           <span>{tr("Mauzo ya counter")}</span>

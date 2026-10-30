@@ -13,7 +13,7 @@ import {
   type Paper,
 } from "@/lib/print-area.ts";
 import { printHtmlViaQz } from "@/lib/printers.ts";
-import { shouldSchedulePrint } from "@/lib/print-policy.ts";
+import { resolvePaper, shouldSchedulePrint } from "@/lib/print-policy.ts";
 import { tr } from "@/lib/i18n.ts";
 import { stamp } from "@/lib/receipt-branding.ts";
 
@@ -60,6 +60,7 @@ export default function BillSheet({
   const hardware = (settings?.app?.hardware ?? {}) as {
     printerSource?: string;
     receiptPrinter?: string;
+    paperWidth?: string;
   };
 
   const printerName = qzPrinterFrom(hardware);
@@ -79,7 +80,8 @@ export default function BillSheet({
     }
     try {
       el.querySelectorAll("[data-print-time]").forEach((n) => { n.textContent = `: ${stamp(new Date())}`; });
-      await printHtmlViaQz(printerName, buildReceiptHtml(el, paper));
+      const usedPaper = resolvePaper(hardware.paperWidth);
+      await printHtmlViaQz(printerName, buildReceiptHtml(el, usedPaper), usedPaper);
       toast.success(tr("Ombi la kuchapa limetumwa kwa QZ Tray."));
       onPrintedRef.current?.();
       return true;
@@ -87,7 +89,7 @@ export default function BillSheet({
       toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha programu imewashwa na printer iko tayari.")} ${error instanceof Error ? error.message : String(error ?? "")}`);
       return false;
     }
-  }, [printerName, paper, hardware.printerSource]);
+  }, [printerName, paper, hardware.printerSource, hardware.paperWidth]);
 
   useEffect(() => {
     if (settings === undefined) return;

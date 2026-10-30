@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { tr } from "./i18n.ts";
 import { printHtmlViaQz } from "./printers.ts";
+import { resolvePaper } from "./print-policy.ts";
 import { stamp, type ReceiptBranding } from "./receipt-branding.ts";
 
 /** What a payment receipt (risiti ya malipo) shows. Everything is optional except the money. */
@@ -36,8 +37,8 @@ export function paymentReceiptHtml(r: PaymentReceipt, paperWidth = "80mm", brand
   const orderRows = (r.orders ?? []).map((o) => `<tr><td class="name wide">${escapeHtml(o.label)}</td><td class="amount">${escapeHtml(num(o.amount))}/=</td></tr>`).join("");
   const payRows = r.payments.map((p) => `<div class="row between"><span>${escapeHtml(p.method)}</span><span>${escapeHtml(num(p.amount))}/=</span></div>`).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    @page{size:${width} auto;margin:3mm}*{box-sizing:border-box}
-    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:100%;overflow-wrap:anywhere;color:#000}
+    @page{size:${width} auto;margin:0}*{box-sizing:border-box}
+    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:${width};padding:0 3mm;overflow-wrap:anywhere;color:#000}
     .c{text-align:center}p{margin:0 0 3px}
     .title{font-size:15px;font-weight:800;margin:6px 0 2px;padding:3px 0;border-top:1px solid #000;border-bottom:1px solid #000}
     .head{display:flex;justify-content:space-between;align-items:flex-start;gap:4px}
@@ -89,7 +90,8 @@ export async function printPaymentReceipt(r: PaymentReceipt, printerName?: strin
     return false;
   }
   try {
-    await printHtmlViaQz(printerName.trim(), paymentReceiptHtml(r, paperWidth, branding));
+    const paper = resolvePaper(paperWidth);
+    await printHtmlViaQz(printerName.trim(), paymentReceiptHtml(r, paper, branding), paper);
     return true;
   } catch (error) {
     toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha QZ Tray imewashwa, printer imechaguliwa, na mipangilio ya cheti/signature imekamilika.")} ${error instanceof Error ? error.message : String(error ?? "")}`);

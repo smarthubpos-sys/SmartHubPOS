@@ -308,7 +308,7 @@ function HardwareForm({ s }: { s: Settings }) {
         )}
 
         <div className="grid gap-4 md:grid-cols-2">
-          <SelectField label={tr("Upana wa karatasi")} value={f.paperWidth} onChange={(v) => set("paperWidth", v)} disabled={!ok} options={[["58mm", tr("58 mm")], ["80mm", tr("80 mm")], ["a4", "A4"]]} />
+          <SelectField label={tr("Upana wa karatasi")} value={f.paperWidth} onChange={(v) => { set("paperWidth", v); try { localStorage.setItem("smarthub-print-paper", v === "a4" ? "A4" : v); } catch { /* storage unavailable */ } }} disabled={!ok} options={[["58mm", tr("58 mm")], ["80mm", tr("80 mm")], ["a4", "A4"]]} hint={tr("Upana huu pia unahifadhiwa kwenye kompyuta hii, kwa hiyo kila POS yenye printer tofauti inatumia upana wake.")} />
           <TextField label={tr("Kichapishi cha lebo (hiari)")} value={f.labelPrinter} onChange={(v) => set("labelPrinter", v)} disabled={!ok} />
         </div>
         <Toggle label={tr("Chapisha risiti moja kwa moja baada ya mauzo")} checked={f.autoPrintReceipt} onChange={(v) => set("autoPrintReceipt", v)} disabled={!ok} />

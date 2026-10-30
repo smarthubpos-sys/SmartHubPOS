@@ -34,8 +34,9 @@ const groupStyle = (id: string, groups: Array<{ _id: unknown }>) => {
 
 /**
  * Selling Point: product groups -> product tiles -> cart. Tap = +1. Send / Print create the order AND deduct stock once (server-guarded).
- * `counter` = the cashier sells to his own walk-in customer: no Send / Print to a queue; he takes the payment right here
- * (one or many methods), the sale is booked at once, and he may print a payment receipt.
+ * `counter` = the cashier sells to his own walk-in customer. He uses Send / Print exactly like a waiter: the order is saved under HIS name
+ * for the invoice amount and he receives the money later (Cashier > receive money, picking his own name). Taking the payment right now
+ * is optional (collapsed section): one or many methods, the sale is booked at once, and he may print a payment receipt.
  */
 export default function SellingPoint({ counter = false }: { counter?: boolean } = {}) {
   const products = useQuery(api.products.listActive);
@@ -73,7 +74,7 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
     setBusy(true);
     try {
       const res = await submit({ clientKey, mode, tableNumber: table.trim() || undefined, lines: lines.map((l) => ({ productId: l.id as Id<"products">, qty: l.qty })) });
-      toast.success(res.duplicate ? tr("Oda hii ilishachakatwa tayari. Stock haikupunguzwa tena.") : mode === "send" ? tr("Oda imetumwa kwa cashier. Stock imepunguzwa mara moja.") : tr("Oda imehifadhiwa. Stock imepunguzwa mara moja."));
+      toast.success(res.duplicate ? tr("Oda hii ilishachakatwa tayari. Stock haikupunguzwa tena.") : counter ? tr("Oda imehifadhiwa kwenye akaunti yako. Pokea malipo baadaye kupitia \"Pokea fedha za wahudumu\". Stock imepunguzwa mara moja.") : mode === "send" ? tr("Oda imetumwa kwa cashier. Stock imepunguzwa mara moja.") : tr("Oda imehifadhiwa. Stock imepunguzwa mara moja."));
       // Clear the waiter workspace after the server confirms the order was saved.
       // The persisted order remains available in the cashier queue / Bills; failed submits keep the cart.
       setCart({});
@@ -176,14 +177,21 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
           <ServicePointFields className="grid gap-3" value={servicePoint} disabled={locked} onChange={setServicePoint} />
         </details>
         <p className="text-xl font-bold">{tr("Jumla")}: {money(total)}</p>
-        {counter ? <div className="space-y-2">
-          <PaymentSplit methods={methods} lines={payLines} onChange={setPayLines} due={total} disabled={locked} />
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4" checked={printReceipt} onChange={(e) => { setPrintReceipt(e.target.checked); try { localStorage.setItem(PRINT_RECEIPT_KEY, e.target.checked ? "1" : "0"); } catch { /* remembering the choice is optional */ } }} />{tr("Chapisha risiti ya malipo")}</label>
-          <Button type="button" className="h-11 w-full text-sm" disabled={!canCounterSell} onClick={() => void sellAtCounter()}>{busy ? tr("Inachakata...") : tr("Uza na pokea malipo")}</Button>
-        </div> : <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <Button type="button" className="h-10 text-sm" disabled={locked || lines.length === 0} onClick={() => void finish("send")}>{busy ? tr("Inachakata...") : tr("Send")}</Button>
           <Button type="button" variant="outline" className="h-10 text-sm" disabled={locked || lines.length === 0} onClick={() => void finish("print")}>{busy ? tr("Inachakata...") : tr("Print")}</Button>
-        </div>}
+        </div>
+        {counter && <>
+          <p className="text-xs text-muted-foreground">{tr("Oda inaingia kwenye akaunti yako (jina lako) kwa kiasi cha invoice. Hulazimiki kulipa sasa: utapokea malipo baadaye kupitia \"Pokea fedha za wahudumu\".")}</p>
+          <details className="rounded-lg border p-2 text-sm">
+            <summary className="cursor-pointer select-none py-1 font-medium">{tr("Mteja amelipa papo hapo? (hiari)")}</summary>
+            <div className="space-y-2 pt-2">
+              <PaymentSplit methods={methods} lines={payLines} onChange={setPayLines} due={total} disabled={locked} />
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4" checked={printReceipt} onChange={(e) => { setPrintReceipt(e.target.checked); try { localStorage.setItem(PRINT_RECEIPT_KEY, e.target.checked ? "1" : "0"); } catch { /* remembering the choice is optional */ } }} />{tr("Chapisha risiti ya malipo")}</label>
+              <Button type="button" variant="outline" className="h-11 w-full text-sm" disabled={!canCounterSell} onClick={() => void sellAtCounter()}>{busy ? tr("Inachakata...") : tr("Uza na pokea malipo")}</Button>
+            </div>
+          </details>
+        </>}
       </aside>
     </section>
   );

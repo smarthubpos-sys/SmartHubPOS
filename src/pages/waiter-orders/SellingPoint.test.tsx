@@ -9,11 +9,12 @@ const { submit, printWaiterOrder, toast } = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn(), message: vi.fn() },
 }));
 let settings: Record<string, unknown> = {};
+let userRole = "waiter";
 
 const data = (): Record<string, unknown> => ({
   "products:listActive": [{ _id: "p1", name: "Bia", sellingPrice: 2000, itemCode: "P1", groupId: "g1", isActive: true }],
   "products:listGroups": [{ _id: "g1", name: "Vinywaji", isActive: true }],
-  "users:getCurrentUser": { name: "Juma", username: "juma", role: "waiter" },
+  "users:getCurrentUser": { name: "Juma", username: "juma", role: userRole },
   "maintenance:getSettings": { app: settings },
 });
 vi.mock("convex/react", () => ({
@@ -33,6 +34,7 @@ const cartHasBia = () => screen.queryByText(/2,000 × 1|2.000 × 1|2000 × 1/) !
 
 describe("Selling Point: Send and Print", () => {
   beforeEach(() => {
+    userRole = "waiter";
     submit.mockReset(); printWaiterOrder.mockReset();
     toast.success.mockReset(); toast.error.mockReset(); toast.message.mockReset();
     settings = { hardware: { printerSource: "installed", receiptPrinter: "XP-80", paperWidth: "80mm" } };
@@ -116,5 +118,45 @@ describe("Selling Point: Send and Print", () => {
     fireEvent.click(screen.getByRole("button", { name: /^(Print|Chapisha)$/ }));
     await waitFor(() => expect(printWaiterOrder).toHaveBeenCalledTimes(1));
     expect(printWaiterOrder.mock.calls[0][1]).toBe("XP-80");
+  });
+});
+
+describe("Selling Point as the cashier (counter): Send / Print like a waiter, no forced payment", () => {
+  beforeEach(() => {
+    userRole = "cashier";
+    submit.mockReset(); printWaiterOrder.mockReset();
+    toast.success.mockReset(); toast.error.mockReset(); toast.message.mockReset();
+    settings = { hardware: { printerSource: "installed", receiptPrinter: "XP-80", paperWidth: "80mm" } };
+  });
+
+  it("shows Send and Print as the main buttons", () => {
+    render(<SellingPoint counter />);
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^(Print|Chapisha)$/ })).toBeTruthy();
+  });
+
+  it("Print saves the order under the cashier's own account (waiterOrders.submit) and prints his name - it never takes payment", async () => {
+    submit.mockResolvedValue({ orderId: "c1", status: "printed", duplicate: false });
+    printWaiterOrder.mockResolvedValue(true);
+    render(<SellingPoint counter />);
+    addBia();
+    fireEvent.click(screen.getByRole("button", { name: /^(Print|Chapisha)$/ }));
+    await waitFor(() => expect(printWaiterOrder).toHaveBeenCalledTimes(1));
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit.mock.calls[0][0]).toMatchObject({ mode: "print", lines: [{ productId: "p1", qty: 1 }] });
+    expect(submit.mock.calls[0][0]).not.toHaveProperty("splits");
+    expect(printWaiterOrder.mock.calls[0][0]).toMatchObject({ waiterName: "Juma", total: 2000 });
+    expect(String(toast.success.mock.calls[0][0])).toContain("akaunti yako");
+  });
+
+  it("Send keeps the order for the cashier's own queue without any payment", async () => {
+    submit.mockResolvedValue({ orderId: "c2", status: "pending", duplicate: false });
+    render(<SellingPoint counter />);
+    addBia();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(submit.mock.calls[0][0]).toMatchObject({ mode: "send" });
+    expect(submit.mock.calls[0][0]).not.toHaveProperty("splits");
+    expect(printWaiterOrder).not.toHaveBeenCalled();
   });
 });

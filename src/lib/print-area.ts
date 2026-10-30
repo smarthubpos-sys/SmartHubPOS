@@ -181,8 +181,9 @@ export function buildReceiptHtml(
 <base href="${document.baseURI}">
 ${styles}
 <style>
-html,body{background:#fff!important;color:#111!important;margin:0;padding:0;width:100%}
+html,body{background:#fff!important;color:#111!important;margin:0;padding:0;width:${paper === "A4" ? "100%" : paper}}
 body{font-family:Arial,Helvetica,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+${paper === "A4" ? "" : "body{box-sizing:border-box;padding:0 2mm}"}
 .print-area{box-sizing:border-box;margin:0 auto!important;border:0!important;border-radius:0!important;box-shadow:none!important;background:#fff!important;color:#111!important;padding:0!important}
 .print-area .overflow-x-auto,.print-area .overflow-hidden{overflow:visible!important;max-width:100%!important}
 .print-area table{border-collapse:collapse;max-width:100%;width:100%}

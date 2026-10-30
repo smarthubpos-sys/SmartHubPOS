@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { tr } from "./i18n.ts";
 import { printHtmlViaQz } from "./printers.ts";
+import { resolvePaper } from "./print-policy.ts";
 import { stamp, type ReceiptBranding } from "./receipt-branding.ts";
 
 export type PrintableOrder = {
@@ -41,12 +42,13 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
     <td class="name">${escapeHtml(line.productName)}</td>
     <td class="amount">${escapeHtml(Number(line.lineTotal).toLocaleString())}/=</td>
   </tr>`).join("");
+  paperWidth = resolvePaper(paperWidth);
   const width = paperWidth === "58mm" ? "58mm" : paperWidth === "A4" ? "190mm" : "80mm";
   const info = (label: string, value?: string) => value ? `<div class="row"><span class="lab">${escapeHtml(label)}</span><span>: ${escapeHtml(value)}</span></div>` : "";
   const company = (branding.companyName ?? "").trim();
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
-    @page{size:${width} auto;margin:3mm}*{box-sizing:border-box}
-    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:100%;overflow-wrap:anywhere;color:#000}
+    @page{size:${width} auto;margin:0}*{box-sizing:border-box}
+    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:${width};padding:0 3mm;overflow-wrap:anywhere;color:#000}
     .c{text-align:center}p{margin:0 0 3px}
     .title{font-size:15px;font-weight:800;margin:6px 0 2px;padding:3px 0;border-top:1px solid #000;border-bottom:1px solid #000}
     .head{display:flex;justify-content:space-between;align-items:flex-start;gap:4px}
@@ -90,7 +92,7 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
     ${branding.footer ? `<p class="c">${escapeHtml(branding.footer)}</p>` : ""}
   </body></html>`;
   try {
-    await printHtmlViaQz(printerName.trim(), html);
+    await printHtmlViaQz(printerName.trim(), html, paperWidth);
     return true;
   } catch (error) {
     toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha QZ Tray imewashwa, printer imechaguliwa, na mipangilio ya cheti/signature imekamilika.")} ${error instanceof Error ? error.message : String(error ?? "")}`);

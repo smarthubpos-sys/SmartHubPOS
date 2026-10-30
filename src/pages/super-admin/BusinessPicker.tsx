@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { Building2, CreditCard, LogOut, Megaphone, Pause, Pencil, Play, Plus, X, BarChart3, Clock3, Wallet, CheckCircle2, ChevronDown, Bell, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -25,6 +25,8 @@ export default function BusinessPicker() {
   const businesses = useQuery(api.tenants.listForPicker, {});
   const summary = useQuery(api.subscriptions.dashboardSummary, {});
   const select = useMutation(api.tenants.selectBusiness);
+  const buildMissing = useMutation(api.stats.buildMissing);
+  const builtOnce = useRef(false);
   const create = useMutation(api.tenants.create);
   const setActive = useMutation(api.tenants.setActive);
   const [showForm, setShowForm] = useState(false);
@@ -83,6 +85,13 @@ export default function BusinessPicker() {
     catch (e) { toast.error(errorText(e, "Imeshindikana kuingia kwenye biashara.")); setBusyId(null); }
   }
 
+  // Businesses whose dashboard numbers were never calculated (nobody opened their dashboard) are calculated automatically, once per visit.
+  const missingStats = (businesses ?? []).some((b) => b.isActive && !b.statsReady);
+  useEffect(() => {
+    if (!missingStats || builtOnce.current) return;
+    builtOnce.current = true;
+    void buildMissing({}).catch(() => undefined);
+  }, [missingStats, buildMissing]);
   async function toggle(id: Id<"tenants">, businessName: string, isActive: boolean) {
     if (isActive && !window.confirm(tr("Simamisha biashara \"{0}\"? Watumiaji wake hawataweza kuingia hadi uiwashe tena. Data haifutwi.", [businessName]))) return;
     setBusyId(String(id));

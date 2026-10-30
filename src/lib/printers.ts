@@ -62,8 +62,8 @@ type QzTrayApi = {
   };
   websocket: { isActive(): boolean; connect(options: { retries: number; delay: number }): Promise<void> };
   printers: { find(): Promise<string | string[]>; getDefault?(): Promise<string> };
-  configs: { create(name: string): unknown };
-  print(config: unknown, data: Array<{ type: string; format: string; flavor?: string; data: string }>): Promise<void>;
+  configs: { create(name: string, options?: object): unknown };
+  print(config: unknown, data: Array<{ type: string; format: string; flavor?: string; data: string; options?: object }>): Promise<void>;
 };
 
 const nav = (): DeviceNavigator => navigator as DeviceNavigator;
@@ -136,16 +136,41 @@ export async function printRawViaQz(printerName: string, bytes: Uint8Array) {
   let binary = ""; for (const byte of bytes) binary += String.fromCharCode(byte);
   await qz.print(qz.configs.create(printerName), [{ type: "raw", format: "command", flavor: "base64", data: btoa(binary) }]);
 }
-/** Print HTML receipt through the selected installed printer using QZ Tray. */
-export async function printHtmlViaQz(printerName: string, html: string) {
+/**
+ * Page options QZ Tray needs so the receipt is rendered at the REAL paper width.
+ * Without them QZ uses the Windows driver's default paper (sometimes A4, sometimes 58mm), renders the HTML at that
+ * width and then shrinks it ("scaleContent"), which is why a bill/order sometimes came out small.
+ */
+export function qzPageOptions(paper?: string) {
+  const p = String(paper ?? "").toLowerCase();
+  if (p === "a4") return { width: 210, height: 297, margin: 10, label: "A4" as const };
+  if (p === "58mm") return { width: 58, height: 0, margin: 0, label: "58mm" as const };
+  return { width: 80, height: 0, margin: 0, label: "80mm" as const };
+}
+
+/** Print HTML receipt through the selected installed printer using QZ Tray, at a fixed paper width and without scaling. */
+export async function printHtmlViaQz(printerName: string, html: string, paper?: string) {
   const qz = await qzConnect();
-  const config = qz.configs.create(printerName);
+  const page = qzPageOptions(paper);
+  const size: { width: number; height?: number } = { width: page.width };
+  if (page.height) size.height = page.height;
+  const config = qz.configs.create(printerName, {
+    units: "mm",
+    size,
+    margins: page.margin,
+    scaleContent: false,
+    rasterize: true,
+    colorType: "blackwhite",
+    orientation: "portrait",
+    jobName: "SmartHub receipt",
+  });
   await qz.print(config, [
     {
       type: "pixel",
       format: "html",
       flavor: "plain",
       data: html,
+      options: { pageWidth: page.width },
     },
   ]);
 }

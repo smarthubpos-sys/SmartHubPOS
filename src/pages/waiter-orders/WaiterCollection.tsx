@@ -90,7 +90,7 @@ export default function WaiterCollection() {
           {owing.map((w) => (
             <button key={String(w.staffId)} type="button" onClick={() => pickWaiter(String(w.staffId))}
               className={`rounded-lg border px-3 py-2 text-left text-sm ${staffId === String(w.staffId) ? "border-primary bg-primary/10" : "hover:bg-muted"}`}>
-              <div className="font-semibold">{w.staffName}</div>
+              <div className="font-semibold">{w.staffName}{user && String(w.staffId) === String(user._id) ? ` (${tr("wewe")})` : ""}</div>
               <div className="text-xs text-muted-foreground">{w.orders.length} {tr("oda")} · {money(w.total)}</div>
             </button>
           ))}

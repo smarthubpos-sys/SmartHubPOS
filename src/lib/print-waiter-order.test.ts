@@ -48,6 +48,15 @@ describe("waiter order QZ printing", () => {
     expect(html.indexOf("Voda: 51068098")).toBeLessThan(html.indexOf("The Barbecue Place"));
   });
 
+  it("tells QZ Tray the real paper width so an order is never shrunk or printed on the wrong size", async () => {
+    vi.mocked(printHtmlViaQz).mockResolvedValue(undefined);
+    await printWaiterOrder(order, "Receipt Printer", "80mm");
+    expect(vi.mocked(printHtmlViaQz).mock.calls[0][2]).toBe("80mm");
+    const html = vi.mocked(printHtmlViaQz).mock.calls[0][1] as string;
+    expect(html).toContain("width:80mm");
+    expect(html).not.toContain("margin:0;width:100%");
+  });
+
   it("reports QZ Tray failures and never reports the order as printed", async () => {
     vi.mocked(printHtmlViaQz).mockRejectedValue(new Error("QZ disconnected"));
     await expect(printWaiterOrder(order, "Receipt Printer")).resolves.toBe(false);

@@ -143,6 +143,25 @@ export const requestRebuild = internalMutation({
   },
 });
 
+/** Super Admin: builds the roll-ups of every business that has none yet (businesses nobody opened the dashboard of). Safe to call repeatedly. */
+export const buildMissing = mutation({
+  args: {},
+  handler: async (ctx) => {
+    await requireSuperAdminUser(ctx);
+    let n = 0;
+    for (const t of await ctx.db.query("tenants").collect()) {
+      if (t.isActive === false) continue;
+      const has = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", t._id)).first();
+      if (has) continue;
+      const job = await ctx.db.query("statsJobs").withIndex("by_tenant", (q) => q.eq("tenantId", t._id)).first();
+      if (job && Date.now() - job.queuedAt < QUEUE_GUARD_MS) continue; // already being built
+      await ensureFresh(ctx, t._id);
+      n++;
+    }
+    return n;
+  },
+});
+
 /** Nightly: re-check the exact totals of every business that was used in the last 3 days. */
 export const reconcileAll = internalMutation({
   args: {},
@@ -152,7 +171,8 @@ export const reconcileAll = internalMutation({
     let n = 0;
     for (const t of tenants) {
       const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", t._id)).collect();
-      if (!rows.some((r) => r.refreshedAt >= since)) continue; // idle business: nothing to repair
+      // A business that never had its roll-ups built is built now; an idle one that has them needs no repair.
+      if (rows.length > 0 && !rows.some((r) => r.refreshedAt >= since)) continue;
       await ctx.scheduler.runAfter(n++ * 4000, internal.stats.rebuild, { tenantId: t._id, mode: "full", phase: "invoices", cursor: null, acc: emptyAcc() });
     }
     return n;

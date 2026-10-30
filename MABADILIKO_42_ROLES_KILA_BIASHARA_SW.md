@@ -28,3 +28,9 @@ Kila kadi ya biashara sasa ina: "Leo: <jumla> TZS · Invoice <idadi>" na "Mauzo 
 Biashara ambayo namba za dashboard hazijahesabiwa inaonyesha onyo la njano "Namba za dashboard hazijahesabiwa":
 ingia kwenye biashara hiyo, bonyeza "Hesabu upya dashboard" (Edit Business). Ikiwa "Mauzo ya mwisho" ni ya leo lakini Leo ni 0, namba zimechelewa — hesabu upya.
 Faili: convex/tenants.ts, src/pages/super-admin/BusinessPicker.tsx
+
+## 6. Namba za dashboard zinahesabiwa zenyewe
+- Zamani namba zilianza kuhesabiwa tu mtu akifungua Dashboard ya biashara; kazi ya usiku iliruka biashara ambazo hazijawahi kuhesabiwa.
+- Sasa: (a) kuingia kwenye biashara (selectBusiness) kunaanzisha hesabu; (b) orodha ya biashara inaita stats.buildMissing mara moja inapoona biashara isiyo na namba; (c) kazi ya usiku inajenga biashara zisizo na namba.
+- Hesabu inachukua sekunde chache hadi dakika kwa biashara kubwa; onyo la njano linaondoka lenyewe.
+Faili: convex/stats.ts, convex/tenants.ts, src/pages/super-admin/BusinessPicker.tsx
