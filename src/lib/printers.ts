@@ -149,14 +149,12 @@ export function qzPageOptions(paper?: string) {
 }
 
 /**
- * QZ Tray's HTML pixel pageWidth is measured in CSS pixels, not millimetres.
- * Keep the physical printer page in mm (qzPageOptions), but convert the HTML
- * raster width at the CSS standard 96dpi. Passing 80 here meant 80px (~21mm),
- * which clipped most of an 80mm receipt even though the paper itself was 80mm.
+ * QZ Tray HTML pageWidth is specified in inches.
+ * Convert the physical paper width from millimetres to inches.
  */
-export function qzHtmlPageWidthPixels(paper?: string): number {
+export function qzHtmlPageWidthInches(paper?: string): number {
   const { width } = qzPageOptions(paper);
-  return Math.round((width * 96) / 25.4);
+  return Number((width / 25.4).toFixed(3));
 }
 
 /** Print HTML receipt through the selected installed printer using QZ Tray, at a fixed paper width and without scaling. */
@@ -181,7 +179,7 @@ export async function printHtmlViaQz(printerName: string, html: string, paper?: 
       format: "html",
       flavor: "plain",
       data: html,
-      options: { pageWidth: qzHtmlPageWidthPixels(paper) },
+      options: { pageWidth: qzHtmlPageWidthInches(paper) },
     },
   ]);
 }
