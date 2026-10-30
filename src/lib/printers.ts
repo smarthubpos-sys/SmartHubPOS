@@ -149,24 +149,108 @@ export function qzPageOptions(paper?: string) {
 }
 
 /**
- * QZ Tray HTML pageWidth is specified in inches.
- * Convert the physical paper width from millimetres to inches.
+ * QZ Tray HTML (pixel) pageWidth is given in INCHES - the same unit as the config (see sendHtmlToQz).
+ * 58mm = 2.283in, 80mm = 3.15in, A4 = 8.268in. (Passing 80 meant 80 units, passing mm-as-px clipped the receipt.)
  */
 export function qzHtmlPageWidthInches(paper?: string): number {
-  const { width } = qzPageOptions(paper);
-  return Number((width / 25.4).toFixed(3));
+  return Math.round((qzPageOptions(paper).width / 25.4) * 1000) / 1000;
 }
 
-/** Print HTML receipt through the selected installed printer using QZ Tray, at a fixed paper width and without scaling. */
-export async function printHtmlViaQz(printerName: string, html: string, paper?: string) {
+/** Width the preview/measuring frame uses so it lays out exactly like the printed page (CSS 96dpi). */
+function receiptWidthCssPx(paper?: string): number {
+  return Math.round(qzHtmlPageWidthInches(paper) * 96);
+}
+
+/** Extra blank paper left under the last line so the cutter does not slice through the text. */
+const RECEIPT_TAIL_MM = 6;
+
+/** CSS pixels -> millimetres (96dpi), rounded up, plus a small tail. Pure function (unit-tested). */
+export function receiptHeightMm(contentHeightPx: number): number {
+  const px = Number.isFinite(contentHeightPx) && contentHeightPx > 0 ? contentHeightPx : 0;
+  return Math.max(30, Math.ceil((px * 25.4) / 96) + RECEIPT_TAIL_MM);
+}
+
+/**
+ * Renders the receipt HTML off-screen at the REAL paper width and returns how tall it really is (CSS px).
+ * Roll printers (58/80mm) have no fixed page length: if the job does not say how long the receipt is, the driver
+ * feeds a default page (often A4 / very long) - this is why the paper came out far too long.
+ */
+export async function measureReceiptHeightPx(html: string, paper?: string): Promise<number> {
+  const widthPx = receiptWidthCssPx(paper);
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.style.cssText = `position:fixed;left:-10000px;top:0;width:${widthPx}px;height:1px;border:0;visibility:hidden;`;
+  document.body.appendChild(frame);
+  try {
+    await new Promise<void>((resolve) => { frame.onload = () => resolve(); frame.srcdoc = html; });
+    const doc = frame.contentDocument;
+    if (!doc) return 0;
+    const body = doc.body;
+    const rect = body ? body.getBoundingClientRect() : { height: 0 };
+    const margins = body ? parseFloat(getComputedStyle(body).marginTop || "0") + parseFloat(getComputedStyle(body).marginBottom || "0") : 0;
+    return Math.max(rect.height + margins, body ? body.scrollHeight : 0, 0);
+  } finally { frame.remove(); }
+}
+
+/**
+ * Shows the receipt exactly as it will print (same HTML, same paper width) in a pop-up, with the real length in mm.
+ * Resolves true when the person presses Print, false when they close it.
+ */
+export async function showReceiptPreview(html: string, paper?: string): Promise<boolean> {
+  const page = qzPageOptions(paper);
+  const widthPx = receiptWidthCssPx(paper);
+  const heightPx = await measureReceiptHeightPx(html, paper);
+  const heightMm = page.height ? page.height : receiptHeightMm(heightPx);
+  return new Promise<boolean>((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.65);display:flex;flex-direction:column;align-items:center;padding:16px;gap:12px;";
+    const info = document.createElement("div");
+    info.style.cssText = "color:#fff;font:600 14px system-ui,sans-serif;text-align:center;";
+    info.textContent = `${tr("Hakiki ya risiti")} - ${page.label} - ${tr("Urefu")}: ${heightMm} mm`;
+    const scroller = document.createElement("div");
+    scroller.style.cssText = "flex:1;min-height:0;overflow:auto;width:100%;display:flex;justify-content:center;";
+    const sheet = document.createElement("div");
+    sheet.style.cssText = `background:#fff;box-shadow:0 4px 24px rgba(0,0,0,.4);width:${widthPx}px;height:${Math.ceil(heightPx) + 24}px;flex:none;`;
+    const frame = document.createElement("iframe");
+    frame.style.cssText = `border:0;width:${widthPx}px;height:100%;background:#fff;`;
+    frame.srcdoc = html;
+    sheet.appendChild(frame); scroller.appendChild(sheet);
+    const bar = document.createElement("div");
+    bar.style.cssText = "display:flex;gap:12px;";
+    const mkBtn = (label: string, bg: string, color: string) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = label;
+      b.style.cssText = `padding:10px 22px;border:0;border-radius:8px;font:600 14px system-ui,sans-serif;cursor:pointer;background:${bg};color:${color};`;
+      return b;
+    };
+    const cancel = mkBtn(tr("Funga"), "#e2e8f0", "#0f172a");
+    const ok = mkBtn(tr("Chapa"), "#16a34a", "#fff");
+    const done = (value: boolean) => { document.removeEventListener("keydown", onKey); overlay.remove(); resolve(value); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") done(false); };
+    cancel.onclick = () => done(false);
+    ok.onclick = () => done(true);
+    document.addEventListener("keydown", onKey);
+    bar.append(cancel, ok);
+    overlay.append(info, scroller, bar);
+    document.body.appendChild(overlay);
+  });
+}
+
+const mmToIn = (mm: number) => Math.round((mm / 25.4) * 1000) / 1000;
+
+/**
+ * Sends the HTML to QZ Tray. NOT exported on purpose: every caller must go through previewAndPrintViaQz so a receipt
+ * can never be printed without being shown first. Config and pageWidth both use inches. For 58/80mm roll paper the
+ * page height is measured from the real receipt so the paper is cut right after the last line.
+ */
+async function sendHtmlToQz(printerName: string, html: string, paper?: string) {
   const qz = await qzConnect();
   const page = qzPageOptions(paper);
-  const size: { width: number; height?: number } = { width: page.width };
-  if (page.height) size.height = page.height;
+  const heightMm = page.height ? page.height : receiptHeightMm(await measureReceiptHeightPx(html, paper));
   const config = qz.configs.create(printerName, {
-    units: "mm",
-    size,
-    margins: page.margin,
+    units: "in",
+    size: { width: qzHtmlPageWidthInches(paper), height: mmToIn(heightMm) },
+    margins: mmToIn(page.margin),
     scaleContent: false,
     rasterize: true,
     colorType: "blackwhite",
@@ -182,6 +266,16 @@ export async function printHtmlViaQz(printerName: string, html: string, paper?: 
       options: { pageWidth: qzHtmlPageWidthInches(paper) },
     },
   ]);
+}
+
+/**
+ * The ONLY way to print an HTML receipt: shows the preview of this exact `html` string, and prints that same string
+ * only after the person presses Chapa. Returns false when they close the preview (nothing is sent to the printer).
+ */
+export async function previewAndPrintViaQz(printerName: string, html: string, paper?: string): Promise<boolean> {
+  if (!(await showReceiptPreview(html, paper))) return false;
+  await sendHtmlToQz(printerName, html, paper);
+  return true;
 }
 /* â”€â”€â”€â”€â”€â”€â”€â”€â”€ Direct devices â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 const BLE_SERVICES = [

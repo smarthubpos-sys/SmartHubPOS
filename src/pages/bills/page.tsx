@@ -36,7 +36,6 @@ export default function BillsPage() {
   const [allDepts, setAllDepts] = useState(true);
   const [deptFilter, setDeptFilter] = useState("");
   const combine = !!access?.allDepartments && allDepts; // permission "bills.all_departments"
-  const [printToken, setPrintToken] = useState(0);
   const [paper, setPaper] = useState<"80mm" | "58mm" | "A4">(() => { const saved = localStorage.getItem("smarthub-print-paper"); return saved === "58mm" || saved === "A4" ? saved : "80mm"; });
   const [whatsappEnabled, setWhatsappEnabled] = useState(() => localStorage.getItem("smarthub-bill-whatsapp-enabled") !== "false");
 
@@ -60,7 +59,7 @@ export default function BillsPage() {
     setPicked((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   };
   const allPicked = eligible.length > 0 && chosen.length === eligible.length;
-  async function startBill(shouldPrint: boolean) {
+  async function startBill() {
     if (creatingBill || chosen.length === 0) return;
     const ids = chosen.map((i) => i._id);
     setCreatingBill(true);
@@ -69,7 +68,6 @@ export default function BillsPage() {
       setBillInvoiceIds(ids);
       setPicked(new Set());
       setShowBill(true);
-      if (shouldPrint) setPrintToken((n) => n + 1);
       toast.success(tr("Invoice zimehifadhiwa kwenye bili."));
     } catch (error) {
       toast.error(errorText(error, tr("Imeshindikana kuunda bili. Hakuna invoice iliyowekwa kwenye bili.")));
@@ -123,9 +121,9 @@ export default function BillsPage() {
           actions={clientId && list.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => { setPicked(allPicked ? new Set() : new Set(eligible.map((i) => String(i._id)))); setShowBill(false); setBillInvoiceIds([]); }}>{allPicked ? tr("Ondoa zote") : tr("Chagua zote")}</Button>
-              <Button size="sm" variant="outline" disabled={chosen.length === 0 || creatingBill} onClick={() => void startBill(false)}>{tr("Send")}</Button>
+              <Button size="sm" variant="outline" disabled={chosen.length === 0 || creatingBill} onClick={() => void startBill()}>{tr("Send")}</Button>
               <label className="flex items-center gap-1 text-xs">{tr("Printer")}<select className="h-8 rounded-md border bg-background px-2" value={paper} onChange={(e) => { const v = e.target.value as "80mm" | "58mm" | "A4"; setPaper(v); localStorage.setItem("smarthub-print-paper", v); }}><option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option></select></label>
-              <Button size="sm" disabled={chosen.length === 0 || creatingBill} onClick={() => void startBill(true)}><Printer className="mr-1 h-4 w-4" />{creatingBill ? tr("Inahifadhi...") : tr("Print")}</Button>
+              <Button size="sm" disabled={chosen.length === 0 || creatingBill} onClick={() => void startBill()}><Printer className="mr-1 h-4 w-4" />{creatingBill ? tr("Inahifadhi...") : tr("Print")}</Button>
             </div>
           ) : undefined}
         >
@@ -164,7 +162,7 @@ export default function BillsPage() {
         </div>
       </Panel>}
 
-      {showBill && billInvoiceIds.length > 0 && <BillSheet invoiceIds={billInvoiceIds} printToken={printToken} paper={paper} onPrinted={() => { setShowBill(false); setBillInvoiceIds([]); setPicked(new Set()); toast.success(tr("Bili imechapishwa na kuondolewa kwenye orodha. Fungua tena kupitia \"Bili zilizopita\".")); }} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={(value) => { setWhatsappEnabled(value); localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); }} />}
+      {showBill && billInvoiceIds.length > 0 && <BillSheet invoiceIds={billInvoiceIds} paper={paper} onPrinted={() => { setShowBill(false); setBillInvoiceIds([]); setPicked(new Set()); toast.success(tr("Bili imechapishwa na kuondolewa kwenye orodha. Fungua tena kupitia \"Bili zilizopita\".")); }} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={(value) => { setWhatsappEnabled(value); localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); }} />}
     </div>
   );
 }

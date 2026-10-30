@@ -72,7 +72,7 @@ export default function StaffSettlement() {
               <td className="p-2"><button type="button" className="text-xs underline" onClick={() => setReprint(i._id)}>{tr("Chapisha tena")}</button></td>
             </tr>))}</tbody></table></div>
         {reprint && <div className="rounded-lg border p-3"><p className="mb-2 text-xs text-muted-foreground">{tr("Kuchapisha tena hakutengenezi mauzo, malipo wala kupunguza stock.")}</p>
-          <BillSheet kind="invoice" key={reprint} invoiceIds={[reprint]} printToken={0} paper="80mm" whatsappEnabled={false} setWhatsappEnabled={() => undefined} /></div>}
+          <BillSheet kind="invoice" key={reprint} invoiceIds={[reprint]} paper="80mm" whatsappEnabled={false} setWhatsappEnabled={() => undefined} /></div>}
         {open.length > 0 && <div className="space-y-2 rounded-xl border p-3">
           <h3 className="font-semibold">{tr("Weka malipo (settlement)")}</h3>
           <p className="text-sm">{tr("Deni la zilizochaguliwa")}: <strong>{fmt(due)}</strong> · {tr("Unalipa")}: <strong>{fmt(paying)}</strong> · {tr("Litakalobaki")}: <strong>{fmt(Math.max(0, due - paying))}</strong></p>

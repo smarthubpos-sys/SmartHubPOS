@@ -12,8 +12,7 @@ import { formatDate, formatNumber } from "@/lib/format.ts";
 import { type Paper } from "@/lib/print-area.ts";
 import { billReceiptHtml, type PrintableBill } from "@/lib/print-bill.ts";
 import { receiptScale } from "@/lib/receipt-layout.ts";
-import { printHtmlViaQz } from "@/lib/printers.ts";
-import { shouldSchedulePrint } from "@/lib/print-policy.ts";
+import { previewAndPrintViaQz } from "@/lib/printers.ts";
 import { tr } from "@/lib/i18n.ts";
 import { stamp } from "@/lib/receipt-branding.ts";
 
@@ -63,12 +62,11 @@ function ReceiptRow({ label, value, printTime }: { label: string; value?: string
 }
 
 /**
- * The bill itself. `printToken` > 0 sends the receipt to the configured QZ Tray printer once data is ready.
+ * The bill itself. Printing always requires an explicit click and preview confirmation.
  * `kind="invoice"` (used by Sales) uses the department name as the heading instead of "BILI"; with no department it says "Sales".
  */
 export default function BillSheet({
   invoiceIds,
-  printToken,
   paper,
   whatsappEnabled,
   setWhatsappEnabled,
@@ -76,7 +74,6 @@ export default function BillSheet({
   onPrinted,
 }: {
   invoiceIds: Id<"invoices">[];
-  printToken: number;
   paper: Paper;
   whatsappEnabled: boolean;
   setWhatsappEnabled: (value: boolean) => void;
@@ -85,7 +82,6 @@ export default function BillSheet({
   onPrinted?: () => void;
 }) {
   const bill = useQuery(api.customerBills.billData, { invoiceIds });
-  const printed = useRef(0);
   const [printedAt] = useState(() => new Date());
   const onPrintedRef = useRef(onPrinted);
   useEffect(() => { onPrintedRef.current = onPrinted; }, [onPrinted]);
@@ -116,7 +112,8 @@ export default function BillSheet({
       // physical print while the preview is showing 80mm (or A4).
       const usedPaper = paper;
       const html = billReceiptHtml(buildPrintable(bill, kind, new Date()), usedPaper);
-      await printHtmlViaQz(printerName, html, usedPaper);
+      const printed = await previewAndPrintViaQz(printerName, html, usedPaper);
+      if (!printed) return false; // Preview was closed; nothing was sent to QZ Tray.
       toast.success(tr("Ombi la kuchapa limetumwa kwa QZ Tray."));
       onPrintedRef.current?.();
       return true;
@@ -126,33 +123,7 @@ export default function BillSheet({
     }
   }, [bill, kind, paper, printerName, hardware.printerSource]);
 
-  useEffect(() => {
-    if (settings === undefined) return;
-    if (
-      !shouldSchedulePrint({
-        dataReady: !!bill,
-        allowed: canPrint,
-        token: printToken,
-        lastPrinted: printed.current,
-      })
-    )
-      return;
 
-    const t = window.setTimeout(() => {
-      if (printed.current === printToken) return;
-      void printReceipt().then((ok) => { if (ok) printed.current = printToken; });
-    }, 150);
-
-    return () => window.clearTimeout(t);
-  }, [
-    bill,
-    canPrint,
-    printToken,
-    paper,
-    settings,
-    printerName,
-    printReceipt,
-  ]);
 
   if (bill === undefined) return <Empty>{tr("Inapakia…")}</Empty>;
   const dp = bill.company.decimalPlaces;
@@ -230,6 +201,7 @@ export default function BillSheet({
         )}
         {canPrint && (
           <Button
+            disabled={!canPrint || settings === undefined}
             onClick={() => {
               void printReceipt();
             }}

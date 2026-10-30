@@ -80,7 +80,7 @@ export default function WaiterDirectory() {
                 <div className="text-sm"><span className="font-semibold">Historia ya malipo: </span>
                   {payments && payments.length ? payments.map((p) => `${p.date} ${p.method} ${fmt(p.amount)}`).join(" · ") : "Hakuna malipo yaliyorekodiwa."}</div>
                 <p className="text-xs text-muted-foreground">Kuchapisha tena kunatumia data ya invoice asili; hakutengenezi mauzo, hakupunguzi stock wala hakurekodi malipo.</p>
-                <BillSheet kind="invoice" key={invoiceId} invoiceIds={[invoiceId]} printToken={0} paper={paper} whatsappEnabled={false} setWhatsappEnabled={() => undefined} />
+                <BillSheet kind="invoice" key={invoiceId} invoiceIds={[invoiceId]} paper={paper} whatsappEnabled={false} setWhatsappEnabled={() => undefined} />
               </div>
             )}
           </div>

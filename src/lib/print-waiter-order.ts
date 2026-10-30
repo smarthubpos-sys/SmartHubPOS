@@ -1,6 +1,6 @@
 import { toast } from "sonner";
 import { tr } from "./i18n.ts";
-import { printHtmlViaQz } from "./printers.ts";
+import { previewAndPrintViaQz } from "./printers.ts";
 import { resolvePaper } from "./print-policy.ts";
 import { stamp, type ReceiptBranding } from "./receipt-branding.ts";
 import { receiptCss } from "./receipt-layout.ts";
@@ -76,8 +76,7 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
     ${branding.footer ? `<p class="c">${escapeHtml(branding.footer)}</p>` : ""}
   </body></html>`;
   try {
-    await printHtmlViaQz(printerName.trim(), html, paperWidth);
-    return true;
+    return await previewAndPrintViaQz(printerName.trim(), html, paperWidth);
   } catch (error) {
     toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha QZ Tray imewashwa, printer imechaguliwa, na mipangilio ya cheti/signature imekamilika.")} ${error instanceof Error ? error.message : String(error ?? "")}`);
     return false;
