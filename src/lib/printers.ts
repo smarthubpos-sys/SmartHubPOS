@@ -277,6 +277,16 @@ async function sendHtmlToQz(printerName: string, html: string, paper?: string) {
 }
 
 /**
+ * Print HTML directly through the configured QZ Tray printer.
+ * Used for waiter/order slips that are already confirmed by the user.
+ * Bills and payment receipts that require a preview use previewAndPrintViaQz below.
+ */
+export async function printHtmlViaQz(printerName: string, html: string, paper?: string): Promise<void> {
+  if (!printerName.trim()) throw new Error(tr("Chagua printer ya QZ Tray kwenye mipangilio kwanza."));
+  await sendHtmlToQz(printerName, html, paper);
+}
+
+/**
  * The ONLY way to print an HTML receipt: shows the preview of this exact `html` string, and prints that same string
  * only after the person presses Chapa. Returns false when they close the preview (nothing is sent to the printer).
  */
