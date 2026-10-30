@@ -238,34 +238,42 @@ export async function showReceiptPreview(html: string, paper?: string): Promise<
 
 const mmToIn = (mm: number) => Math.round((mm / 25.4) * 1000) / 1000;
 
-/**
- * Sends the HTML to QZ Tray. NOT exported on purpose: every caller must go through previewAndPrintViaQz so a receipt
- * can never be printed without being shown first. Config and pageWidth both use inches. For 58/80mm roll paper the
- * page height is measured from the real receipt so the paper is cut right after the last line.
- */
+/** Pure, testable dimensions/options shared by QZ's page config and HTML renderer. */
+export function qzHtmlPrintSettings(paper: string | undefined, contentHeightPx: number) {
+  const page = qzPageOptions(paper);
+  const heightMm = page.height || receiptHeightMm(contentHeightPx);
+  const widthIn = qzHtmlPageWidthInches(paper);
+  const heightIn = mmToIn(heightMm);
+  return {
+    config: {
+      units: "in" as const,
+      size: { width: widthIn, height: heightIn },
+      margins: mmToIn(page.margin),
+      scaleContent: false,
+      colorType: "blackwhite" as const,
+      // Auto orientation avoids forcing rotation on narrow custom roll-paper pages.
+      orientation: null,
+      jobName: "SmartHub receipt",
+    },
+    pixelOptions: { pageWidth: widthIn, pageHeight: heightIn },
+    widthMm: page.width,
+    heightMm,
+  };
+}
+
+/** Send the same HTML with explicit width and content-derived height to both QZ render layers. */
 async function sendHtmlToQz(printerName: string, html: string, paper?: string) {
   const qz = await qzConnect();
-  const page = qzPageOptions(paper);
-  const heightMm = page.height ? page.height : receiptHeightMm(await measureReceiptHeightPx(html, paper));
-  const config = qz.configs.create(printerName, {
-    units: "in",
-    size: { width: qzHtmlPageWidthInches(paper), height: mmToIn(heightMm) },
-    margins: mmToIn(page.margin),
-    scaleContent: false,
-    rasterize: true,
-    colorType: "blackwhite",
-    orientation: "portrait",
-    jobName: "SmartHub receipt",
-  });
-  await qz.print(config, [
-    {
-      type: "pixel",
-      format: "html",
-      flavor: "plain",
-      data: html,
-      options: { pageWidth: qzHtmlPageWidthInches(paper) },
-    },
-  ]);
+  const contentHeightPx = await measureReceiptHeightPx(html, paper);
+  const settings = qzHtmlPrintSettings(paper, contentHeightPx);
+  const config = qz.configs.create(printerName, settings.config);
+  await qz.print(config, [{
+    type: "pixel",
+    format: "html",
+    flavor: "plain",
+    data: html,
+    options: settings.pixelOptions,
+  }]);
 }
 
 /**
