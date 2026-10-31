@@ -78,6 +78,9 @@ export function togglePermission(current: string[], key: string): string[] {
 
 /** Permissions that can also be given to ONE user directly (on top of his role) from the Users form. */
 export const USER_GRANTABLE_PERMISSIONS: { key: string; label: string }[] = [
+  { key: "maintenance.users", label: "Anaweza kuongeza, ku-edit na kusimamia watumiaji (User Settings) - ndani ya biashara yake na ruhusa alizonazo yeye mwenyewe" },
+  { key: "sales.edit", label: "Anaweza ku-edit invoice za Sales zilizohifadhiwa" },
+  { key: "sales.print", label: "Anaweza ku-print invoice na risiti za Sales" },
   { key: "sales.void", label: "Anaweza kufuta / kubatilisha oda (invoice za Sales na oda za Waiter)" },
   { key: "purchasing.edit", label: "Anaweza ku-edit Purchase (invoice, order, GRN)" },
   { key: "purchasing.delete", label: "Anaweza kufuta Purchase (invoice, order, GRN, return)" },

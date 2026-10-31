@@ -1,7 +1,7 @@
 import { ConvexError } from "convex/values";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
-import { SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, effectiveModules, permissionsWithNewDefaults } from "./permissions";
+import { ALL_PERMISSION_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, effectiveModules, permissionsWithNewDefaults } from "./permissions";
 import { planStatus, tzToday } from "./plans";
 
 /** The parts of a user the access helpers read. A real user (Doc<"users">) fits; tests may pass a lighter object. */
@@ -125,6 +125,27 @@ export async function findRoleRow(ctx: QueryCtx, tenantId: Id<"tenants"> | undef
     if (own) return own;
   }
   return await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", undefined).eq("name", name)).first();
+}
+
+/**
+ * Every permission a role carries, with the "*" wildcard of owner roles expanded (permissions that only a Super Admin may give are
+ * never part of the wildcard). Used to stop a user administrator from handing out more power than he has himself.
+ */
+export async function permissionsOfRole(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, roleName: string): Promise<string[]> {
+  const name = normalizeRole(roleName);
+  if (["super_admin", "superadmin"].includes(name)) return [...ALL_PERMISSION_KEYS];
+  const row = await findRoleRow(ctx, tenantId, name);
+  const perms: string[] = row ? permissionsWithNewDefaults(name, row.permissions, row.knownKeys) : BUILTIN_ROLE_PERMISSIONS[name] ?? [];
+  if (!perms.includes(ALL_PERMISSIONS_FOR_ADMIN)) return perms;
+  return [...new Set([...perms.filter((p) => p !== ALL_PERMISSIONS_FOR_ADMIN), ...ALL_PERMISSION_KEYS.filter((k) => !SUPER_ADMIN_ONLY_PERMISSIONS.includes(k))])];
+}
+
+/** What one user can really do: his role's permissions plus the ones given to him directly (grantable list only). */
+export async function effectivePermissionsOf(ctx: QueryCtx, user: MaybeUser): Promise<string[]> {
+  if (isSuperAdmin(user)) return [...ALL_PERMISSION_KEYS];
+  const grantable = new Set(USER_GRANTABLE_PERMISSIONS.map((g) => g.key));
+  const extra = (user?.extraPermissions ?? []).filter((k) => grantable.has(k));
+  return [...new Set([...(await permissionsOfRole(ctx, user?.tenantId, String(user?.role ?? ""))), ...extra])];
 }
 
 export async function roleHasPermission(ctx: QueryCtx, user: MaybeUser, permission: string) {

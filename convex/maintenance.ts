@@ -8,7 +8,7 @@ import { surfaceError } from "./surfaceError";
 import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
 import {
   activeDepartments, findRoleRow, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
-  requireSuperAdminUser, resolveWriteScope, roleHasPermission, scopedRows } from "./access";
+  requireSuperAdminUser, resolveWriteScope, roleHasPermission, scopedRows, effectivePermissionsOf, permissionsOfRole } from "./access";
 import type { UserLike } from "./access";
 import { ALL_PERMISSION_KEYS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
 
@@ -366,6 +366,57 @@ async function allowedMenu(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, w
   return tenant?.modules ? keys.filter((k) => (tenant.modules as string[]).includes(k)) : keys;
 }
 
+/**
+ * A user who was given "maintenance.users" (e.g. a cashier the owner trusted) must never become more powerful than he is:
+ *  - he cannot give a role / direct permission that carries something he does not have himself;
+ *  - he cannot change, reset or deactivate a user who has more power than he has (otherwise he could take over the owner's account).
+ * Super Admin is never limited. Permissions only a Super Admin may give (stock.adjust) are left out of the comparison (they have their own rule).
+ */
+const withoutSuperOnly = (keys: Iterable<string>) => [...new Set(keys)].filter((k) => !SUPER_ADMIN_ONLY_PERMISSIONS.includes(k));
+async function assertNotMorePowerful(ctx: QueryCtx, actor: UserLike, wanted: Iterable<string>, message: string) {
+  if (isSuperAdmin(actor)) return;
+  const mine = new Set(withoutSuperOnly(await effectivePermissionsOf(ctx, actor)));
+  const over = withoutSuperOnly(wanted).filter((k) => !mine.has(k));
+  if (over.length) throw new ConvexError(`${message} (${over.slice(0, 4).join(", ")}${over.length > 4 ? ", ..." : ""})`);
+}
+/** Role and direct permissions a user administrator wants to hand out. */
+async function assertNoEscalation(ctx: QueryCtx, actor: UserLike, a: { role?: string; tenantId?: Id<"tenants">; extraPermissions?: string[] }) {
+  if (isSuperAdmin(actor)) return;
+  const wanted = new Set<string>(a.extraPermissions ?? []);
+  if (a.role) for (const k of await permissionsOfRole(ctx, a.tenantId ?? actor.tenantId, a.role)) wanted.add(k);
+  await assertNotMorePowerful(ctx, actor, wanted, "Huwezi kutoa ruhusa ambazo wewe mwenyewe huna");
+}
+/** The account being managed (edit, reset password, PIN, staff code ...). */
+async function assertCanManageTarget(ctx: QueryCtx, actor: UserLike, target: UserLike) {
+  if (isSuperAdmin(actor)) return;
+  await assertNotMorePowerful(ctx, actor, await effectivePermissionsOf(ctx, target), "Huwezi kusimamia mtumiaji mwenye ruhusa nyingi kuliko wewe");
+}
+
+/**
+ * Roles for the Users form. Needs only "maintenance.users" (NOT "maintenance.roles"): before, the form read the role list through
+ * listRoles, which is refused to a staff member who was given user management only, so his Users page could not even load.
+ * Only names are returned (no permission lists); \`assignable\` says whether this user may give the role (never more than he has himself).
+ */
+export const listAssignableRoles = query({
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requirePermission(ctx, "maintenance.users");
+    const rows = await rolesOfBusiness(ctx, actor.tenantId);
+    const byName = new Map(rows.map((r) => [r.name, r]));
+    const names = [...SYSTEM_ROLES.map((r) => ({ name: r.name, displayName: byName.get(r.name)?.displayName ?? r.displayName })), ...rows.filter((r) => !SYSTEM_ROLES.some((x) => x.name === r.name)).map((r) => ({ name: r.name, displayName: r.displayName }))];
+    const out: { name: string; displayName: string; assignable: boolean }[] = [];
+    for (const r of names) {
+      let assignable = true;
+      if (!isSuperAdmin(actor)) {
+        const mine = new Set(withoutSuperOnly(await effectivePermissionsOf(ctx, actor)));
+        assignable = withoutSuperOnly(await permissionsOfRole(ctx, actor.tenantId, r.name)).every((k) => mine.has(k));
+      }
+      out.push({ ...r, assignable });
+    }
+    return out;
+  },
+});
+
 export const listUsers = query({
   args: {},
   handler: async (ctx) => {
@@ -592,6 +643,13 @@ export const updateUser = mutation({
     const target = await ctx.db.get("users", a.userId);
     if (!target || target.tokenIdentifier !== undefined) throw new ConvexError("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target.tenantId, branchId: a.branchId }, target);
+    await assertCanManageTarget(ctx, actor, target);
+    {
+      // Only what is NEW is checked: saving the form with the same role / permissions must keep working for any user administrator.
+      const roleChanged = a.role !== undefined && normalizeRole(a.role) !== normalizeRole(target.role);
+      const addedExtra = (a.extraPermissions ?? []).filter((k) => !(target.extraPermissions ?? []).includes(k));
+      await assertNoEscalation(ctx, actor, { role: roleChanged ? a.role : undefined, tenantId: a.tenantId ?? target.tenantId, extraPermissions: addedExtra });
+    }
     const nextRole = a.role !== undefined ? a.role : target.role;
     const nextTenant = a.tenantId ?? target.tenantId;
     // Department access after this edit. The form sends ticked departments / "all departments"; older callers send branchId / clearBranch.
@@ -655,6 +713,7 @@ export const setStaffCode = mutation({
     const target = await ctx.db.get("users", a.userId);
     if (!target || target.tokenIdentifier !== undefined) throw new ConvexError("Mtumiaji hapatikani.");
     if (!isSuperAdmin(actor) && (!actor.tenantId || target.tenantId !== actor.tenantId)) throw new ConvexError("Mtumiaji hapatikani.");
+    await assertCanManageTarget(ctx, actor, target);
     const code = a.staffCode.trim().toUpperCase();
     if (code && !/^[A-Z0-9_-]{2,20}$/.test(code)) throw new ConvexError("Staff code: herufi/namba 2-20 (bila nafasi).");
     if (code && target.tenantId) {
@@ -716,6 +775,8 @@ export const authorizeUserAdmin = internalQuery({
     const target = a.targetUserId ? await ctx.db.get("users", a.targetUserId) : undefined;
     if (a.targetUserId && (!target || target.tokenIdentifier !== undefined)) throw new ConvexError("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target?.tenantId, branchId: a.branchId }, target);
+    if (target) await assertCanManageTarget(ctx, actor, target); // password reset, rename, PIN: never on an account stronger than the actor's own
+    if (!target) await assertNoEscalation(ctx, actor, { role: a.role, tenantId: a.tenantId ?? actor.tenantId, extraPermissions: a.extraPermissions }); // creating: never hand out more than he has
     if (target) await assertDepartmentRules(ctx, actor, { tenantId: target.tenantId, role: target.role, scope: departmentScope(target) }, target, false); // e.g. password reset
     else if (!["super_admin", "superadmin"].includes(normalizeRole(a.role))) {
       const acc = resolveDepartmentAccess({ branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments });
@@ -1051,7 +1112,7 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
       { table: "waiterOrders", index: "by_scope_status" },
       { table: "invoices", children: [{ table: "invoiceLines", index: "by_invoice", field: "invoiceId" }] },
       // What the reports read: sales journals (profit & loss, cash, receivables), the stock the sales took out (item history) and saved period reports.
-      { table: "journalEntries", journalSources: ["sale", "sale_return", "sale_void", "payment", "waiter_sale"] },
+      { table: "journalEntries", journalSources: ["sale", "sale_edit", "sale_return", "sale_void", "payment", "waiter_sale"] },
       { table: "stockMovements", movementTypes: ["sale", "sale_return", "waiter_order", "waiter_order_cancel"], restoreStock: true },
       // Customer reports and statements add the customer's opening (carried-over) debt to what the invoices left: it goes to 0 too, or the debt would still show.
       { table: "clients", resetOpening: true },
@@ -1117,23 +1178,29 @@ const CLEAR_BATCH = 60;
 
 /** Super Admin check + selected business, used by the clear action before it asks for the password. */
 export const authorizeClear = internalQuery({
-  args: { categories: v.array(v.string()) },
+  args: { categories: v.array(v.string()), branchId: v.optional(v.id("branches")), wholeBusiness: v.optional(v.boolean()) },
   handler: async (ctx, a) => {
     const user = await requireSuperAdminUser(ctx);
     if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza kabla ya kufuta data.");
+    // Department scope: the department chosen on the form, else the one the Super Admin is working in. Only an explicit "whole business" wipes every department.
+    if (a.wholeBusiness && a.branchId) throw new ConvexError("Chagua idara moja AU biashara nzima, si vyote viwili.");
+    const branchId = a.wholeBusiness ? undefined : (a.branchId ?? user.branchId);
+    const branch = branchId ? await ctx.db.get("branches", branchId) : null;
+    if (branchId && (!branch || branch.tenantId !== user.tenantId)) throw new ConvexError("Idara haihusiani na biashara iliyochaguliwa.");
+    if (branchId && a.categories.includes("auditLogs")) throw new ConvexError("Audit Logs ni za biashara nzima (hazigawanywi kwa idara). Chagua 'Biashara nzima' ili kuzifuta.");
     if (!a.categories.length) throw new ConvexError("Chagua angalau kundi moja la data.");
     const unknown = a.categories.filter((c) => !CLEAR_CATEGORIES[c]);
     if (unknown.length) throw new ConvexError(`Kundi lisilojulikana: ${unknown.join(", ")}`);
     const email = user.email ?? (user.username ? `${user.username}@${LOGIN_DOMAIN}` : undefined);
     if (!email) throw new ConvexError("Akaunti haina login ya password.");
     const tenant = await ctx.db.get("tenants", user.tenantId);
-    return { actorId: user._id, tenantId: user.tenantId, email, tenantName: tenant?.name ?? "" };
+    return { actorId: user._id, tenantId: user.tenantId, email, tenantName: tenant?.name ?? "", branchId, branchName: branch?.name ?? "" };
   },
 });
 
 /** Deletes up to one batch of a single step for one business. Returns `done: true` once the step has nothing left. */
 export const clearStepBatch = internalMutation({
-  args: { actorId: v.id("users"), tenantId: v.id("tenants"), category: v.string(), step: v.number(), restoreStock: v.optional(v.boolean()) },
+  args: { actorId: v.id("users"), tenantId: v.id("tenants"), category: v.string(), step: v.number(), restoreStock: v.optional(v.boolean()), branchId: v.optional(v.id("branches")) },
   handler: async (ctx, a) => {
     const actor = await ctx.db.get("users", a.actorId);
     if (!actor || !isSuperAdmin(actor) || actor.isActive === false) throw new ConvexError("Forbidden: Super Admin only");
@@ -1141,6 +1208,12 @@ export const clearStepBatch = internalMutation({
     if (!step) throw new ConvexError("Hatua haipo.");
     const db = dynamicDb(ctx.db);
     let deleted = 0;
+    // With a department chosen, ONLY that department's rows go (tenant-wide master data and the other departments stay untouched).
+    const branchId = a.branchId;
+    if (branchId) {
+      const b = await ctx.db.get("branches", branchId);
+      if (!b || b.tenantId !== a.tenantId) throw new ConvexError("Idara haihusiani na biashara.");
+    }
 
     const removeWithChildren = async (doc: DynamicDoc) => {
       for (const c of step.children ?? []) {
@@ -1153,7 +1226,7 @@ export const clearStepBatch = internalMutation({
     if (step.via) {
       // Tables without their own tenantId: reach them through the business's clients / products.
       const [childTable, index, field] = step.table === "salesReturns" ? ["salesReturns", "by_client", "clientId"] : ["purchasePriceHistory", "by_product", "productId"];
-      const parents = await db.query(step.via).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).collect();
+      const parents = await db.query(step.via).withIndex("by_scope", (q) => (branchId ? q.eq("tenantId", a.tenantId).eq("branchId", branchId) : q.eq("tenantId", a.tenantId))).collect();
       for (const p of parents) {
         const rows = await db.query(childTable).withIndex(index, (q) => q.eq(field, p._id)).take(200);
         for (const r of rows) {
@@ -1169,7 +1242,7 @@ export const clearStepBatch = internalMutation({
       // Journal entries posted by these documents, with their lines.
       const sources = step.journalSources;
       // eslint-disable-next-line @convex-dev/no-filter-in-query -- one-off Super Admin wipe: the document kind has no index, the scan stops after one batch of matches
-      const entries = await ctx.db.query("journalEntries").withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).filter((q) => q.or(...sources.map((src) => q.eq(q.field("sourceType"), src)))).take(CLEAR_BATCH);
+      const entries = await ctx.db.query("journalEntries").withIndex("by_scope", (q) => (branchId ? q.eq("tenantId", a.tenantId).eq("branchId", branchId) : q.eq("tenantId", a.tenantId))).filter((q) => q.or(...sources.map((src) => q.eq(q.field("sourceType"), src)))).take(CLEAR_BATCH);
       for (const e of entries) {
         for (const l of await ctx.db.query("journalLines").withIndex("by_entry", (q) => q.eq("entryId", e._id)).collect()) await ctx.db.delete("journalLines", l._id);
         await ctx.db.delete("journalEntries", e._id); deleted++;
@@ -1180,7 +1253,7 @@ export const clearStepBatch = internalMutation({
     if (step.movementTypes) {
       const types = step.movementTypes;
       // eslint-disable-next-line @convex-dev/no-filter-in-query -- one-off Super Admin wipe: the document kind has no index, the scan stops after one batch of matches
-      const moves = await ctx.db.query("stockMovements").withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).filter((q) => q.or(...types.map((t) => q.eq(q.field("movementType"), t)))).take(CLEAR_BATCH);
+      const moves = await ctx.db.query("stockMovements").withIndex("by_scope", (q) => (branchId ? q.eq("tenantId", a.tenantId).eq("branchId", branchId) : q.eq("tenantId", a.tenantId))).filter((q) => q.or(...types.map((t) => q.eq(q.field("movementType"), t)))).take(CLEAR_BATCH);
       for (const m of moves) {
         // Sales cleared on their own: the goods the sales took out go back on the shelf (a return that was put back comes off again),
         // so the quantities look as if these sales never happened. Not done when Stock / Products are cleared in the same run: that wipes the quantities anyway.
@@ -1197,7 +1270,7 @@ export const clearStepBatch = internalMutation({
     }
 
     if (step.resetStock || step.resetBalances || step.resetOpening) {
-      const rows = await db.query(step.table).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).collect();
+      const rows = await db.query(step.table).withIndex("by_scope", (q) => (branchId ? q.eq("tenantId", a.tenantId).eq("branchId", branchId) : q.eq("tenantId", a.tenantId))).collect();
       for (const r of rows) {
         if (step.resetStock && (r.currentQty !== 0 || r.openingQty !== 0)) { await db.patch(step.table, r._id, { currentQty: 0, openingQty: 0 }); deleted++; }
         if (step.resetBalances && r.balance !== 0) { await db.patch(step.table, r._id, { balance: 0 }); deleted++; }
@@ -1207,6 +1280,29 @@ export const clearStepBatch = internalMutation({
       return { done: true, deleted };
     }
 
+    if (branchId) {
+      // Tables whose index does not start with (tenant, department): read the business's rows and keep only this department's.
+      const byTenantOnly = ["waiterCollections", "warehouseMovements", "stockTransferLines", "stockTransfers", "warehouseStock", "reportRuns"];
+      if (byTenantOnly.includes(step.table)) {
+        const all = await db.query(step.table).withIndex(step.index ?? "by_tenant", (q) => q.eq("tenantId", a.tenantId)).collect();
+        const mine: DynamicDoc[] = [];
+        for (const doc of all) {
+         const belongs =
+    step.table === "reportRuns"
+    ? doc.scope === String(branchId)
+    : step.table === "stockTransferLines"
+      ? (await ctx.db.get("stockTransfers", doc.transferId as Id<"stockTransfers">))?.branchId === branchId
+      : doc.branchId === branchId;
+          if (belongs) mine.push(doc);
+          if (mine.length > CLEAR_BATCH) break;
+        }
+        for (const doc of mine.slice(0, CLEAR_BATCH)) { await removeWithChildren(doc); deleted++; }
+        return { done: mine.length <= CLEAR_BATCH, deleted };
+      }
+      const rows = await db.query(step.table).withIndex(step.index ?? "by_scope", (q) => q.eq("tenantId", a.tenantId).eq("branchId", branchId)).take(CLEAR_BATCH);
+      for (const doc of rows) { await removeWithChildren(doc); deleted++; }
+      return { done: rows.length < CLEAR_BATCH, deleted };
+    }
     const batch = await db.query(step.table).withIndex(step.index ?? "by_scope", (q) => q.eq("tenantId", a.tenantId)).take(CLEAR_BATCH);
     for (const doc of batch) { await removeWithChildren(doc); deleted++; }
     return { done: batch.length < CLEAR_BATCH, deleted };
@@ -1214,27 +1310,31 @@ export const clearStepBatch = internalMutation({
 });
 
 export const finishClear = internalMutation({
-  args: { actorId: v.id("users"), tenantId: v.id("tenants"), categories: v.array(v.string()), counts: v.string() },
+  args: { actorId: v.id("users"), tenantId: v.id("tenants"), categories: v.array(v.string()), counts: v.string(), branchId: v.optional(v.id("branches")) },
   handler: async (ctx, a) => {
     const actor = await ctx.db.get("users", a.actorId);
+    const branchId = a.branchId;
     for (const key of a.categories) {
       for (const seq of CLEAR_CATEGORIES[key]?.resetSequences ?? []) {
         const rows = await ctx.db.query(seq).withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId)).collect();
-        for (const r of rows) await dynamicDb(ctx.db).delete(seq, r._id);
+        // Department wipe: only that department's own counter goes. The business-wide invoice counter stays, so numbers of the invoices the other departments still have are never reused.
+        for (const r of rows) if (!branchId || r.branchId === branchId) await dynamicDb(ctx.db).delete(seq, r._id);
       }
     }
     if (a.categories.some((k) => CLEAR_CATEGORIES[k]?.rebuildStats)) {
       // Dashboard numbers come from small pre-computed rows. Empty them NOW (every day, not only the rebuilt window) so the dashboard
       // shows zeros immediately; the rebuild below then recalculates whatever data is really left (e.g. stock when only invoices were cleared).
       const days = await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", a.tenantId)).take(8000);
-      for (const d of days) await ctx.db.delete("statsDaily", d._id);
+      for (const d of days) if (!branchId || d.branchId === branchId) await ctx.db.delete("statsDaily", d._id);
       const totals = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", a.tenantId)).collect();
       for (const t of totals) {
+        if (branchId && t.branchId !== branchId) continue;
         await ctx.db.patch("statsTotals", t._id, { receivable: 0, payable: 0, billsDue: 0, topD7: [], topD30: [], topD90: [] });
       }
       await ctx.scheduler.runAfter(0, internal.stats.requestRebuild, { tenantId: a.tenantId });
     }
-    await logAudit(ctx, actor, { action: "clear_data_file", module: "maintenance", details: `${a.categories.join(", ")} — ${a.counts}` });
+    const dept = branchId ? await ctx.db.get("branches", branchId) : null;
+    await logAudit(ctx, actor, { action: "clear_data_file", module: "maintenance", details: `${a.categories.join(", ")} — ${a.counts}${dept ? ` — idara: ${dept.name}` : " — biashara nzima"}` });
   },
 });
 
@@ -1245,9 +1345,9 @@ export const logClearFailure = internalMutation({
 
 /** Wipes the chosen data of the SELECTED business after re-checking the Super Admin's own password. */
 export const clearData = action({
-  args: { categories: v.array(v.string()), password: v.string() },
+  args: { categories: v.array(v.string()), password: v.string(), branchId: v.optional(v.id("branches")), wholeBusiness: v.optional(v.boolean()) },
   handler: async (ctx, a): Promise<{ deleted: number }> => {
-    const auth = await ctx.runQuery(internal.maintenance.authorizeClear, { categories: a.categories });
+    const auth = await ctx.runQuery(internal.maintenance.authorizeClear, { categories: a.categories, branchId: a.branchId, wholeBusiness: a.wholeBusiness });
     if (!a.password) throw new ConvexError("Weka password ya Super Admin.");
     try {
       await retrieveAccount(ctx, { provider: "password", account: { id: auth.email, secret: a.password } });
@@ -1266,7 +1366,7 @@ export const clearData = action({
       const steps = CLEAR_CATEGORIES[category].steps;
       for (let step = 0; step < steps.length; step++) {
         for (let guard = 0; guard < 5000; guard++) {
-          const r: { done: boolean; deleted: number } = await ctx.runMutation(internal.maintenance.clearStepBatch, { actorId: auth.actorId, tenantId: auth.tenantId, category, step, restoreStock });
+          const r: { done: boolean; deleted: number } = await ctx.runMutation(internal.maintenance.clearStepBatch, { actorId: auth.actorId, tenantId: auth.tenantId, category, step, restoreStock, branchId: auth.branchId });
           count += r.deleted;
           if (r.done) break;
         }
@@ -1274,7 +1374,7 @@ export const clearData = action({
       perCategory.push(`${category}: ${count}`);
       total += count;
     }
-    await ctx.runMutation(internal.maintenance.finishClear, { actorId: auth.actorId, tenantId: auth.tenantId, categories: ordered, counts: perCategory.join(", ") });
+    await ctx.runMutation(internal.maintenance.finishClear, { actorId: auth.actorId, tenantId: auth.tenantId, categories: ordered, counts: perCategory.join(", "), branchId: auth.branchId });
     return { deleted: total };
   },
 });
@@ -1284,11 +1384,13 @@ export const clearDataOverview = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
-    if (!isSuperAdmin(user)) return { isSuperAdmin: false as const, tenantName: null, categories: [] as { key: string; label: string; description: string }[] };
+    if (!isSuperAdmin(user)) return { isSuperAdmin: false as const, tenantName: null, currentBranchId: null, departments: [] as { _id: Id<"branches">; name: string }[], categories: [] as { key: string; label: string; description: string }[] };
     const tenant = user.tenantId ? await ctx.db.get("tenants", user.tenantId) : null;
     return {
       isSuperAdmin: true as const,
       tenantName: tenant?.name ?? null,
+      currentBranchId: user.branchId ?? null,
+      departments: user.tenantId ? (await activeDepartments(ctx, user.tenantId)).map((b) => ({ _id: b._id, name: b.name })) : [],
       categories: Object.entries(CLEAR_CATEGORIES).map(([key, c]) => ({ key, label: c.label, description: c.description })),
     };
   },

@@ -1,4 +1,6 @@
 import { useNavigate, Routes, Route } from "react-router-dom";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import ModuleMenu from "@/pages/layout/_components/ModuleMenu.tsx";
 import { Database, CreditCard, Settings, Monitor, UserCog, Shield, Users, HardDrive, Eraser, FileSearch, DollarSign, Hash, Building, Globe, Calendar } from "lucide-react";
 import ComingSoon from "@/pages/layout/_components/ComingSoon.tsx";
@@ -45,8 +47,20 @@ const maintenanceMenuItems = [
   },
 ];
 
+/** Permission each tile needs (the server enforces the same keys). Tiles not listed stay visible. */
+const TILE_PERMISSION: Record<string, string> = {
+  "/maintenance/system-setup": "maintenance.system", "/maintenance/company": "maintenance.company", "/maintenance/hardware": "maintenance.hardware",
+  "/maintenance/tax": "maintenance.tax", "/maintenance/numbering": "maintenance.numbering", "/maintenance/periods": "maintenance.periods", "/maintenance/language": "maintenance.language",
+  "/maintenance/users": "maintenance.users", "/maintenance/security": "maintenance.security", "/maintenance/roles": "maintenance.roles", "/maintenance/audit": "maintenance.audit.view",
+};
+
 export default function MaintenancePage() {
   const navigate = useNavigate();
+  // myPermissions already says "everything" for a Super Admin; while it loads nothing is hidden.
+  const permissions = useQuery(api.maintenance.myPermissions);
+  const sections = maintenanceMenuItems
+    .map((sec) => ({ ...sec, items: sec.items.filter((it) => !permissions || !TILE_PERMISSION[it.path] || permissions.includes(TILE_PERMISSION[it.path])) }))
+    .filter((sec) => sec.items.length > 0);
 
   return (
     <Routes>
@@ -55,7 +69,7 @@ export default function MaintenancePage() {
         element={
           <ModuleMenu
             title={tr("Maintenance")}
-            sections={maintenanceMenuItems}
+            sections={sections}
             onClose={() => navigate("/dashboard")}
           />
         }

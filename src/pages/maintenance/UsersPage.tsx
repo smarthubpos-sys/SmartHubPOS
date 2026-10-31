@@ -18,7 +18,8 @@ export default function UsersPage() {
   const { user: me } = useAuth();
   const { isSuperAdmin: meSuperAdmin } = useStockRights();
   const users = useQuery(api.maintenance.listUsers, {});
-  const roles = useQuery(api.maintenance.listRoles, {});
+  // Needs only user-management permission (listRoles also needs Role Management, so a staff member given only "add users" could not open this page).
+  const roles = useQuery(api.maintenance.listAssignableRoles, {});
   const offices = useQuery(api.maintenance.listOffices, {});
   const create = useAction(api.maintenance.createUser);
   const reset = useAction(api.maintenance.resetUserPassword);
@@ -30,7 +31,8 @@ export default function UsersPage() {
   const [f, setF] = useState<Form | null>(null);
   const set = (k: keyof Form, v: string) => setF((p) => (p ? { ...p, [k]: v } : p));
   const isSuper = ["super_admin", "superadmin"].includes(String(me?.role ?? "").toLowerCase().replace(/[\s-]+/g, "_"));
-  const roleOptions = (roles ?? []).filter((r) => isSuper || r.name !== "super_admin").map((r) => [r.name, r.displayName] as [string, string]);
+  // A user administrator can only give roles that carry no more than he has himself (the one the edited user already has stays visible).
+  const roleOptions = (roles ?? []).filter((r) => isSuper || (r.name !== "super_admin" && (r.assignable || r.name === f?.role))).map((r) => [r.name, r.displayName] as [string, string]);
   if (isSuper) roleOptions.unshift(["super_admin", tr("Super Admin")]);
   const tenantName = (id?: string) => offices?.tenants.find((t) => t._id === id)?.name ?? "—";
   const branchName = (id?: string) => offices?.branches.find((b) => b._id === id)?.name ?? tr("Zote");

@@ -157,20 +157,25 @@ export function ClearDataPage() {
   const { busy, run } = useRun();
   const [picked, setPicked] = useState<string[]>([]);
   const [password, setPassword] = useState("");
+  const [scopeChoice, setScopeChoice] = useState<string | null>(null); // null = the department the Super Admin is working in (or the whole business when none is chosen)
 
   if (overview === undefined) return <PageShell title={tr("Clear Data File")}><Loading /></PageShell>;
   if (!overview.isSuperAdmin) {
     return <PageShell title={tr("Clear Data File")}><p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">{tr("Ukurasa huu ni wa Super Admin pekee.")}</p></PageShell>;
   }
-  const all = overview.categories.map((c) => c.key);
+  const departments = overview.departments ?? [];
+  // "all" = the whole business; otherwise the id of ONE department: only that department's data is deleted.
+  const scope = scopeChoice ?? (overview.currentBranchId && departments.some((d) => d._id === overview.currentBranchId) ? String(overview.currentBranchId) : "all");
+  const scopeName = scope === "all" ? tr("biashara nzima (idara zote)") : (departments.find((d) => String(d._id) === scope)?.name ?? "");
+  const all = overview.categories.map((c) => c.key).filter((k) => scope === "all" || k !== "auditLogs"); // audit logs belong to the whole business, not to one department
   const toggle = (key: string) => setPicked((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
   const names = overview.categories.filter((c) => picked.includes(c.key)).map((c) => c.label).join(", ");
   const canSubmit = !busy && !!overview.tenantName && picked.length > 0 && password.length > 0;
 
   const submit = () => {
-    if (!confirm(tr("Utafuta KUDUMU: {0} ya biashara {1}. Hatua hii haiwezi kurudishwa. Endelea?", [names, overview.tenantName]))) return;
+    if (!confirm(tr("Utafuta KUDUMU: {0} ya biashara {1} — {2}. Hatua hii haiwezi kurudishwa. Endelea?", [names, overview.tenantName, scope === "all" ? scopeName : tr("idara ya {0} PEKEE", [scopeName])]))) return;
     void run(async () => {
-      const r = await clear({ categories: picked, password });
+      const r = await clear({ categories: picked, password, ...(scope === "all" ? { wholeBusiness: true } : { branchId: scope as Id<"branches"> }) });
       setPassword("");
       setPicked([]);
       return r;
@@ -183,12 +188,17 @@ export function ClearDataPage() {
         {overview.tenantName
           ? <p className="text-sm">{tr("Biashara itakayoathirika:")} <b>{overview.tenantName}</b></p>
           : <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-sm">{tr("Chagua biashara kwanza (Badilisha biashara) kisha rudi hapa.")}</p>}
+        {departments.length > 0 && (
+          <SelectField label={tr("Data ya kufuta ni ya")} value={scope} onChange={(v) => { setScopeChoice(v); setPicked((p) => (v === "all" ? p : p.filter((k) => k !== "auditLogs"))); }}
+            options={[["all", tr("Biashara nzima (idara zote)")], ...departments.map((d) => [String(d._id), tr("Idara: {0} pekee", [d.name])] as [string, string])]}
+            hint={scope === "all" ? tr("Itafuta data ya idara ZOTE za biashara hii.") : tr("Itafuta data ya idara hii tu. Idara nyingine na orodha za biashara nzima (mfano suppliers wa biashara nzima) haziguswi.")} />
+        )}
         <label className="flex items-center gap-2 text-sm font-medium">
           <input type="checkbox" checked={picked.length === all.length} onChange={(e) => setPicked(e.target.checked ? all : [])} />
           {tr("Chagua zote")}
         </label>
         <div className="grid gap-2 md:grid-cols-2">
-          {overview.categories.map((c) => (
+          {overview.categories.filter((c) => scope === "all" || c.key !== "auditLogs").map((c) => (
             <label key={c.key} className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 text-sm hover:bg-muted/40">
               <input type="checkbox" className="mt-1" checked={picked.includes(c.key)} onChange={() => toggle(c.key)} />
               <span><span className="font-medium">{c.label}</span><span className="block text-xs text-muted-foreground">{c.description}</span></span>
@@ -199,7 +209,7 @@ export function ClearDataPage() {
       <Card title={tr("Thibitisha kwa password ya Super Admin")}>
         <TextField label={tr("Password ya Super Admin")} type="password" value={password} onChange={setPassword} hint={tr("Ingiza password yako ya Super Admin ili kuruhusu kufuta.")} />
         <Button variant="destructive" disabled={!canSubmit} onClick={submit}>{busy ? tr("Inafuta…") : tr("Futa data iliyochaguliwa")}</Button>
-        <p className="text-xs text-muted-foreground">{tr("Inafuta data ya biashara iliyochaguliwa tu (idara zote). Tengeneza backup kwanza kupitia Backup and Restore.")}</p>
+        <p className="text-xs text-muted-foreground">{scope === "all" ? tr("Inafuta data ya biashara iliyochaguliwa tu (idara zote). Tengeneza backup kwanza kupitia Backup and Restore.") : tr("Inafuta data ya idara iliyochaguliwa tu. Tengeneza backup kwanza kupitia Backup and Restore.")}</p>
       </Card>
     </PageShell>
   );
