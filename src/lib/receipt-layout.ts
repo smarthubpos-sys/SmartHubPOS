@@ -18,6 +18,12 @@ export type ReceiptScale = {
   padX: string;
 };
 
+/**
+ * Printable width of the text column on 80mm paper. Many 80mm printers cannot print the last few millimetres on the right,
+ * which cut the end of amounts ("2,000/=" came out as "2,0"). If a digit is still cut, make this number smaller (e.g. 66mm).
+ */
+export const RECEIPT_80MM_BODY = "68mm";
+
 export function receiptScale(paperIn: PaperChoice | string): ReceiptScale {
   const paper = String(paperIn).toLowerCase() === "a4" ? "A4" : String(paperIn).toLowerCase();
   if (paper === "58mm") return { width: "58mm", base: 12, company: 14, title: 16, total: 15, label: "21mm", logoMax: "12mm", padX: "2mm" };
@@ -31,7 +37,7 @@ export function receiptCss(paperIn: PaperChoice | string): string {
   const paper = String(paperIn).toLowerCase();
   const logoPct = paper === "58mm" ? "28%" : "30%";
   return `@page{size:${s.width} auto;margin:0}*{box-sizing:border-box}
-    body{font:${s.base}px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0 auto;width:${paper === "80mm" ? "72mm" : s.width};padding:0 ${s.padX};overflow-wrap:anywhere;color:#000}
+    body{font:${s.base}px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0 auto;width:${paper === "80mm" ? RECEIPT_80MM_BODY : s.width};padding:0 ${s.padX};overflow-wrap:anywhere;color:#000}
     .c{text-align:center}p{margin:0 0 3px}
     .title{font-size:${s.title}px;font-weight:800;margin:6px 0 2px;padding:3px 0;border-top:1px solid #000;border-bottom:1px solid #000}
     .head{display:flex;justify-content:space-between;align-items:flex-start;gap:4px}
