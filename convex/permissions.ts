@@ -171,6 +171,26 @@ export function permissionsWithNewDefaults(
   return add.length ? [...stored, ...add] : stored;
 }
 
+/**
+ * A permission given on purpose must never meet a "no" because of a hard-coded manager check. These modules' manager-only
+ * screens also accept the module's own management permission (e.g. a Store keeper given "payroll.manage" can run payroll).
+ */
+export const MODULE_MANAGE_PERMISSION: Record<string, string> = {
+  payroll: "payroll.manage", hr: "payroll.manage", accounts: "accounts.manage",
+  // Same rule for every module whose "manage" permission is NOT part of the everyday staff roles (Cashier / Waiter hold sales.manage, so Sales is deliberately absent):
+  // whoever the Super Admin gave stock.manage / purchasing.manage to - any user, any role - is no longer refused by a manager-only check.
+  stock: "stock.manage", purchasing: "purchasing.manage",
+};
+
+/** Sidebar modules a permission needs to be usable (a user whose menu hides the module is refused by the server). */
+const PERMISSION_MODULES: Record<string, string[]> = {
+  sales: ["sales"], waiterOrders: ["waiterOrders"], bills: ["bills"], stock: ["stock"], suppliers: ["purchasing"], purchasing: ["purchasing"],
+  payroll: ["payroll", "hr"], leave: ["leave"], accounts: ["accounts"], maintenance: ["maintenance"], system: ["maintenance"],
+};
+export function modulesForPermissions(keys: string[]): string[] {
+  return [...new Set(keys.flatMap((k) => PERMISSION_MODULES[k.split(".")[0]] ?? []))];
+}
+
 /** Keys accepted by maintenance.saveSetting and the permission each one needs. */
 export const SETTING_KEYS: Record<string, string> = {
   system: "maintenance.system",

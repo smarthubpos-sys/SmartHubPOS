@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, Loading, PageShell, SelectField, TextField } from "./_shared";
 import { useAuth } from "@/hooks/use-auth";
 import ModulePicker from "@/components/module-picker.tsx";
-import { ALL_MODULE_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, USER_GRANTABLE_PERMISSIONS } from "@/convex/permissions";
+import { ALL_MODULE_KEYS, PERMISSION_GROUPS, SUPER_ADMIN_ONLY_PERMISSIONS, USER_GRANTABLE_PERMISSIONS } from "@/convex/permissions";
 import { useStockRights } from "@/hooks/use-stock-rights.ts";
 import { errorText, tr } from "@/lib/i18n.ts";
 
@@ -42,7 +42,10 @@ export default function UsersPage() {
   // A user tied to ONE department can only create/manage users of that same department.
   // A user tied to one department, or given a few, can only give those same departments to others. null = no limit.
   const myLimit: string[] | null = isSuper ? null : me?.branchIds && me.branchIds.length > 1 ? me.branchIds.map(String) : me?.branchId && !me?.branchPicked ? [String(me.branchId)] : null;
-  const departmentRoles = ["cashier", "accountant", "viewer"];
+  // Every role EXCEPT the owner/manager ones must belong to a department when the business has departments (same rule as the server):
+  // before, only cashier/accountant/viewer were checked here, so a custom role such as "storekeeper" could be saved with no department.
+  const floatingRoles = ["super_admin", "superadmin", "admin", "administrator", "manager", "owner", "business_owner"];
+  const departmentRoles = { includes: (role: string) => !floatingRoles.includes(String(role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_")) };
   const pinOnlyRole = !!f && ["waiter", "waitress"].includes(f.role.trim().toLowerCase()); // waiters / waitresses are registered with a PIN, not a password // these must always belong to one department when the business has departments
   const needsBranch = !!f && !editingSelf && f.role !== "super_admin" && branches.length > 0 && departmentRoles.includes(f.role) && !f.allDepartments && f.branchIds.length === 0;
   const branchChoices = myLimit ? branches.filter((b) => myLimit.includes(b._id)) : branches;
@@ -111,9 +114,11 @@ export default function UsersPage() {
                 <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.ownDataOnly} onChange={(e) => setF((p) => (p ? { ...p, ownDataOnly: e.target.checked } : p))} />{tr("Aone mauzo na bili zake tu (dashboard yake binafsi)")}</label>
                 <div className="space-y-1 border-t pt-2">
                   <p className="text-sm font-medium">{tr("Ruhusa maalum kwa mtumiaji huyu (juu ya role yake)")}</p>
-                  {USER_GRANTABLE_PERMISSIONS.map((g) => (
+                  <div className={meSuperAdmin ? "max-h-72 space-y-1 overflow-y-auto rounded-lg border p-2" : "space-y-1"}>
+                  {(meSuperAdmin ? PERMISSION_GROUPS.flatMap((grp) => grp.items) : USER_GRANTABLE_PERMISSIONS).map((g) => (
                     <label key={g.key} className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" disabled={!meSuperAdmin && SUPER_ADMIN_ONLY_PERMISSIONS.includes(g.key)} checked={f.extra.includes(g.key)} onChange={(e) => setF((p) => (p ? { ...p, extra: e.target.checked ? [...p.extra, g.key] : p.extra.filter((x) => x !== g.key) } : p))} />{tr(g.label)}</label>
                   ))}
+                  </div>
                   <p className="text-xs text-muted-foreground">{tr("Ruhusa hii pia inaweza kutolewa kwa role nzima kupitia Role Management (Sales → Delete / cancel orders).")}</p>
                 </div>
                 <p className="text-xs text-muted-foreground">{tr("Mfano mhudumu: ruhusu Sales na Bills tu, na weka 'aone mauzo na bili zake tu'. Huduma ambazo biashara haijalipia hazionekani hapa.")}</p>

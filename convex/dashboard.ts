@@ -2,9 +2,9 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requireActiveUser, isOwnDataOnly, isManagerRole, roleHasPermission, getCompanySettings, filterScoped } from "./access";
+import { requireActiveUser, isOwnDataOnly, isManagerRole, roleHasPermission, getCompanySettings, filterScoped, isDepartmentLocked, sameDepartment } from "./access";
 import type { UserLike } from "./access";
-import { daysBetween } from "./plans";
+import { addDays, daysBetween } from "./plans";
 
 /**
  * The main dashboard reads only small pre-computed roll-ups (see stats.ts) plus the 5 latest documents,
@@ -14,11 +14,40 @@ import { daysBetween } from "./plans";
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const sum = <K extends string>(rows: Array<Partial<Record<K, number>>>, k: K) => round2(rows.reduce((s: number, r) => s + (r[k] ?? 0), 0));
 
+type DayFigures = { sales: number; purchases: number; collected: number; invoices: number };
+const LIVE_CAP = 4000; // rows read per table; above this the saved roll-ups are used instead (a query must stay small)
+
+/**
+ * EXACT figures of a few recent days, added up from the saved records themselves (invoices, customer payments, money received
+ * from waiters, purchases) instead of from the incremental roll-ups. The roll-ups can drift (a sale made while they were being
+ * rebuilt, a business whose roll-ups are not built yet ...), which showed a wrong or empty "Today's Sales". Null = too many rows
+ * to read safely, so the caller falls back to the roll-ups.
+ */
+async function liveDays(ctx: QueryCtx, user: UserLike, from: string, to: string): Promise<Map<string, DayFigures> | null> {
+  const tenantId = user.tenantId;
+  if (!tenantId) return null;
+  const mine = (r: { branchId?: Id<"branches"> }) => sameDepartment(user, r.branchId); // one department only; never the sum of several
+  const invoices = await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("invoiceDate", from).lte("invoiceDate", to)).take(LIVE_CAP + 1);
+  const payments = await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("paymentDate", from).lte("paymentDate", to)).take(LIVE_CAP + 1);
+  const received = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", from).lte("date", to)).take(LIVE_CAP + 1);
+  const purchases = await ctx.db.query("purchases").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("purchaseDate", from).lte("purchaseDate", to)).take(LIVE_CAP + 1);
+  if ([invoices, payments, received, purchases].some((rows) => rows.length > LIVE_CAP)) return null;
+
+  const days = new Map<string, DayFigures>();
+  const day = (date: string) => { let d = days.get(date); if (!d) { d = { sales: 0, purchases: 0, collected: 0, invoices: 0 }; days.set(date, d); } return d; };
+  for (const i of invoices) if (i.status === "posted" && mine(i)) { const d = day(i.invoiceDate); d.sales += i.total; d.invoices += 1; }
+  for (const p of payments) if (!p.voided && mine(p)) day(p.paymentDate).collected += p.amount; // refunds are negative rows
+  for (const c of received) if (mine(c)) { const d = day(c.date); d.sales += c.total; d.collected += c.total; d.invoices += c.settledCount ?? c.orderIds.length; }
+  for (const p of purchases) if ((p.status === undefined || p.status === "posted") && mine(p)) day(p.purchaseDate).purchases += p.total;
+  for (const d of days.values()) { d.sales = round2(d.sales); d.purchases = round2(d.purchases); d.collected = round2(d.collected); }
+  return days;
+}
+
 async function scopedStats(ctx: QueryCtx, user: UserLike) {
   const tenantId = user.tenantId;
   if (!tenantId) return [];
   const rows = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).collect();
-  return user.branchId ? rows.filter((r) => r.branchId === user.branchId) : rows;
+  return rows.filter((r) => sameDepartment(user, r.branchId));
 }
 
 /**
@@ -46,24 +75,29 @@ export const getMetrics = query({
 
     const totals = await scopedStats(ctx, user);
     const days = (await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).eq("date", args.date)).collect())
-      .filter((d) => !user.branchId || d.branchId === user.branchId);
+      .filter((d) => sameDepartment(user, d.branchId));
+    // Today's three money cards come from the real records (exact); the roll-up is only the fallback for a very busy day.
+    const liveToday = await liveDays(ctx, user, args.date, args.date);
+    const today: DayFigures | null = liveToday ? (liveToday.get(args.date) ?? { sales: 0, purchases: 0, collected: 0, invoices: 0 }) : null;
 
-    const recentInvoices = user.branchId
+    // A department user, or a user who has not chosen a department in a business that has departments (then only business-level rows), reads through by_scope.
+    const departmentView = !!user.branchId || isDepartmentLocked(user);
+    const recentInvoices = departmentView
       ? await ctx.db.query("invoices").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(25)
       : await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(25);
-    const recentPurchases = user.branchId
+    const recentPurchases = departmentView
       ? await ctx.db.query("purchases").withIndex("by_scope", (q) => q.eq("tenantId", tenantId).eq("branchId", user.branchId)).order("desc").take(25)
       : await ctx.db.query("purchases").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(25);
 
     // Selling Point orders sent/printed but not yet paid to the cashier: not sales yet, shown separately so nothing looks missing.
     const open = (await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId)).collect())
-      .filter((o) => (!user.branchId || o.branchId === user.branchId) && !o.settledAt && (o.status === "pending" || o.status === "accepted" || o.status === "printed"));
+      .filter((o) => sameDepartment(user, o.branchId) && !o.settledAt && (o.status === "pending" || o.status === "accepted" || o.status === "printed"));
     const posted = <T extends { status?: string }>(rows: T[]) => rows.filter((r) => r.status === undefined || r.status === "posted").slice(0, 5);
     return {
       ready: totals.length > 0,
-      todaySales: sum(days, "sales"),
-      todayCash: sum(days, "collected"),
-      todayPurchaseTotal: sum(days, "purchases"),
+      todaySales: today ? today.sales : sum(days, "sales"),
+      todayCash: today ? today.collected : sum(days, "collected"),
+      todayPurchaseTotal: today ? today.purchases : sum(days, "purchases"),
       totalOutstandingCustomer: sum(totals, "receivable"),
       totalOutstandingSupplier: sum(totals, "payable"),
       lowStockItems: sum(totals, "lowStock"),
@@ -98,7 +132,7 @@ export const getCharts = query({
 
     const totals = await scopedStats(ctx, user);
     const rows = (await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", a.from).lte("date", a.today)).collect())
-      .filter((d) => !user.branchId || d.branchId === user.branchId);
+      .filter((d) => sameDepartment(user, d.branchId));
 
     const daily = new Map<string, { date: string; sales: number; purchases: number; collected: number; invoices: number }>();
     const span = Math.min(Math.max(daysBetween(a.from, a.today), 0), 366);
@@ -111,6 +145,11 @@ export const getCharts = query({
       d.sales = round2(d.sales + r.sales); d.purchases = round2(d.purchases + r.purchases); d.collected = round2(d.collected + r.collected); d.invoices += r.invoices;
       daily.set(r.date, d);
     }
+    // The newest days are replaced by exact figures from the saved records (older days keep the cheap roll-ups), so the graph's
+    // right-hand end always agrees with the cards and with the reports.
+    const liveFrom = a.from > addDays(a.today, -2) ? a.from : addDays(a.today, -2);
+    const live = await liveDays(ctx, user, liveFrom, a.today);
+    if (live) for (const date of [...daily.keys()]) if (date >= liveFrom) daily.set(date, { date, ...(live.get(date) ?? { sales: 0, purchases: 0, collected: 0, invoices: 0 }) });
 
     const range = span + 1 <= 7 ? "topD7" : span + 1 <= 30 ? "topD30" : "topD90";
     const merged = new Map<string, number>();
