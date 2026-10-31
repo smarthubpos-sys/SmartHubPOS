@@ -14,6 +14,7 @@ import PaymentSplit from "@/components/PaymentSplit.tsx";
 import { describeSplits, newSplitLine, splitsTotal, toSplits, type SplitLine } from "@/lib/payment-split.ts";
 import { usePaymentMethods } from "@/hooks/use-payment-methods.ts";
 import { printElement, type Paper } from "@/lib/print-area.ts";
+import InvoiceFinder from "@/pages/sales/InvoiceFinder.tsx";
 
 const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -45,6 +46,8 @@ function printSoldItem(row: Row, copies: number, paper: Paper, company: { name: 
 }
 
 const selectClass = "h-10 rounded-md border bg-background px-3";
+// Report screens about product sales / invoices that carry the "search invoice by number" box.
+const INVOICE_SEARCH_PATHS = ["reports/product-client", "reports/by-product", "reports/sold-items", "reports/invoices"];
 const TITLES: Record<string, string> = {
   payments: tr("Payment Received"), "clients/list": tr("List of Clients"), "reports/invoices": tr("Invoice Report"), "reports/summary": tr("Summary Sales Report"),
   "reports/client-statement": tr("Client Statement"), "reports/analysis": tr("Sales Analysis"), "reports/tax": tr("Sales Tax Report"), "reports/payments": tr("Sales Payment Report"),
@@ -189,6 +192,7 @@ export default function SalesRegister() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Stat label={tr("Invoices")} value={totals.invoices} /><Stat label={tr("Mauzo (jumla)")} value={totals.sales} /><Stat label={tr("Tax")} value={totals.tax} /><Stat label={tr("Malipo yaliyopokelewa")} value={totals.payments} /><Stat label={tr("Deni la invoices")} value={totals.outstanding} />{totals.waiterDebt > 0 && <Stat label={tr("Madeni ya wahudumu (yaliyotokea)")} value={totals.waiterDebt} />}{totals.waiterDebtOpen > 0 && <Stat label={tr("Madeni ya wahudumu (bado yamebaki)")} value={totals.waiterDebtOpen} />}
       </div>
+      {INVOICE_SEARCH_PATHS.includes(path) && <InvoiceFinder />}
       {paymentForm}
       {lastReceipt && <TransactionReceipt title={tr("RISITI YA MALIPO YA MAUZO")} reference={lastReceipt.reference} date={lastReceipt.date} partyLabel={tr("Mteja")} party={lastReceipt.party} amount={lastReceipt.amount} method={lastReceipt.method} note={tr("Malipo yamepokelewa. Hifadhi risiti hii kwa kumbukumbu.")} />}
       {statementPicker}

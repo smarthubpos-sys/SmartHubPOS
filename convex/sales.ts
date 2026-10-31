@@ -128,7 +128,7 @@ export const createInvoice = mutation({
     if (!clientVisible) throw new ConvexError("Mteja hayupo kwenye ofisi/branch yako au si mteja wako.");
     const company = await getCompanySettings(ctx, user);
     const allowNegativeStock = !!company?.allowNegativeStock;
-    const invoicePrefix = (company?.invoicePrefix ?? "INV-") || "INV-";
+    const invoicePrefix = company?.invoicePrefix ?? "INV-"; // an empty prefix saved in Document Numbering gives plain 00001, 00002 ...
     const requested = new Map<string, number>(); // same product on several lines must be checked together
     for (const line of args.lines) requested.set(String(line.productId), (requested.get(String(line.productId)) ?? 0) + (Number.isFinite(line.qty) ? line.qty : 0));
     // Recipe products are produced from their ingredients here if the stock lacks them (cost then reflects the real ingredients).
@@ -165,15 +165,18 @@ export const createInvoice = mutation({
       }
     }
     const initialPay = paid > 0 ? (await normaliseSplits(ctx, user, [{ method: args.paymentMethod ?? "cash", methodId: args.paymentMethodId, amount: paid }])).splits[0] : null;
-    const seqRows = await ctx.db.query("salesSequences").withIndex("by_scope", q => scope.branchId ? q.eq("tenantId", scope.tenantId).eq("branchId", scope.branchId) : q.eq("tenantId", scope.tenantId)).collect();
-    const sequence = seqRows.find(x => x.tenantId === scope.tenantId && x.branchId === scope.branchId);
-    let nextNo = sequence?.nextNumber ?? 1;
+    // ONE counter per business: numbers follow each other (00001, 00002, 00003 ...) across all departments, so an invoice number is unique
+    // inside the business and can be searched without guessing the department. Old per-department counters only seed the start
+    // (the counter begins after the highest of them), and a number that already exists is never reused.
+    const seqRows = await ctx.db.query("salesSequences").withIndex("by_scope", q => q.eq("tenantId", scope.tenantId)).collect();
+    const sequence = seqRows.find(x => x.branchId === undefined);
+    let nextNo = Math.max(sequence?.nextNumber ?? 1, ...seqRows.map(x => x.nextNumber));
     let invoiceNo = `${invoicePrefix}${String(nextNo).padStart(5, "0")}`;
-    for (;;) { // never reuse a number that already exists in this office/branch
-      const clash = (await ctx.db.query("invoices").withIndex("by_tenant_no", q => q.eq("tenantId", scope.tenantId).eq("invoiceNo", invoiceNo)).collect()).some(x => x.branchId === scope.branchId);
+    for (;;) {
+      const clash = await ctx.db.query("invoices").withIndex("by_tenant_no", q => q.eq("tenantId", scope.tenantId).eq("invoiceNo", invoiceNo)).first();
       if (!clash) break; nextNo++; invoiceNo = `${invoicePrefix}${String(nextNo).padStart(5, "0")}`;
     }
-    if (sequence) await ctx.db.patch("salesSequences", sequence._id, { nextNumber: nextNo + 1 }); else await ctx.db.insert("salesSequences", { ...scope, nextNumber: nextNo + 1 });
+    if (sequence) await ctx.db.patch("salesSequences", sequence._id, { nextNumber: nextNo + 1 }); else await ctx.db.insert("salesSequences", { tenantId: scope.tenantId, nextNumber: nextNo + 1 });
     const invoiceId = await ctx.db.insert("invoices", { ...scope, invoiceNo, invoiceDate: args.invoiceDate, clientId: args.clientId, subtotal, discount, taxAmount, total, amountPaid: paid, outstanding: money(total-paid), paymentStatus: paid === total ? "paid" : paid > 0 ? "partial" : "unpaid", status: "posted", salespersonId: user._id, salesSource: args.salesSource, notes: args.notes, createdBy: user._id, postedAt: new Date().toISOString(), requestKey });
     await bumpStats(ctx, scope, { receivable: money(total - paid), date: args.invoiceDate, sales: total, collected: paid, invoices: 1 });
     for (const line of prepared) {
@@ -200,7 +203,7 @@ export const createInvoice = mutation({
       { accountId: inventory, debit: 0, credit: costTotal, description: "Inventory relieved" },
     ];
     await postSystemJournal(ctx, { scope, userId: user._id, date: args.invoiceDate, reference: `SALE-${invoiceNo}`, description: `Automatic posting for ${invoiceNo}`, sourceType: "sale", sourceId: String(invoiceId), lines: journalLines });
-    await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "create_and_post", module: "sales", referenceId: String(invoiceId), referenceType: "invoice", details: `Invoice ${invoiceNo}; total ${total}`, timestamp: new Date().toISOString(), result: "success" });
+    await ctx.db.insert("auditLogs", { tenantId: scope.tenantId, userId: user._id, userName: user.name ?? user.email ?? "user", action: "create_and_post", module: "sales", referenceId: String(invoiceId), referenceType: "invoice", details: `Invoice ${invoiceNo}; total ${total}`, timestamp: new Date().toISOString(), result: "success" });
     return { invoiceId, invoiceNo, subtotal, taxAmount, total, amountPaid: paid, outstanding: money(total-paid), creditWarning, duplicate: false };
     } catch (e) { throw surfaceError(e); }
   }
@@ -314,7 +317,7 @@ export const voidInvoice = mutation({
     // Cash collected is reported on the day each payment was made, so it is taken back on those same days.
     const paidByDay = new Map<string, number>(); for (const p of payments) paidByDay.set(p.paymentDate, money((paidByDay.get(p.paymentDate) ?? 0) + p.amount));
     for (const [day, amt] of paidByDay) if (amt) await bumpStats(ctx, scope, { date: day, collected: -amt });
-    await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "void_invoice", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `Invoice ${invoice.invoiceNo} cancelled; total ${invoice.total}; refunded ${refunded}${cancellationReason ? `; ${cancellationReason}` : ""}`, timestamp: new Date().toISOString(), result: "success" });
+    await ctx.db.insert("auditLogs", { tenantId: scope.tenantId, userId: user._id, userName: user.name ?? user.email ?? "user", action: "void_invoice", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `Invoice ${invoice.invoiceNo} cancelled; total ${invoice.total}; refunded ${refunded}${cancellationReason ? `; ${cancellationReason}` : ""}`, timestamp: new Date().toISOString(), result: "success" });
     return { invoiceNo: invoice.invoiceNo, refunded };
   },
 });
@@ -446,7 +449,7 @@ export const returnItems = mutation({
     await ctx.db.patch("invoices", a.invoiceId, { subtotal, discount, taxAmount, total: newTotal, amountPaid, outstanding, paymentStatus: newTotal <= 0 ? "returned" : outstanding <= 0 ? "paid" : amountPaid > 0 ? "partial" : "unpaid", notes: [invoice.notes, `Marejesho ${returnRef} ${returnDate}${a.reason ? `: ${a.reason}` : ""}`].filter(Boolean).join(" | ") });
     await bumpStats(ctx, scope, { receivable: -credit, date: invoice.invoiceDate, sales: -total });
     if (refund) await bumpStats(ctx, scope, { date: returnDate, collected: -refund }); // refund leaves the till on the return day
-    await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "sales_return", module: "sales", referenceId: String(returnId), referenceType: "salesReturn", details: `${returnRef} on ${invoice.invoiceNo}; value ${total}; debt reduced ${credit}; refunded ${refund}`, timestamp: new Date().toISOString(), result: "success" });
+    await ctx.db.insert("auditLogs", { tenantId: scope.tenantId, userId: user._id, userName: user.name ?? user.email ?? "user", action: "sales_return", module: "sales", referenceId: String(returnId), referenceType: "salesReturn", details: `${returnRef} on ${invoice.invoiceNo}; value ${total}; debt reduced ${credit}; refunded ${refund}`, timestamp: new Date().toISOString(), result: "success" });
     return { returnRef, total, creditedToDebt: credit, refunded: refund, invoiceTotal: newTotal, fullyReturned: newTotal <= 0 };
   },
 });
@@ -702,4 +705,219 @@ export const salesRegisters = query({
 export const salesRegisterBasic = query({
   args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
   handler: async (ctx, a) => buildSalesRegister(ctx, await requirePermission(ctx, "sales.view", "sales"), a, true),
+});
+
+
+/* ───────────────────────── Find / open / edit an invoice by its number ───────────────────────── */
+
+/** What the user may do with invoices (the same keys the server enforces on each action). */
+async function invoiceRights(ctx: QueryCtx, user: UserLike) {
+  return {
+    canPrint: await roleHasPermission(ctx, user, "sales.print"),
+    canEdit: await roleHasPermission(ctx, user, "sales.edit"),
+    canVoid: await roleHasPermission(ctx, user, "sales.void"),
+  };
+}
+const canSeeInvoice = (user: UserLike, inv: Doc<"invoices"> | null): inv is Doc<"invoices"> => !!inv && canAccessRecord(user, inv) && !(isOwnDataOnly(user) && inv.createdBy !== user._id);
+
+/**
+ * Search by invoice number (Reports > Product Sales). "1", "00001" and "INV-00001" all find INV-00001.
+ * Only invoices of the user's own business (and department, when one is chosen) are ever returned.
+ */
+export const searchInvoices = query({
+  args: { invoiceNo: v.string() },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "sales.view", "sales");
+    if (!user.tenantId) return [];
+    const tenantId = user.tenantId;
+    const raw = a.invoiceNo.trim().replace(/^#/, "");
+    if (!raw || raw.length > 40) return [];
+    const prefix = (await getCompanySettings(ctx, user))?.invoicePrefix ?? "INV-";
+    const wanted = new Set<string>([raw, raw.toUpperCase()]);
+    if (/^\d+$/.test(raw)) { const padded = raw.padStart(5, "0"); wanted.add(padded); wanted.add(`${prefix}${padded}`); }
+    const found = new Map<string, Doc<"invoices">>();
+    for (const no of wanted) for (const inv of await ctx.db.query("invoices").withIndex("by_tenant_no", (q) => q.eq("tenantId", tenantId).eq("invoiceNo", no)).take(20)) if (canSeeInvoice(user, inv)) found.set(String(inv._id), inv);
+    const rights = await invoiceRights(ctx, user);
+    const out = [];
+    for (const inv of [...found.values()].slice(0, 20)) {
+      const client = await ctx.db.get("clients", inv.clientId);
+      const dept = inv.branchId ? await ctx.db.get("branches", inv.branchId) : null;
+      out.push({ _id: inv._id, invoiceNo: inv.invoiceNo, invoiceDate: inv.invoiceDate, clientName: client?.name ?? "—", department: dept?.name ?? "", total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, status: inv.status, revision: inv.revision ?? 0, ...rights });
+    }
+    return out;
+  },
+});
+
+/** One invoice opened for viewing / printing / editing: lines with product names, stock that could still be used, payments and the user's rights. */
+export const invoiceFull = query({
+  args: { invoiceId: v.id("invoices") },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "sales.view", "sales");
+    const invoice = await ctx.db.get("invoices", a.invoiceId);
+    if (!canSeeInvoice(user, invoice)) return null;
+    const rights = await invoiceRights(ctx, user);
+    const seesCost = (await isManagerRole(ctx, user)) || (await roleHasPermission(ctx, user, "sales.reports.view"));
+    const client = await ctx.db.get("clients", invoice.clientId);
+    const dept = invoice.branchId ? await ctx.db.get("branches", invoice.branchId) : null;
+    const rawLines = await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
+    const soldByProduct = new Map<string, number>();
+    for (const l of rawLines) soldByProduct.set(String(l.productId), (soldByProduct.get(String(l.productId)) ?? 0) + l.qty);
+    const lines = [];
+    for (const l of rawLines) {
+      const p = await ctx.db.get("products", l.productId);
+      lines.push({ _id: l._id, productId: l.productId, productName: p?.name ?? "Bidhaa", itemCode: p?.itemCode ?? "", qty: l.qty, unitPrice: l.unitPrice, discount: l.discount ?? 0, lineTotal: l.lineTotal, returnedQty: l.returnedQty ?? 0, ...(seesCost ? { costAtSale: l.costAtSale } : {}) });
+    }
+    const payments = (await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId) ).collect()).filter((p) => !p.voided).map((p) => ({ amount: p.amount, method: p.paymentMethod, date: p.paymentDate }));
+    const company = await getCompanySettings(ctx, { ...user, branchId: invoice.branchId });
+    const base = invoice.subtotal - invoice.discount;
+    return {
+      invoice, clientName: client?.name ?? "—", department: dept?.name ?? "", lines, payments,
+      taxRate: base > 0 ? Math.round((invoice.taxAmount / base) * 10000) / 100 : 0,
+      hasReturns: lines.some((l) => l.returnedQty > 0), inCustomerBill: !!invoice.customerBillId,
+      company: { name: company?.companyName ?? "", address: company?.address ?? "", phone: company?.phone ?? "", taxId: company?.taxId ?? "", logoUrl: company?.logoUrl ?? "", currencySymbol: company?.currencySymbol ?? "" },
+      ...rights,
+    };
+  },
+});
+
+/**
+ * CORRECT a posted invoice (permission "sales.edit"): change the items / quantities / prices and issue the corrected bill under the SAME invoice number
+ * (its revision goes up by one). Everything that depends on the invoice is brought in line in ONE transaction, so a failure changes nothing:
+ *  - stock: the difference per product goes back to / out of the shelf (movements "invoice_edit"); stock is checked first;
+ *  - money: payments already received stay. If the new total is higher the customer owes the difference; if it is LOWER than what he paid,
+ *    the excess is paid back (negative payment row, from the refund method chosen);
+ *  - ledger: one adjusting journal (revenue, tax, receivable, cost of goods / inventory, refund), refused when the period is closed;
+ *  - dashboard totals and customer balance follow, and the change is written to the audit trail with the old and new totals.
+ * An invoice that already had returns, or that sits in a customer bill, is refused (cancel it or fix the bill first).
+ */
+export const editInvoice = mutation({
+  args: {
+    invoiceId: v.id("invoices"),
+    lines: v.array(lineValidator),
+    discount: v.optional(v.number()),
+    taxRate: v.optional(v.number()),
+    notes: v.optional(v.string()),
+    reason: v.string(),
+    refundMethod: v.optional(v.string()),
+    refundMethodId: v.optional(v.id("paymentMethods")),
+  },
+  handler: async (ctx, a) => {
+    try {
+      const user = await requirePermission(ctx, "sales.edit", "sales");
+      const invoice = await ctx.db.get("invoices", a.invoiceId);
+      if (!canSeeInvoice(user, invoice)) throw new ConvexError("Invoice haipatikani.");
+      if (invoice.status !== "posted") throw new ConvexError("Invoice hii imebatilishwa; haiwezi kuhaririwa.");
+      if (invoice.customerBillId) throw new ConvexError("Invoice hii ipo kwenye Customer Bill. Iondoe kwenye bill kwanza kabla ya kuihariri.");
+      const reason = a.reason.trim();
+      if (!reason) throw new ConvexError("Andika sababu ya kuhariri invoice.");
+      if (!a.lines.length) throw new ConvexError("Invoice lazima iwe na angalau bidhaa moja. Kama unataka kuiondoa kabisa, ifute (Cancel).");
+      assertFinite(a.discount, "Discount ya invoice"); assertFinite(a.taxRate, "Tax rate");
+      const scope = { tenantId: invoice.tenantId, branchId: invoice.branchId };
+      const oldLines = await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
+      if (oldLines.some((l) => (l.returnedQty ?? 0) > 0)) throw new ConvexError("Invoice hii ina marejesho ya bidhaa. Haiwezi kuhaririwa; tumia marejesho au ibatilishe.");
+      const company = await getCompanySettings(ctx, { ...user, branchId: invoice.branchId });
+      const allowNegativeStock = !!company?.allowNegativeStock;
+
+      // Stock available per product = what is on the shelf + what this invoice already took out.
+      const oldQty = new Map<string, number>(); const oldCost = new Map<string, number>();
+      for (const l of oldLines) { oldQty.set(String(l.productId), (oldQty.get(String(l.productId)) ?? 0) + l.qty); if (!oldCost.has(String(l.productId))) oldCost.set(String(l.productId), l.costAtSale); }
+      const newQty = new Map<string, number>();
+      for (const l of a.lines) newQty.set(String(l.productId), (newQty.get(String(l.productId)) ?? 0) + (Number.isFinite(l.qty) ? l.qty : 0));
+
+      const prepared: Array<{ productId: Id<"products">; qty: number; unitPrice: number; discount: number; lineTotal: number; cost: number }> = [];
+      let subtotal = 0;
+      for (const line of a.lines) {
+        if (!Number.isFinite(line.qty) || line.qty <= 0 || !Number.isFinite(line.unitPrice) || line.unitPrice < 0) throw new ConvexError("Kiasi au bei si sahihi.");
+        const product = await ctx.db.get("products", line.productId);
+        // Same rule as selling: a product of this business, from THIS invoice's department or shared by all departments.
+        const allowed = !!product && product.isActive && product.tenantId === invoice.tenantId && (product.branchId === undefined || product.branchId === invoice.branchId);
+        if (!product || !allowed) throw new ConvexError("Bidhaa haipatikani kwenye idara ya invoice hii.");
+        const available = product.currentQty + (oldQty.get(String(line.productId)) ?? 0);
+        if (!allowNegativeStock && available + 1e-8 < (newQty.get(String(line.productId)) ?? line.qty)) throw new ConvexError(`Stock haitoshi kwa ${product.name}. Iliyopo: ${available}, unayotaka: ${newQty.get(String(line.productId))}`);
+        assertFinite(line.discount, "Discount"); const lineDiscount = money(line.discount ?? 0); const gross = money(line.qty * line.unitPrice);
+        if (lineDiscount < 0 || lineDiscount > gross) throw new ConvexError("Discount si sahihi.");
+        const lineTotal = money(gross - lineDiscount); subtotal += lineTotal;
+        prepared.push({ productId: line.productId, qty: line.qty, unitPrice: line.unitPrice, discount: lineDiscount, lineTotal, cost: oldCost.get(String(line.productId)) ?? product.weightedAvgCost ?? product.lastPurchaseCost ?? 0 });
+      }
+      subtotal = money(subtotal);
+      const discount = money(a.discount ?? invoice.discount); if (discount < 0 || discount > subtotal) throw new ConvexError("Discount ya invoice si sahihi.");
+      const taxable = money(subtotal - discount);
+      const oldBase = invoice.subtotal - invoice.discount;
+      const taxRate = a.taxRate ?? (oldBase > 0 ? (invoice.taxAmount / oldBase) * 100 : 0);
+      if (taxRate < 0 || taxRate > 100) throw new ConvexError("Tax rate lazima iwe kati ya 0 na 100.");
+      const taxAmount = money(taxable * taxRate / 100); const total = money(taxable + taxAmount);
+
+      // Money: what was already paid stays; a lower total than the payments means the excess goes back to the customer.
+      const paid = invoice.amountPaid;
+      const refund = money(Math.max(0, paid - total));
+      const newPaid = money(paid - refund);
+      const newOutstanding = money(total - newPaid);
+      const payout = refund > 0 ? (await normaliseSplits(ctx, user, [{ method: a.refundMethod ?? "cash", methodId: a.refundMethodId, amount: refund }])).splits[0] : null;
+      // Credit limit (Sales > Clients): a correction that makes the customer owe MORE must stay inside his limit, like a new invoice.
+      if (newOutstanding > invoice.outstanding + 1e-8) {
+        const client = await ctx.db.get("clients", invoice.clientId);
+        if (client && client.creditPolicy !== "allow") {
+          const limit = client.creditLimit ?? (client.creditPolicy === "block" ? 0 : null);
+          if (limit !== null) {
+            const openOthers = (await ctx.db.query("invoices").withIndex("by_client", (q) => q.eq("clientId", invoice.clientId)).collect()).filter((i) => i._id !== invoice._id && i.status === "posted" && i.outstanding > 0).reduce((n, i) => n + i.outstanding, 0);
+            const exposure = money((client.openingBalance ?? 0) + openOthers + newOutstanding);
+            if (exposure > limit + 1e-8) {
+              const info = `Deni la mteja lingekuwa ${exposure}, kikomo cha mkopo ni ${limit}.`;
+              if (client.creditPolicy === "block") throw new ConvexError(`Mteja amefikia kikomo cha mkopo. ${info} Lipa sehemu ya deni kwanza.`);
+              if (client.creditPolicy === "require_approval" && !(await isManagerRole(ctx, user))) throw new ConvexError(`Marekebisho haya yanahitaji idhini ya meneja. ${info}`);
+            }
+          }
+        }
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const revision = (invoice.revision ?? 0) + 1;
+
+      // Stock: only the difference per product moves, with a movement for the history.
+      const productIds = new Set<string>([...oldQty.keys(), ...newQty.keys()]);
+      for (const pid of productIds) {
+        const diff = (newQty.get(pid) ?? 0) - (oldQty.get(pid) ?? 0);
+        if (Math.abs(diff) < 1e-8) continue;
+        const productId = pid as Id<"products">;
+        const product = await ctx.db.get("products", productId); if (!product) continue;
+        const balance = product.currentQty - diff;
+        await ctx.db.patch("products", productId, { currentQty: balance });
+        const unitCost = oldCost.get(pid) ?? prepared.find((x) => String(x.productId) === pid)?.cost ?? 0;
+        await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId, movementType: diff > 0 ? "sale" : "sale_return", referenceId: String(a.invoiceId), referenceType: "invoice_edit", qtyIn: diff < 0 ? -diff : 0, qtyOut: diff > 0 ? diff : 0, runningBalance: balance, unitCost, clientId: invoice.clientId, notes: `Marekebisho ${invoice.invoiceNo} #${revision}: ${reason}`, createdBy: user._id });
+      }
+      for (const l of oldLines) await ctx.db.delete("invoiceLines", l._id);
+      for (const line of prepared) await ctx.db.insert("invoiceLines", { invoiceId: a.invoiceId, productId: line.productId, qty: line.qty, qtyStr: String(line.qty), unitPrice: line.unitPrice, unitPriceStr: String(line.unitPrice), lineTotal: line.lineTotal, lineTotalStr: String(line.lineTotal), costAtSale: line.cost, discount: line.discount });
+
+      // Ledger: ONE adjusting entry with the differences (revenue, tax, receivable, cost of goods / inventory, refund).
+      const receivable = await getSystemAccount(ctx, scope, "1100", "Accounts receivable", "asset");
+      const inventory = await getSystemAccount(ctx, scope, "1200", "Inventory", "asset");
+      const taxPayable = await getSystemAccount(ctx, scope, "2150", "Tax payable", "liability");
+      const revenue = await getSystemAccount(ctx, scope, "4000", "Sales revenue", "revenue");
+      const cogs = await getSystemAccount(ctx, scope, "5000", "Cost of goods sold", "expense");
+      const costOld = roundMoney(oldLines.reduce((n, l) => n + l.qty * l.costAtSale, 0));
+      const costNew = roundMoney(prepared.reduce((n, l) => n + l.qty * l.cost, 0));
+      const journalLines: Array<{ accountId: Id<"accounts">; debit: number; credit: number; description: string }> = [];
+      const net = (accountId: Id<"accounts">, debit: number, description: string) => journalLines.push({ accountId, debit: debit > 0 ? debit : 0, credit: debit < 0 ? -debit : 0, description });
+      net(revenue, money((invoice.total - invoice.taxAmount) - (total - taxAmount)), "Sales revenue adjusted (invoice corrected)");
+      net(taxPayable, money(invoice.taxAmount - taxAmount), "Tax adjusted (invoice corrected)");
+      net(receivable, money(newOutstanding - invoice.outstanding), "Customer receivable adjusted");
+      net(cogs, roundMoney(costNew - costOld), "Cost of goods sold adjusted");
+      net(inventory, -roundMoney(costNew - costOld), "Inventory adjusted");
+      if (payout) net(await methodAccount(ctx, scope, { methodId: payout.methodId, method: payout.method }), -refund, `Refund to customer - ${payout.method}`);
+      if (journalLines.some((l) => l.debit !== 0 || l.credit !== 0)) {
+        await postSystemJournal(ctx, { scope, userId: user._id, date: today, reference: `SALEEDIT-${invoice.invoiceNo}-${revision}`, description: `Corrected invoice ${invoice.invoiceNo} (revision ${revision}) - ${reason}`, sourceType: "sale_edit", sourceId: `${String(a.invoiceId)}:${revision}`, lines: journalLines });
+      }
+      if (payout) await ctx.db.insert("customerPayments", { ...scope, paymentDate: today, clientId: invoice.clientId, invoiceId: a.invoiceId, amount: -refund, paymentMethod: payout.method, paymentMethodId: payout.methodId, receiptNo: `EDIT-${revision}`, notes: `Refund - invoice ${invoice.invoiceNo} corrected`, createdBy: user._id });
+
+      await ctx.db.patch("invoices", a.invoiceId, {
+        subtotal, discount, taxAmount, total, amountPaid: newPaid, outstanding: newOutstanding,
+        paymentStatus: newOutstanding <= 0 ? "paid" : newPaid > 0 ? "partial" : "unpaid",
+        notes: [a.notes !== undefined ? a.notes.trim() : invoice.notes, `Imesahihishwa #${revision} ${today}: ${reason}`].filter(Boolean).join(" | "),
+        revision, lastEditedAt: new Date().toISOString(), lastEditedBy: user._id,
+      });
+      await bumpStats(ctx, scope, { receivable: money(newOutstanding - invoice.outstanding), date: invoice.invoiceDate, sales: money(total - invoice.total) });
+      if (refund) await bumpStats(ctx, scope, { date: today, collected: -refund });
+      await ctx.db.insert("auditLogs", { tenantId: invoice.tenantId, userId: user._id, userName: user.name ?? user.email ?? "user", action: "edit_invoice", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `Invoice ${invoice.invoiceNo} corrected (#${revision}); total ${invoice.total} -> ${total}; debt ${invoice.outstanding} -> ${newOutstanding}; refunded ${refund}; ${reason}`, timestamp: new Date().toISOString(), result: "success" });
+      return { invoiceNo: invoice.invoiceNo, revision, total, amountPaid: newPaid, outstanding: newOutstanding, refunded: refund };
+    } catch (e) { throw surfaceError(e); }
+  },
 });

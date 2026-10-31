@@ -440,6 +440,9 @@ export default defineSchema({
     postedAt: v.optional(v.string()),
     requestKey: v.optional(v.string()), // idempotency key: one client submit = one invoice
     customerBillId: v.optional(v.id("customerBills")), // persistent invoice-to-customer-bill assignment
+    revision: v.optional(v.number()), // 0/missing = as first issued; +1 every time the invoice was corrected (editInvoice) - printed as "corrected bill"
+    lastEditedAt: v.optional(v.string()),
+    lastEditedBy: v.optional(v.id("users")),
   }) .index("by_tenant_date", ["tenantId", "invoiceDate"]) .index("by_tenant_request_key", ["tenantId", "requestKey"]) .index("by_tenant_status", ["tenantId", "status"]) .index("by_tenant_no", ["tenantId", "invoiceNo"]) .index("by_scope", ["tenantId", "branchId"])
     .index("by_tenant_user_date", ["tenantId", "createdBy", "invoiceDate"])
     .index("by_scope_date", ["tenantId", "branchId", "invoiceDate"])

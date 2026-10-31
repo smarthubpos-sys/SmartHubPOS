@@ -12,7 +12,8 @@ const base: PrintableBill = {
 describe("customer bill / invoice printout", () => {
   it("uses the same large layout as the order slip and fills the paper width", () => {
     const html = billReceiptHtml(base, "80mm");
-    expect(html).toContain("width:80mm");
+    expect(html).toContain("@page{size:80mm auto;margin:0}");
+    expect(html).toContain("width:72mm");
     expect(html).toContain(`font:${receiptScale("80mm").base}px`);
     for (const part of ["RUDY&#39;S FARM", "TEL : 0656403636", "BILI YA MTEJA", "2026-10-30 03:57:48", "Husna Issa", "SODA", "2,000/=", "JUMLA INAYODAIWA"]) expect(html, part).toContain(part);
   });
