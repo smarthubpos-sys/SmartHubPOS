@@ -100,8 +100,8 @@ function InvoicePanel({ invoiceId, onClose }: { invoiceId: Id<"invoices">; onClo
         <h2 className="font-semibold">{tr("Invoice")} {inv.invoiceNo}{(inv.revision ?? 0) > 0 ? ` — ${tr("Imesahihishwa")} #${inv.revision}` : ""}{cancelled ? ` — ${tr("Imebatilishwa")}` : ""}</h2>
         <div className="flex flex-wrap gap-2">
           {d.canPrint && <Button size="sm" variant="outline" onClick={() => printInvoice(d)}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
-          {!cancelled && d.canEdit && mode !== "edit" && <Button size="sm" variant="outline" disabled={!!locked} title={locked} onClick={() => setMode("edit")}>{tr("Hariri")}</Button>}
-          {!cancelled && d.canVoid && mode !== "cancel" && <Button size="sm" variant="destructive" onClick={() => setMode("cancel")}>{tr("Futa / Batilisha")}</Button>}
+          {!cancelled && d.canEdit && mode !== "edit" && <Button size="sm" variant="outline" disabled={!!locked} title={locked} onClick={() => setMode("edit")}>{tr("Edit Invoice")}</Button>}
+          {!cancelled && d.canVoid && mode !== "cancel" && <Button size="sm" variant="destructive" onClick={() => setMode("cancel")}>{tr("Delete / Cancel Invoice")}</Button>}
           <Button size="sm" variant="ghost" onClick={onClose}>{tr("Funga")}</Button>
         </div>
       </div>

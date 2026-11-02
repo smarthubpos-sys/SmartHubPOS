@@ -107,6 +107,25 @@ describe("a role that was saved before sales.view was a default keeps working", 
   });
 });
 
+
+describe("Sold Items invoice edit / cancel switches", () => {
+  it("shows edit and cancel rights only when the role has the matching permission", async () => {
+    const { as, t, cashier } = await setup();
+    const user = as(cashier);
+
+    const before = await user.query(api.sales.searchInvoices, { invoiceNo: "A-1" });
+    expect(before).toHaveLength(1);
+    expect(before[0]).toMatchObject({ canEdit: false, canVoid: false });
+
+    await t.run(async (ctx) => {
+      await ctx.db.patch("users", cashier, { extraPermissions: ["sales.edit", "sales.void"] });
+    });
+    const after = await user.query(api.sales.searchInvoices, { invoiceNo: "A-1" });
+    expect(after[0]).toMatchObject({ canEdit: true, canVoid: true });
+  });
+});
+
+
 describe("Sales and Selling Point permissions are independent", () => {
   it("sales permissions alone do not grant Selling Point access", async () => {
     const { as, setRole, cashier } = await setup();
