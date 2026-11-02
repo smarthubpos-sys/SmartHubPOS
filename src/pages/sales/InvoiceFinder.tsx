@@ -24,7 +24,7 @@ function printInvoice(d: Full) {
   const cur = d.company.currencySymbol ? `${d.company.currencySymbol} ` : "";
   const m = (n: number) => `${cur}${fmt(n)}`;
   const inv = d.invoice;
-  const rows = d.lines.map((l) => `<tr><td style="padding:2px 0">${esc(l.productName)}</td><td style="text-align:right">${esc(fmt(l.qty, 4))}</td><td style="text-align:right">${esc(fmt(l.unitPrice))}</td><td style="text-align:right">${esc(fmt(l.lineTotal))}</td></tr>`).join("");
+  const rows = d.lines.map((l) => `<tr><td style="padding:2px 0">${esc(l.productName)}${l.partNumber ? `<div style="font-size:10px;color:#444">${esc(tr("Part No"))}: ${esc(l.partNumber)}</div>` : ""}</td><td style="text-align:right">${esc(fmt(l.qty, 4))}</td><td style="text-align:right">${esc(fmt(l.unitPrice))}</td><td style="text-align:right">${esc(fmt(l.lineTotal))}</td></tr>`).join("");
   const el = document.createElement("div");
   el.className = "print-area";
   el.innerHTML = `<section style="font-size:12px;padding:6px 0">
@@ -52,36 +52,43 @@ function printInvoice(d: Full) {
  * What each person sees is decided by the server (searchInvoices / invoiceFull return only the invoices of their own business and
  * department, together with canPrint / canEdit / canVoid); the buttons here only follow those answers, the server enforces them again.
  */
-export default function InvoiceFinder() {
-  const [text, setText] = useState("");
-  const [term, setTerm] = useState("");
+export default function InvoiceFinder({ request }: { request?: { invoiceNo: string; nonce: number } | null }) {
+  // The report's "Edit / Delete" button passes one invoice number (the parent re-mounts this box with a new key for each request):
+  // it is searched at once and opened as soon as it is found. No effects are needed - everything is derived while rendering.
+  const initial = request?.invoiceNo ?? "";
+  const [text, setText] = useState(initial);
+  const [term, setTerm] = useState(initial);
   const [openId, setOpenId] = useState<Id<"invoices"> | null>(null);
+  const [autoDone, setAutoDone] = useState(!initial); // true once the person searched / closed by hand: no more automatic opening
   const results = useQuery(api.sales.searchInvoices, term ? { invoiceNo: term } : "skip");
+  const autoHit = !autoDone && !openId && results ? (results.find((r) => r.invoiceNo === term) ?? (results.length === 1 ? results[0] : undefined)) : undefined;
+  const shownId = openId ?? autoHit?._id ?? null;
+  const close = () => { setOpenId(null); setAutoDone(true); };
 
   return (
     <section className="space-y-3 rounded-xl border p-4 print:hidden">
-      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setOpenId(null); setTerm(text.trim()); }}>
+      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setOpenId(null); setAutoDone(true); setTerm(text.trim()); }}>
         <label className="grid gap-1 text-sm">{tr("Tafuta invoice kwa namba")}
           <Input className="w-64" inputMode="text" placeholder="00001" value={text} onChange={(e) => setText(e.target.value)} aria-label={tr("Namba ya invoice")} />
         </label>
         <Button type="submit"><Search className="mr-1 h-4 w-4" />{tr("Tafuta")}</Button>
-        {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); setOpenId(null); }}>{tr("Futa utafutaji")}</Button>}
+        {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); close(); }}>{tr("Futa utafutaji")}</Button>}
       </form>
-      {term && results === undefined && <p className="text-sm text-muted-foreground">{tr("Inatafutaâ€¦")}</p>}
+      {term && results === undefined && <p className="text-sm text-muted-foreground">{tr("Inatafuta…")}</p>}
       {term && results && results.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice yenye namba hiyo kwenye biashara/idara yako.")}</p>}
       {results && results.length > 0 && (
         <div className="overflow-x-auto"><table className="w-full text-sm">
           <thead><tr className="border-b text-left">{[tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Idara"), tr("Jumla"), tr("Deni"), tr("Hali"), ""].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
           <tbody>{results.map((r) => (
             <tr key={r._id} className="border-b">
-              <td className="p-2 font-medium">{r.invoiceNo}{r.revision > 0 ? ` (#${r.revision})` : ""}</td><td className="p-2">{r.invoiceDate}</td><td className="p-2">{r.clientName}</td><td className="p-2">{r.department || "â€”"}</td>
+              <td className="p-2 font-medium">{r.invoiceNo}{r.revision > 0 ? ` (#${r.revision})` : ""}</td><td className="p-2">{r.invoiceDate}</td><td className="p-2">{r.clientName}</td><td className="p-2">{r.department || "—"}</td>
               <td className="p-2 tabular-nums">{fmt(r.total)}</td><td className="p-2 tabular-nums">{fmt(r.outstanding)}</td><td className="p-2">{r.status === "cancelled" ? tr("Imebatilishwa") : tr("Imepostiwa")}</td>
-              <td className="p-2"><Button size="sm" variant="outline" onClick={() => setOpenId(r._id)}>{tr("Fungua")}</Button></td>
+              <td className="p-2"><Button size="sm" variant="outline" onClick={() => { setAutoDone(true); setOpenId(r._id); }}>{tr("Fungua")}</Button></td>
             </tr>
           ))}</tbody>
         </table></div>
       )}
-      {openId && <InvoicePanel key={openId} invoiceId={openId} onClose={() => setOpenId(null)} />}
+      {shownId && <InvoicePanel key={shownId} invoiceId={shownId} onClose={close} />}
     </section>
   );
 }
@@ -89,7 +96,7 @@ export default function InvoiceFinder() {
 function InvoicePanel({ invoiceId, onClose }: { invoiceId: Id<"invoices">; onClose: () => void }) {
   const d = useQuery(api.sales.invoiceFull, { invoiceId });
   const [mode, setMode] = useState<"view" | "edit" | "cancel">("view");
-  if (d === undefined) return <div className="rounded-lg border p-3 text-sm text-muted-foreground">{tr("Inapakiaâ€¦")}</div>;
+  if (d === undefined) return <div className="rounded-lg border p-3 text-sm text-muted-foreground">{tr("Inapakia…")}</div>;
   if (d === null) return <div className="rounded-lg border p-3 text-sm">{tr("Invoice haipatikani.")} <Button size="sm" variant="outline" onClick={onClose}>{tr("Funga")}</Button></div>;
   const inv = d.invoice;
   const cancelled = inv.status === "cancelled";
@@ -98,7 +105,7 @@ function InvoicePanel({ invoiceId, onClose }: { invoiceId: Id<"invoices">; onClo
   return (
     <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-semibold">{tr("Invoice")} {inv.invoiceNo}{(inv.revision ?? 0) > 0 ? ` â€” ${tr("Imesahihishwa")} #${inv.revision}` : ""}{cancelled ? ` â€” ${tr("Imebatilishwa")}` : ""}</h2>
+        <h2 className="font-semibold">{tr("Invoice")} {inv.invoiceNo}{(inv.revision ?? 0) > 0 ? ` — ${tr("Imesahihishwa")} #${inv.revision}` : ""}{cancelled ? ` — ${tr("Imebatilishwa")}` : ""}</h2>
         <div className="flex flex-wrap gap-2">
           {d.canPrint && <Button size="sm" variant="outline" onClick={() => printInvoice(d)}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
           {!cancelled && d.canEdit && mode !== "edit" && <Button size="sm" variant="outline" disabled={!!locked} title={locked} onClick={() => setMode("edit")}>{tr("Hariri")}</Button>}
@@ -107,7 +114,7 @@ function InvoicePanel({ invoiceId, onClose }: { invoiceId: Id<"invoices">; onClo
         </div>
       </div>
       {locked && !cancelled && d.canEdit && <p className="text-xs text-amber-700">{locked}</p>}
-      <p className="text-sm text-muted-foreground">{inv.invoiceDate} Â· {d.clientName}{d.department ? ` Â· ${d.department}` : ""}</p>
+      <p className="text-sm text-muted-foreground">{inv.invoiceDate} · {d.clientName}{d.department ? ` · ${d.department}` : ""}</p>
 
       {mode === "edit" ? <EditForm d={d} onDone={() => setMode("view")} onCancel={() => setMode("view")} />
         : mode === "cancel" ? <CancelForm d={d} onDone={onClose} onBack={() => setMode("view")} onEdit={() => setMode(d.canEdit && !locked ? "edit" : "cancel")} lockedMsg={locked} />
@@ -121,13 +128,13 @@ function ViewTable({ d }: { d: Full }) {
   return (
     <div className="space-y-2">
       <div className="overflow-x-auto"><table className="w-full text-sm">
-        <thead><tr className="border-b text-left">{[tr("Code"), tr("Bidhaa"), tr("Qty"), tr("Bei"), tr("Discount"), tr("Jumla")].map((h) => <th key={h} className="p-2">{h}</th>)}</tr></thead>
-        <tbody>{d.lines.map((l) => <tr key={l._id} className="border-b"><td className="p-2">{l.itemCode}</td><td className="p-2">{l.productName}</td><td className="p-2 tabular-nums">{fmt(l.qty, 4)}</td><td className="p-2 tabular-nums">{fmt(l.unitPrice)}</td><td className="p-2 tabular-nums">{fmt(l.discount)}</td><td className="p-2 tabular-nums">{fmt(l.lineTotal)}</td></tr>)}</tbody>
+        <thead><tr className="border-b text-left">{[tr("Code"), tr("Part No"), tr("Bidhaa"), tr("Qty"), tr("Bei"), tr("Discount"), tr("Jumla")].map((h) => <th key={h} className="p-2">{h}</th>)}</tr></thead>
+        <tbody>{d.lines.map((l) => <tr key={l._id} className="border-b"><td className="p-2">{l.itemCode}</td><td className="p-2">{l.partNumber || "—"}</td><td className="p-2">{l.productName}</td><td className="p-2 tabular-nums">{fmt(l.qty, 4)}</td><td className="p-2 tabular-nums">{fmt(l.unitPrice)}</td><td className="p-2 tabular-nums">{fmt(l.discount)}</td><td className="p-2 tabular-nums">{fmt(l.lineTotal)}</td></tr>)}</tbody>
       </table></div>
       <div className="grid gap-1 text-sm sm:max-w-xs">
         {[[tr("Subtotal"), inv.subtotal], [tr("Discount"), inv.discount], [tr("Tax"), inv.taxAmount], [tr("Jumla"), inv.total], [tr("Imelipwa"), inv.amountPaid], [tr("Deni"), inv.outstanding]].map(([k, v]) => <div key={String(k)} className="flex justify-between"><span>{k}</span><span className="tabular-nums">{fmt(Number(v))}</span></div>)}
       </div>
-      {d.payments.length > 0 && <p className="text-xs text-muted-foreground">{tr("Malipo")}: {d.payments.map((p) => `${p.date} ${p.method} ${fmt(p.amount)}`).join(" Â· ")}</p>}
+      {d.payments.length > 0 && <p className="text-xs text-muted-foreground">{tr("Malipo")}: {d.payments.map((p) => `${p.date} ${p.method} ${fmt(p.amount)}`).join(" · ")}</p>}
     </div>
   );
 }
@@ -194,7 +201,7 @@ function EditForm({ d, onDone, onCancel }: { d: Full; onDone: () => void; onCanc
             if (p) setLines((old) => old.some((l) => l.productId === String(p._id)) ? old : [...old, { productId: String(p._id), name: p.name, qty: "1", price: String(p.sellingPrice), discount: "0" }]);
           }}>
             <option value="">{tr("-- Chagua bidhaa --")}</option>
-            {(products ?? []).filter((p) => p.onMenu !== false).map((p) => <option key={p._id} value={p._id}>{p.itemCode} â€” {p.name}</option>)}
+            {(products ?? []).filter((p) => p.onMenu !== false).map((p) => <option key={p._id} value={p._id}>{p.itemCode} — {p.name}</option>)}
           </select>
         </label>
         <label className="grid gap-1 text-sm">{tr("Discount ya invoice")}<Input type="number" min={0} step="any" className="w-32" value={invDiscount} onChange={(e) => setInvDiscount(e.target.value)} /></label>
@@ -211,7 +218,7 @@ function EditForm({ d, onDone, onCancel }: { d: Full; onDone: () => void; onCanc
           <select className={selectClass} value={pickMethodKey(methods, method)} onChange={(e) => setMethod(e.target.value)}>{methods.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}</select></div>}
       </div>
       <div className="flex gap-2">
-        <Button disabled={busy} onClick={() => void save()}>{busy ? tr("Inahifadhiâ€¦") : tr("Hifadhi marekebisho")}</Button>
+        <Button disabled={busy} onClick={() => void save()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi marekebisho")}</Button>
         <Button variant="outline" disabled={busy} onClick={onCancel}>{tr("Ghairi")}</Button>
       </div>
     </div>
@@ -245,7 +252,7 @@ function CancelForm({ d, onDone, onBack, onEdit, lockedMsg }: { d: Full; onDone:
           <p className="text-xs text-muted-foreground">{tr("Stock inarudishwa, malipo yanarudishwa, deni linafutwa na invoice inatoka kwenye ripoti zote.")}</p>
           <select className={`${selectClass} w-full`} value={reason} onChange={(e) => setReason(e.target.value)}>{CANCEL_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}</select>
           {reason === "Sababu nyingine" && <Input value={details} onChange={(e) => setDetails(e.target.value)} placeholder={tr("Eleza sababu")} />}
-          <Button variant="destructive" disabled={busy} onClick={() => void run()}>{busy ? tr("Inafutaâ€¦") : tr("Futa kabisa")}</Button>
+          <Button variant="destructive" disabled={busy} onClick={() => void run()}>{busy ? tr("Inafuta…") : tr("Futa kabisa")}</Button>
         </div>
         <div className="space-y-2 rounded-lg border p-3">
           <h3 className="font-semibold">{tr("2. Rekebisha bidhaa / idadi")}</h3>
@@ -255,7 +262,7 @@ function CancelForm({ d, onDone, onBack, onEdit, lockedMsg }: { d: Full; onDone:
           <Button variant="outline" disabled={!canFix} onClick={onEdit}>{tr("Rekebisha bidhaa / idadi")}</Button>
         </div>
       </div>
-      <Button variant="ghost" size="sm" onClick={onBack}>{tr("â† Rudi")}</Button>
+      <Button variant="ghost" size="sm" onClick={onBack}>{tr("← Rudi")}</Button>
     </div>
   );
 }

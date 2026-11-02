@@ -20,7 +20,7 @@ import {
   CalendarClock,
 } from "lucide-react";
 import { tr } from "@/lib/i18n.ts";
-import { isSellingStaffRole, isSuperAdminRole, showSellingPointInMenu } from "@/lib/selling-point-access.ts";
+import { isSellingStaffRole, isSuperAdminRole, showModuleInMenu, showSellingPointInMenu } from "@/lib/selling-point-access.ts";
 import { useNotifications } from "@/hooks/use-notifications.ts";
 
 const groups = [
@@ -78,7 +78,9 @@ export default function Sidebar({
 
   const tenant = useQuery(api.tenants.current);
   const modules = tenant?.modules ?? null;
-  const permissions = useQuery(api.maintenance.myPermissions) ?? [];
+  const myPermissions = useQuery(api.maintenance.myPermissions);
+  const permissionsLoaded = myPermissions !== undefined;
+  const permissions = myPermissions ?? [];
   const currentUser = useQuery(api.users.getCurrentUser);
 
   const superAdmin = isSuperAdminRole(currentUser?.role);
@@ -100,9 +102,8 @@ export default function Sidebar({
           return permissions.includes("leave.request") || permissions.includes("leave.review") || permissions.includes("system.manager");
         }
         if (sellingStaff && item.module === "dashboard") return false;
-        if (superAdmin) return true;
-        if (modules && !modules.includes(item.module)) return false;
-        return item.module === "sales" ? permissions.includes("sales.view") : true;
+        // Every other module: the business/user module list AND at least one permission inside it (see MODULE_PERMISSIONS).
+        return showModuleInMenu({ role: currentUser?.role, permissions: permissionsLoaded ? permissions : undefined, modules, module: item.module });
       }),
     }))
     .filter((g) => g.items.length > 0);

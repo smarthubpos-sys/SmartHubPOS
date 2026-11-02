@@ -268,3 +268,40 @@ describe("cancelling (deleting) an invoice", () => {
     await expect(as(foreign).mutation(api.sales.voidInvoice, { invoiceId: inv.invoiceId, reason: "Kosa la kuingiza invoice" })).rejects.toThrow(/haipatikani/);
   });
 });
+
+describe("part number on invoices and the Sold Item report", () => {
+  it("invoiceFull and the sold-items lines carry the product's part number (empty when it has none)", async () => {
+    const { t, as, owner, client, product, product2 } = await setup();
+    await t.run(async (ctx) => { await ctx.db.patch("products", product, { partNumber: "PN-777" }); });
+    const inv = await as(owner).mutation(api.sales.createInvoice, { clientId: client, invoiceDate: DAY, lines: [{ productId: product, qty: 1, unitPrice: 100 }, { productId: product2, qty: 1, unitPrice: 100 }] });
+    const full = await as(owner).query(api.sales.invoiceFull, { invoiceId: inv.invoiceId });
+    expect(full?.lines.find((l) => l.productName === "Beer")?.partNumber).toBe("PN-777");
+    expect(full?.lines.find((l) => l.productName === "Soda")?.partNumber).toBe("");
+    const reg = await as(owner).query(api.sales.salesRegisters, { startDate: DAY, endDate: DAY, withLines: true });
+    expect(reg.lines.find((l) => l.productName === "Beer")?.partNumber).toBe("PN-777");
+  });
+
+  it("a corrected invoice keeps its number and still shows the part number", async () => {
+    const { t, as, owner, client, product } = await setup();
+    await t.run(async (ctx) => { await ctx.db.patch("products", product, { partNumber: "PN-777" }); });
+    const inv = await as(owner).mutation(api.sales.createInvoice, { clientId: client, invoiceDate: DAY, lines: [{ productId: product, qty: 2, unitPrice: 100 }] });
+    await as(owner).mutation(api.sales.editInvoice, { invoiceId: inv.invoiceId, reason: "Mteja alibadilisha idadi", lines: [{ productId: product, qty: 3, unitPrice: 100 }] });
+    const full = await as(owner).query(api.sales.invoiceFull, { invoiceId: inv.invoiceId });
+    expect(full?.invoice.invoiceNo).toBe(inv.invoiceNo);
+    expect(full?.invoice.revision).toBe(1);
+    expect(full?.lines[0]).toMatchObject({ qty: 3, partNumber: "PN-777" });
+    expect(await qtyOf(t, product)).toBe(7);
+  });
+});
+
+describe("receiving customer payments follows the permission, not only the role name", () => {
+  it("a cashier (has sales.manage) can receive; a waiter cannot, even though waiters hold sales.manage", async () => {
+    const { t, as, owner, cashier, tenantA, client, product } = await setup();
+    const waiter = await t.run(async (ctx) => ctx.db.insert("users", { name: "wtr", username: "wtr", role: "waiter", tenantId: tenantA, isActive: true }));
+    const inv = await as(owner).mutation(api.sales.createInvoice, { clientId: client, invoiceDate: DAY, lines: [{ productId: product, qty: 2, unitPrice: 100 }] });
+    await expect(as(waiter).mutation(api.sales.recordPayment, { invoiceId: inv.invoiceId, amount: 50, paymentMethod: "cash", paymentDate: DAY })).rejects.toThrow(/Forbidden/);
+    await as(cashier).mutation(api.sales.recordPayment, { invoiceId: inv.invoiceId, amount: 50, paymentMethod: "cash", paymentDate: DAY });
+    const after = await t.run(async (ctx) => await ctx.db.get("invoices", inv.invoiceId));
+    expect(after).toMatchObject({ amountPaid: 50, outstanding: 150 });
+  });
+});

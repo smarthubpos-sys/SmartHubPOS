@@ -44,7 +44,9 @@ export default function SalesPage() {
 
   const myPerms = useQuery(api.maintenance.myPermissions, {});
   const canViewReports = !!myPerms?.includes("sales.reports.view");
+  const canManageSales = !!myPerms?.includes("sales.manage");
 
+  // Each tile follows the permission the server asks for: creating invoices / clients = sales.manage, reports = sales.reports.view.
   const visibleSalesMenuItems = salesMenuItems
     .map((section) =>
       section.section === tr("Sales Reports")
@@ -55,7 +57,7 @@ export default function SalesPage() {
                 item.path === "/sales/clients/list" || canViewReports
             ),
           }
-        : section
+        : { ...section, items: section.items.filter(() => canManageSales) }
     )
     .filter((section) => section.items.length > 0);
 

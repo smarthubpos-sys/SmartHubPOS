@@ -87,7 +87,7 @@ export const USER_GRANTABLE_PERMISSIONS: { key: string; label: string }[] = [
   { key: "accounts.reports.delete", label: "Anaweza kufuta ripoti za kipindi (Period Reports)" },
   { key: "leave.request", label: "Anaweza kuomba ruhusa / likizo na kuona ratiba yake" },
   { key: "leave.review", label: "HR: anapokea, anaona na kuamua maombi ya ruhusa yaliyotumwa kwa HR" },
-  { key: "stock.adjust", label: "Anaweza kubadili / kufuta stock (adjustment, kuhariri bidhaa) â€” Super Admin pekee ndiye anayetoa" },
+  { key: "stock.adjust", label: "Anaweza kubadili / kufuta stock (adjustment, kuhariri bidhaa) — Super Admin pekee ndiye anayetoa" },
 ];
 
 /**

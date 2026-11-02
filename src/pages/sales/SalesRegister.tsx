@@ -33,6 +33,7 @@ function printSoldItem(row: Row, copies: number, paper: Paper, company: { name: 
       ${rowLine(tr("Tarehe"), String(row.Tarehe ?? ""))}
       ${rowLine(tr("Mteja"), String(row.Mteja ?? ""))}
       ${rowLine(tr("Code"), String(row.Code ?? ""))}
+      ${row["Part No"] ? rowLine(tr("Part No"), String(row["Part No"])) : ""}
       ${rowLine(tr("Bidhaa"), String(row.Bidhaa ?? ""))}
       ${rowLine(tr("Qty"), fmt(num(row.Qty), 4))}
       ${rowLine(tr("Bei/kipande"), money(row["Bei/kipande"]))}
@@ -75,6 +76,9 @@ export default function SalesRegister() {
   const [busy, setBusy] = useState(false);
   const [lastReceipt, setLastReceipt] = useState<null | { reference: string; date: string; party: string; amount: number; method: string }>(null);
   const title = TITLES[path] ?? tr("Sales Register");
+  const myPerms = useQuery(api.maintenance.myPermissions, {});
+  const canEditOrDelete = !!myPerms && (myPerms.includes("sales.edit") || myPerms.includes("sales.void"));
+  const [finderRequest, setFinderRequest] = useState<{ invoiceNo: string; nonce: number } | null>(null);
 
   const header = (
     <div className="flex flex-wrap items-end justify-between gap-3 print:hidden">
@@ -125,7 +129,7 @@ export default function SalesRegister() {
       rows = groupRows(invoices, (x) => x.staff, (x) => ({ Staff: x.staff, Invoices: 0, Jumla: 0, Imelipwa: 0, Deni: 0 }), (a, x) => { a.Invoices = num(a.Invoices) + 1; a.Jumla = round2(num(a.Jumla) + x.total); a.Imelipwa = round2(num(a.Imelipwa) + x.amountPaid); a.Deni = round2(num(a.Deni) + x.outstanding); }).sort((a, b) => num(b.Jumla) - num(a.Jumla));
       sumCols = [tr("Invoices"), tr("Jumla"), tr("Imelipwa"), tr("Deni")]; break;
     case "reports/sold-items":
-      rows = lines.map((l) => ({ Tarehe: l.date, Invoice: l.invoiceNo, Mteja: l.clientName, Code: l.itemCode, Bidhaa: l.productName, Qty: l.qty, "Bei/kipande": l.unitPrice, Discount: l.discount, Jumla: l.net }));
+      rows = lines.map((l) => ({ Tarehe: l.date, Invoice: l.invoiceNo, Mteja: l.clientName, Code: l.itemCode, "Part No": l.partNumber || "—", Bidhaa: l.productName, Qty: l.qty, "Bei/kipande": l.unitPrice, Discount: l.discount, Jumla: l.net }));
       sumCols = [tr("Jumla")]; break;
     case "reports/by-supplier":
       rows = groupRows(lines, (l) => l.supplierName, (l) => ({ Supplier: l.supplierName, Qty: 0, "Mauzo (bila tax)": 0, Cost: 0, Faida: 0 }), (a, l) => { a.Qty = round2(num(a.Qty) + l.qty); a["Mauzo (bila tax)"] = round2(num(a["Mauzo (bila tax)"]) + l.net); a.Cost = round2(num(a.Cost) + l.cost); a.Faida = round2(num(a.Faida) + l.profit); }).sort((a, b) => num(b["Mauzo (bila tax)"]) - num(a["Mauzo (bila tax)"]));
@@ -192,11 +196,11 @@ export default function SalesRegister() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Stat label={tr("Invoices")} value={totals.invoices} /><Stat label={tr("Mauzo (jumla)")} value={totals.sales} /><Stat label={tr("Tax")} value={totals.tax} /><Stat label={tr("Malipo yaliyopokelewa")} value={totals.payments} /><Stat label={tr("Deni la invoices")} value={totals.outstanding} />{totals.waiterDebt > 0 && <Stat label={tr("Madeni ya wahudumu (yaliyotokea)")} value={totals.waiterDebt} />}{totals.waiterDebtOpen > 0 && <Stat label={tr("Madeni ya wahudumu (bado yamebaki)")} value={totals.waiterDebtOpen} />}
       </div>
-      {INVOICE_SEARCH_PATHS.includes(path) && <InvoiceFinder />}
+      {INVOICE_SEARCH_PATHS.includes(path) && <InvoiceFinder key={finderRequest?.nonce ?? 0} request={finderRequest} />}
       {paymentForm}
       {lastReceipt && <TransactionReceipt title={tr("RISITI YA MALIPO YA MAUZO")} reference={lastReceipt.reference} date={lastReceipt.date} partyLabel={tr("Mteja")} party={lastReceipt.party} amount={lastReceipt.amount} method={lastReceipt.method} note={tr("Malipo yamepokelewa. Hifadhi risiti hii kwa kumbukumbu.")} />}
       {statementPicker}
-      {path === "reports/client-statement" && !clientId ? <p className="text-sm text-muted-foreground">{tr("Chagua mteja kuona statement yake.")}</p> : <ReportTable title={title === "Payment Received" ? tr("Malipo yaliyopokelewa") : title} rows={listRows} sumCols={path === "payments" ? ["Kiasi"] : sumCols} note={note} onPrintRow={path === "reports/sold-items" ? (row, copies, paper) => printSoldItem(row, copies, paper, data.company) : undefined} />}
+      {path === "reports/client-statement" && !clientId ? <p className="text-sm text-muted-foreground">{tr("Chagua mteja kuona statement yake.")}</p> : <ReportTable title={title === "Payment Received" ? tr("Malipo yaliyopokelewa") : title} rows={listRows} sumCols={path === "payments" ? ["Kiasi"] : sumCols} note={note} onPrintRow={path === "reports/sold-items" ? (row, copies, paper) => printSoldItem(row, copies, paper, data.company) : undefined} onEditRow={path === "reports/sold-items" && canEditOrDelete ? (row) => setFinderRequest({ invoiceNo: String(row.Invoice ?? ""), nonce: Date.now() }) : undefined} hidePagePrint={path === "reports/sold-items"} />}
     </div>
   );
 }

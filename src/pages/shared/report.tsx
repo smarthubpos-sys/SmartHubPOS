@@ -39,7 +39,7 @@ export function Stat({ label, value }: { label: string; value: string | number }
 }
 
 /** Report table with automatic number formatting, optional totals row, CSV export and print. */
-export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { title: string; rows: Row[]; sumCols?: string[]; note?: string; onPrintRow?: (row: Row, copies: number, paper: Paper) => void }) {
+export function ReportTable({ title, rows, sumCols = [], note, onPrintRow, onEditRow, hidePagePrint = false }: { title: string; rows: Row[]; sumCols?: string[]; note?: string; onPrintRow?: (row: Row, copies: number, paper: Paper) => void; onEditRow?: (row: Row) => void; hidePagePrint?: boolean }) {
   const cols = Object.keys(rows[0] ?? {});
   const sendReport = useAction(api.reportEmails.sendReport);
   const [sending, setSending] = useState(false);
@@ -77,9 +77,10 @@ export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { t
               <Button size="sm" disabled={picked === null || !rows[picked]} onClick={() => { if (picked !== null && rows[picked]) onPrintRow(rows[picked], copies, paper); }}>{tr("Chapisha item iliyochaguliwa")}</Button>
             </>
           )}
+          {onEditRow && <Button size="sm" variant="outline" disabled={picked === null || !rows[picked]} onClick={() => { if (picked !== null && rows[picked]) onEditRow(rows[picked]); }}>{tr("Edit / Delete")}</Button>}
           <Button size="sm" variant="outline" disabled={!rows.length} onClick={() => downloadCsv(title, rows)}>{tr("Export CSV")}</Button>
           <Button size="sm" variant="outline" disabled={!rows.length || sending} onClick={() => void emailReport()}>{sending ? tr("Inatuma…") : tr("Tuma kwa Email")}</Button>
-          <Button size="sm" variant="outline" onClick={() => printElement(sectionRef.current, "A4", { landscape: cols.length > 6 })}>{tr("Print")}</Button>
+          {!hidePagePrint && <Button size="sm" variant="outline" onClick={() => printElement(sectionRef.current, "A4", { landscape: cols.length > 6 })}>{tr("Print")}</Button>}
         </div>
       </div>
       {note && <p className="border-b bg-muted/30 p-3 text-xs text-muted-foreground">{note}</p>}

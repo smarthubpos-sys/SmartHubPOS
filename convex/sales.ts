@@ -464,7 +464,10 @@ export async function applyCustomerPayment(ctx: MutationCtx, args: PaymentArgs) 
   const user = await requireActiveUser(ctx, "sales");
   assertDate(args.paymentDate, "Tarehe ya malipo");
   const role = normalizeRole(user.role);
-  if (role !== "cashier" && !(await isManagerRole(ctx, user))) throw new ConvexError("Forbidden: cashier permission required to receive customer payments");
+  // Receiving money follows the permission the Super Admin gave ("sales.manage"), not the role name: a Cashier whose sales.manage was taken away
+  // is refused, and a custom role that was given it can receive. Waiters / waitresses never take customer payments (the cashier does); managers always can.
+  const sellingStaff = role === "waiter" || role === "waitress";
+  if (!(await isManagerRole(ctx, user)) && (sellingStaff || !(await roleHasPermission(ctx, user, "sales.manage")))) throw new ConvexError("Forbidden: cashier permission required to receive customer payments");
   const scope = await resolveWriteScope(ctx, user); const invoice = await ctx.db.get("invoices", args.invoiceId);
   if (!canAccessRecord(user, invoice) || !invoice || invoice.status !== "posted") throw new ConvexError("Invoice haipatikani au haijapostiwa.");
   if (isOwnDataOnly(user) && invoice.createdBy !== user._id) throw new ConvexError("Invoice haipatikani au haijapostiwa.");
@@ -590,16 +593,16 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
     const getInvoice = async (id: Id<"invoices"> | null | undefined) => (id ? memo(`invoices:${id}`, () => ctx.db.get("invoices", id)) : null);
     const staffCache = new Map<string, string>();
     const staffOf = async (id: Id<"users"> | null | undefined) => {
-      if (!id) return "â€”"; const key = String(id); if (staffCache.has(key)) return staffCache.get(key)!;
+      if (!id) return "—"; const key = String(id); if (staffCache.has(key)) return staffCache.get(key)!;
       const u = await getUser(id); const name = u?.name ?? u?.username ?? u?.email ?? "Mtumiaji"; staffCache.set(key, name); return name;
     };
 
     const invoiceRows = [] as Array<{ _id: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; subtotal: number; discount: number; taxAmount: number; total: number; amountPaid: number; outstanding: number; paymentStatus: string; staff: string; source: string; notes: string }>;
-    const lines = [] as Array<{ invoiceId: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; staff: string; source: string; productId: Id<"products">; itemCode: string; productName: string; groupName: string; unit: string; supplierName: string; qty: number; unitPrice: number; discount: number; net: number; cost: number; profit: number }>;
+    const lines = [] as Array<{ invoiceId: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; staff: string; source: string; productId: Id<"products">; itemCode: string; partNumber: string; productName: string; groupName: string; unit: string; supplierName: string; qty: number; unitPrice: number; discount: number; net: number; cost: number; profit: number }>;
     for (const inv of invoices) {
       if (basic) continue; // everyday screens get headline totals only, never per-invoice staff / line data
       const staff = await staffOf(inv.salespersonId ?? inv.createdBy);
-      invoiceRows.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, paymentStatus: inv.paymentStatus, staff, source: inv.salesSource ?? "â€”", notes: inv.notes ?? "" });
+      invoiceRows.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, paymentStatus: inv.paymentStatus, staff, source: inv.salesSource ?? "—", notes: inv.notes ?? "" });
       if (!wantLines) continue;
       const factor = inv.subtotal > 0 ? (inv.subtotal - inv.discount) / inv.subtotal : 1;
       for (const l of await ctx.db.query("invoiceLines").withIndex("by_invoice", q => q.eq("invoiceId", inv._id)).collect()) {
@@ -608,7 +611,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
         const keep = l.qty > 0 ? keptQty / l.qty : 1;
         const p = await getProduct(l.productId); const net = money(l.lineTotal * keep * factor); const cost = money(keptQty * l.costAtSale);
         const group = await getGroup(p?.groupId); const unit = await getUnit(p?.unitId); const supplier = await getSupplier(p?.lastSupplierId);
-        lines.push({ invoiceId: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", staff, source: inv.salesSource ?? "â€”", productId: l.productId, itemCode: p?.itemCode ?? "â€”", productName: p?.name ?? "Bidhaa", groupName: p?.groupId ? group?.name ?? "â€”" : "â€”", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "â€”" : "â€”", qty: keptQty, unitPrice: l.unitPrice, discount: money(l.discount * keep), net, cost, profit: money(net - cost) });
+        lines.push({ invoiceId: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", staff, source: inv.salesSource ?? "—", productId: l.productId, itemCode: p?.itemCode ?? "—", partNumber: p?.partNumber ?? "", productName: p?.name ?? "Bidhaa", groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: keptQty, unitPrice: l.unitPrice, discount: money(l.discount * keep), net, cost, profit: money(net - cost) });
       }
     }
 
@@ -653,7 +656,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
             const unitCost = mq > 1e-8 ? mc / mq : (p?.weightedAvgCost ?? p?.lastPurchaseCost ?? 0);
             const group = await getGroup(p?.groupId); const unit = await getUnit(p?.unitId); const supplier = await getSupplier(p?.lastSupplierId);
             const net = money(l.lineTotal * share); const cost = money(l.qty * share * unitCost);
-            lines.push({ invoiceId: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, staff: o.waiterName, source: "Selling Point", productId: l.productId, itemCode: p?.itemCode ?? "—", productName: p?.name ?? l.productName, groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: l.qty * share, unitPrice: l.unitPrice, discount: 0, net, cost, profit: money(net - cost) });
+            lines.push({ invoiceId: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, staff: o.waiterName, source: "Selling Point", productId: l.productId, itemCode: p?.itemCode ?? "—", partNumber: p?.partNumber ?? "", productName: p?.name ?? l.productName, groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: l.qty * share, unitPrice: l.unitPrice, discount: 0, net, cost, profit: money(net - cost) });
           }
         }
       }
@@ -663,8 +666,8 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
     for (const i of [...invoices, ...openInvoicesRaw]) invNoCache.set(String(i._id), i.invoiceNo);
     const payments = [] as Array<{ _id: Id<"customerPayments">; date: string; clientId: Id<"clients">; clientName: string; invoiceNo: string; amount: number; method: string; reference: string; notes: string }>;
     for (const p of periodPayments.filter((x) => inRange(x.paymentDate)).sort((x, y) => y.paymentDate.localeCompare(x.paymentDate) || y._creationTime - x._creationTime)) {
-      let invoiceNo = "â€”";
-      if (p.invoiceId) { const k = String(p.invoiceId); if (!invNoCache.has(k)) invNoCache.set(k, (await getInvoice(p.invoiceId))?.invoiceNo ?? "â€”"); invoiceNo = invNoCache.get(k)!; }
+      let invoiceNo = "—";
+      if (p.invoiceId) { const k = String(p.invoiceId); if (!invNoCache.has(k)) invNoCache.set(k, (await getInvoice(p.invoiceId))?.invoiceNo ?? "—"); invoiceNo = invNoCache.get(k)!; }
       payments.push({ _id: p._id, date: p.paymentDate, clientId: p.clientId, clientName: clientName.get(String(p.clientId)) ?? "Mteja", invoiceNo, amount: p.amount, method: p.paymentMethod, reference: p.reference ?? "", notes: p.notes ?? "" });
     }
 
@@ -765,7 +768,7 @@ export const invoiceFull = query({
     const lines = [];
     for (const l of rawLines) {
       const p = await ctx.db.get("products", l.productId);
-      lines.push({ _id: l._id, productId: l.productId, productName: p?.name ?? "Bidhaa", itemCode: p?.itemCode ?? "", qty: l.qty, unitPrice: l.unitPrice, discount: l.discount ?? 0, lineTotal: l.lineTotal, returnedQty: l.returnedQty ?? 0, ...(seesCost ? { costAtSale: l.costAtSale } : {}) });
+      lines.push({ _id: l._id, productId: l.productId, productName: p?.name ?? "Bidhaa", itemCode: p?.itemCode ?? "", partNumber: p?.partNumber ?? "", qty: l.qty, unitPrice: l.unitPrice, discount: l.discount ?? 0, lineTotal: l.lineTotal, returnedQty: l.returnedQty ?? 0, ...(seesCost ? { costAtSale: l.costAtSale } : {}) });
     }
     const payments = (await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId) ).collect()).filter((p) => !p.voided).map((p) => ({ amount: p.amount, method: p.paymentMethod, date: p.paymentDate }));
     const company = await getCompanySettings(ctx, { ...user, branchId: invoice.branchId });
