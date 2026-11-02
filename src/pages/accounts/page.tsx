@@ -5,6 +5,7 @@ import ModuleWorkspace from "@/pages/layout/_components/ModuleWorkspace.tsx";
 import CapitalPage from "@/pages/accounts/CapitalPage.tsx";
 import ExpensesPage from "@/pages/accounts/ExpensesPage.tsx";
 import PeriodReportPage from "@/pages/accounts/PeriodReportPage.tsx";
+import FinancialReportPage from "@/pages/accounts/FinancialReportPage.tsx";
 import { tr } from "@/lib/i18n.ts";
 
 const accountsMenuItems = [
@@ -55,6 +56,7 @@ export default function AccountsPage() {
       <Route path="capital" element={<CapitalPage />} />
       <Route path="expenses" element={<ExpensesPage />} />
       <Route path="period-report" element={<PeriodReportPage />} />
+      <Route path="reports/*" element={<FinancialReportPage />} />
       <Route path="*" element={<ModuleWorkspace module="accounts" />} />
     </Routes>
   );

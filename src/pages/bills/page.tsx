@@ -81,7 +81,7 @@ export default function BillsPage() {
       <div className="print:hidden space-y-4">
         <PageHeader icon={Receipt} title={tr("Bills")} subtitle={tr("Bili za wateja: chagua mteja, weka alama kwenye invoice unazotaka, kisha chapisha bili.")} />
 
-        {business?.waiterOrdersEnabled !== false && <ErrorBoundary inline><BillsPanel /></ErrorBoundary>}
+        {business && (business.waiterOrdersEnabled !== false || business.waiterEnabled === true || business.waitressEnabled === true) && <ErrorBoundary inline><BillsPanel /></ErrorBoundary>}
 
         <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3">
           <Stat label={tr("Invoice zilizochaguliwa")} value={`${chosen.length} / ${eligible.length}`} icon={Receipt} tone="violet" />

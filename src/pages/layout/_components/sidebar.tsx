@@ -20,7 +20,7 @@ import {
   CalendarClock,
 } from "lucide-react";
 import { tr } from "@/lib/i18n.ts";
-import { isSellingStaffRole, isSuperAdminRole, showModuleInMenu, showSellingPointInMenu } from "@/lib/selling-point-access.ts";
+import { isSellingStaffRole, isSuperAdminRole, showSellingPointInMenu } from "@/lib/selling-point-access.ts";
 import { useNotifications } from "@/hooks/use-notifications.ts";
 
 const groups = [
@@ -78,9 +78,7 @@ export default function Sidebar({
 
   const tenant = useQuery(api.tenants.current);
   const modules = tenant?.modules ?? null;
-  const myPermissions = useQuery(api.maintenance.myPermissions);
-  const permissionsLoaded = myPermissions !== undefined;
-  const permissions = myPermissions ?? [];
+  const permissions = useQuery(api.maintenance.myPermissions) ?? [];
   const currentUser = useQuery(api.users.getCurrentUser);
 
   const superAdmin = isSuperAdminRole(currentUser?.role);
@@ -90,6 +88,10 @@ export default function Sidebar({
     .map((g) => ({
       ...g,
       items: g.items.filter((item) => {
+        if (!superAdmin && currentUser?.menuAccess) {
+          const menuKey = item.module === "cashier" ? "waiterOrders" : item.module;
+          if (!currentUser.menuAccess.includes(menuKey)) return false;
+        }
         if (item.module === "waiterOrders") {
           return showSellingPointInMenu({ role: currentUser?.role, permissions, modules, waiterOrdersEnabled: tenant?.waiterOrdersEnabled });
         }
@@ -99,11 +101,30 @@ export default function Sidebar({
         if (item.module === "leave") {
           if (superAdmin) return true;
           if (modules && !modules.includes("leave")) return false;
+          if (currentUser?.menuAccess && !currentUser.menuAccess.includes("leave")) return false;
           return permissions.includes("leave.request") || permissions.includes("leave.review") || permissions.includes("system.manager");
         }
         if (sellingStaff && item.module === "dashboard") return false;
-        // Every other module: the business/user module list AND at least one permission inside it (see MODULE_PERMISSIONS).
-        return showModuleInMenu({ role: currentUser?.role, permissions: permissionsLoaded ? permissions : undefined, modules, module: item.module });
+        if (superAdmin) return true;
+        const menuKey = item.module === "cashier" ? "waiterOrders" : item.module;
+        if (modules && !modules.includes(menuKey)) return false;
+        if (currentUser?.menuAccess && !currentUser.menuAccess.includes(menuKey)) return false;
+        const requiredPermission: Record<string, string> = {
+          dashboard: "dashboard.view",
+          sales: "sales.view",
+          waiterOrders: "waiterOrders.view",
+          cashier: "waiterOrders.manage",
+          stock: "stock.view",
+          purchasing: "purchasing.view",
+          accounts: "accounts.view",
+          payroll: "payroll.view",
+          hr: "payroll.view",
+        };
+        const needed = requiredPermission[item.module];
+        if (needed && !permissions.includes(needed)) return false;
+        if (item.module === "bills" && !permissions.includes("waiterOrders.view") && !permissions.includes("sales.view")) return false;
+        if (item.module === "cashier") return tenant?.waiterOrdersEnabled === true;
+        return true;
       }),
     }))
     .filter((g) => g.items.length > 0);

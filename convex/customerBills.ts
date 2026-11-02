@@ -13,7 +13,7 @@ const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
 async function crossAccess(ctx: QueryCtx, user: UserLike) {
   // Not for a user limited to a few departments: this view is business-wide, so it would show departments he was not given.
   const allowed = !!user.tenantId && !isOwnDataOnly(user) && !allowedBranchIds(user) && (await roleHasPermission(ctx, user, "bills.all_departments"));
-  return { allowed, wide: allowed ? { ...user, branchId: undefined } : user };
+  return { allowed, wide: allowed ? { ...user, branchId: undefined, allDepartments: true as const } : user };
 }
 /** Same customer in another department = same code or same name (customers are kept per department). */
 const sameCustomer = (a: Pick<Doc<"clients">, "_id" | "name" | "code">, b: Pick<Doc<"clients">, "_id" | "name" | "code">) => String(a._id) === String(b._id) || norm(a.name) === norm(b.name) || (!!a.code && norm(a.code) === norm(b.code));

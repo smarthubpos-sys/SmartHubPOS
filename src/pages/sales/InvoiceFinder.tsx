@@ -15,7 +15,6 @@ import { CANCEL_REASONS, editedTotals } from "./invoice-finder-helpers.ts";
 
 const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const selectClass = "h-10 rounded-md border bg-background px-3";
-
 type EditLine = { productId: string; name: string; qty: string; price: string; discount: string };
 type Full = NonNullable<FunctionReturnType<typeof api.sales.invoiceFull>>;
 
@@ -24,7 +23,7 @@ function printInvoice(d: Full) {
   const cur = d.company.currencySymbol ? `${d.company.currencySymbol} ` : "";
   const m = (n: number) => `${cur}${fmt(n)}`;
   const inv = d.invoice;
-  const rows = d.lines.map((l) => `<tr><td style="padding:2px 0">${esc(l.productName)}${l.partNumber ? `<div style="font-size:10px;color:#444">${esc(tr("Part No"))}: ${esc(l.partNumber)}</div>` : ""}</td><td style="text-align:right">${esc(fmt(l.qty, 4))}</td><td style="text-align:right">${esc(fmt(l.unitPrice))}</td><td style="text-align:right">${esc(fmt(l.lineTotal))}</td></tr>`).join("");
+  const rows = d.lines.map((l) => `<tr><td style="padding:2px 0">${esc(l.productName)}</td><td style="text-align:right">${esc(fmt(l.qty, 4))}</td><td style="text-align:right">${esc(fmt(l.unitPrice))}</td><td style="text-align:right">${esc(fmt(l.lineTotal))}</td></tr>`).join("");
   const el = document.createElement("div");
   el.className = "print-area";
   el.innerHTML = `<section style="font-size:12px;padding:6px 0">
@@ -52,27 +51,20 @@ function printInvoice(d: Full) {
  * What each person sees is decided by the server (searchInvoices / invoiceFull return only the invoices of their own business and
  * department, together with canPrint / canEdit / canVoid); the buttons here only follow those answers, the server enforces them again.
  */
-export default function InvoiceFinder({ request }: { request?: { invoiceNo: string; nonce: number } | null }) {
-  // The report's "Edit / Delete" button passes one invoice number (the parent re-mounts this box with a new key for each request):
-  // it is searched at once and opened as soon as it is found. No effects are needed - everything is derived while rendering.
-  const initial = request?.invoiceNo ?? "";
-  const [text, setText] = useState(initial);
-  const [term, setTerm] = useState(initial);
+export default function InvoiceFinder() {
+  const [text, setText] = useState("");
+  const [term, setTerm] = useState("");
   const [openId, setOpenId] = useState<Id<"invoices"> | null>(null);
-  const [autoDone, setAutoDone] = useState(!initial); // true once the person searched / closed by hand: no more automatic opening
   const results = useQuery(api.sales.searchInvoices, term ? { invoiceNo: term } : "skip");
-  const autoHit = !autoDone && !openId && results ? (results.find((r) => r.invoiceNo === term) ?? (results.length === 1 ? results[0] : undefined)) : undefined;
-  const shownId = openId ?? autoHit?._id ?? null;
-  const close = () => { setOpenId(null); setAutoDone(true); };
 
   return (
     <section className="space-y-3 rounded-xl border p-4 print:hidden">
-      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setOpenId(null); setAutoDone(true); setTerm(text.trim()); }}>
+      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setOpenId(null); setTerm(text.trim()); }}>
         <label className="grid gap-1 text-sm">{tr("Tafuta invoice kwa namba")}
           <Input className="w-64" inputMode="text" placeholder="00001" value={text} onChange={(e) => setText(e.target.value)} aria-label={tr("Namba ya invoice")} />
         </label>
         <Button type="submit"><Search className="mr-1 h-4 w-4" />{tr("Tafuta")}</Button>
-        {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); close(); }}>{tr("Futa utafutaji")}</Button>}
+        {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); setOpenId(null); }}>{tr("Futa utafutaji")}</Button>}
       </form>
       {term && results === undefined && <p className="text-sm text-muted-foreground">{tr("Inatafuta…")}</p>}
       {term && results && results.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice yenye namba hiyo kwenye biashara/idara yako.")}</p>}
@@ -83,12 +75,12 @@ export default function InvoiceFinder({ request }: { request?: { invoiceNo: stri
             <tr key={r._id} className="border-b">
               <td className="p-2 font-medium">{r.invoiceNo}{r.revision > 0 ? ` (#${r.revision})` : ""}</td><td className="p-2">{r.invoiceDate}</td><td className="p-2">{r.clientName}</td><td className="p-2">{r.department || "—"}</td>
               <td className="p-2 tabular-nums">{fmt(r.total)}</td><td className="p-2 tabular-nums">{fmt(r.outstanding)}</td><td className="p-2">{r.status === "cancelled" ? tr("Imebatilishwa") : tr("Imepostiwa")}</td>
-              <td className="p-2"><Button size="sm" variant="outline" onClick={() => { setAutoDone(true); setOpenId(r._id); }}>{tr("Fungua")}</Button></td>
+              <td className="p-2"><Button size="sm" variant="outline" onClick={() => setOpenId(r._id)}>{tr("Fungua")}</Button></td>
             </tr>
           ))}</tbody>
         </table></div>
       )}
-      {shownId && <InvoicePanel key={shownId} invoiceId={shownId} onClose={close} />}
+      {openId && <InvoicePanel key={openId} invoiceId={openId} onClose={() => setOpenId(null)} />}
     </section>
   );
 }
@@ -128,8 +120,8 @@ function ViewTable({ d }: { d: Full }) {
   return (
     <div className="space-y-2">
       <div className="overflow-x-auto"><table className="w-full text-sm">
-        <thead><tr className="border-b text-left">{[tr("Code"), tr("Part No"), tr("Bidhaa"), tr("Qty"), tr("Bei"), tr("Discount"), tr("Jumla")].map((h) => <th key={h} className="p-2">{h}</th>)}</tr></thead>
-        <tbody>{d.lines.map((l) => <tr key={l._id} className="border-b"><td className="p-2">{l.itemCode}</td><td className="p-2">{l.partNumber || "—"}</td><td className="p-2">{l.productName}</td><td className="p-2 tabular-nums">{fmt(l.qty, 4)}</td><td className="p-2 tabular-nums">{fmt(l.unitPrice)}</td><td className="p-2 tabular-nums">{fmt(l.discount)}</td><td className="p-2 tabular-nums">{fmt(l.lineTotal)}</td></tr>)}</tbody>
+        <thead><tr className="border-b text-left">{[tr("Code"), tr("Bidhaa"), tr("Qty"), tr("Bei"), tr("Discount"), tr("Jumla")].map((h) => <th key={h} className="p-2">{h}</th>)}</tr></thead>
+        <tbody>{d.lines.map((l) => <tr key={l._id} className="border-b"><td className="p-2">{l.itemCode}</td><td className="p-2">{l.productName}</td><td className="p-2 tabular-nums">{fmt(l.qty, 4)}</td><td className="p-2 tabular-nums">{fmt(l.unitPrice)}</td><td className="p-2 tabular-nums">{fmt(l.discount)}</td><td className="p-2 tabular-nums">{fmt(l.lineTotal)}</td></tr>)}</tbody>
       </table></div>
       <div className="grid gap-1 text-sm sm:max-w-xs">
         {[[tr("Subtotal"), inv.subtotal], [tr("Discount"), inv.discount], [tr("Tax"), inv.taxAmount], [tr("Jumla"), inv.total], [tr("Imelipwa"), inv.amountPaid], [tr("Deni"), inv.outstanding]].map(([k, v]) => <div key={String(k)} className="flex justify-between"><span>{k}</span><span className="tabular-nums">{fmt(Number(v))}</span></div>)}
@@ -266,4 +258,3 @@ function CancelForm({ d, onDone, onBack, onEdit, lockedMsg }: { d: Full; onDone:
     </div>
   );
 }
-

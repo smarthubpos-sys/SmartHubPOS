@@ -1,5 +1,6 @@
 /** Permission catalog shared by backend and Role Management screen (no imports on purpose). */
 export const PERMISSION_GROUPS: { group: string; items: { key: string; label: string }[] }[] = [
+  { group: "Dashboard", items: [{ key: "dashboard.view", label: "View business dashboard and summary" }] },
   { group: "Sales", items: [{ key: "sales.view", label: "View sales and invoices" }, { key: "sales.manage", label: "Create invoices and receive customer payments" }, { key: "sales.edit", label: "Edit saved sales and invoices" }, { key: "sales.print", label: "Print receipts and invoices" }, { key: "sales.export", label: "Export sales data" }, { key: "sales.reports.view", label: "View sales reports" }, { key: "sales.void", label: "Delete / cancel orders (sales invoices): stock returns and money is refunded" }] },
   { group: "Selling Point", items: [{ key: "waiterOrders.view", label: "View Selling Point orders and cashier queue" }, { key: "waiterOrders.manage", label: "Create, send, print and receive Selling Point orders" }] },
   { group: "Bills", items: [{ key: "bills.all_departments", label: "Combine customer bills across departments (e.g. Kitchen + Bar + Lounge)" }] },
@@ -76,9 +77,8 @@ export function togglePermission(current: string[], key: string): string[] {
   return [...new Set([...current, key, ...linked])];
 }
 
-/** Permissions that can also be given to ONE user directly (on top of his role) from the Users form. */
+/** Legacy direct-user grants retained for existing accounts; new permission assignment is managed only through Role Management. */
 export const USER_GRANTABLE_PERMISSIONS: { key: string; label: string }[] = [
-  { key: "sales.view", label: "Anaweza kuona mauzo na invoice za biashara yake" },
   { key: "maintenance.users", label: "Anaweza kuongeza, ku-edit na kusimamia watumiaji (User Settings) - ndani ya biashara yake na ruhusa alizonazo yeye mwenyewe" },
   { key: "sales.edit", label: "Anaweza ku-edit invoice za Sales zilizohifadhiwa" },
   { key: "sales.print", label: "Anaweza ku-print invoice na risiti za Sales" },
@@ -88,12 +88,12 @@ export const USER_GRANTABLE_PERMISSIONS: { key: string; label: string }[] = [
   { key: "accounts.reports.delete", label: "Anaweza kufuta ripoti za kipindi (Period Reports)" },
   { key: "leave.request", label: "Anaweza kuomba ruhusa / likizo na kuona ratiba yake" },
   { key: "leave.review", label: "HR: anapokea, anaona na kuamua maombi ya ruhusa yaliyotumwa kwa HR" },
-  { key: "stock.adjust", label: "Anaweza kubadili / kufuta stock (adjustment, kuhariri bidhaa) — Super Admin pekee ndiye anayetoa" },
+  { key: "stock.adjust", label: "Anaweza kubadili / kufuta stock (adjustment, kuhariri bidhaa) â€” Super Admin pekee ndiye anayetoa" },
 ];
 
 /**
  * Permissions nobody gets by default: not Administrator, not Manager, not an "owner" wildcard. They exist only when the Super Admin
- * ticks them for a role (Role Management) or for one user (Users form) - that can be a cashier too. Only a Super Admin may give or take them away.
+ * ticks them for a role (Role Management). Only a Super Admin may give or take them away.
  */
 export const SUPER_ADMIN_ONLY_PERMISSIONS = ["stock.adjust"];
 
@@ -104,11 +104,11 @@ export const ALL_PERMISSION_KEYS = PERMISSION_GROUPS.flatMap((g) => g.items.map(
  * sales.view / sales.print are listed because the built-in Cashier used to be just ["sales.manage"]: a Cashier row saved in that era
  * (no knownKeys) would otherwise stay without them and every Sales screen would be refused. Rows saved later keep their own choice.
  */
-export const LATE_PERMISSIONS = ["sales.view", "sales.print", "sales.void", "waiterOrders.view", "waiterOrders.manage", "purchasing.edit", "purchasing.delete", "stock.adjust", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer"];
+export const LATE_PERMISSIONS = ["dashboard.view", "sales.view", "sales.print", "sales.void", "waiterOrders.view", "waiterOrders.manage", "purchasing.edit", "purchasing.delete", "stock.adjust", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer"];
 
 export const SYSTEM_ROLES: { name: string; displayName: string; permissions: string[] }[] = [
   { name: "admin", displayName: "Administrator", permissions: ALL_PERMISSION_KEYS.filter((k) => k !== "maintenance.roles" && !SUPER_ADMIN_ONLY_PERMISSIONS.includes(k)) },
-  { name: "manager", displayName: "Manager", permissions: ["system.manager", "sales.view", "sales.manage", "sales.edit", "sales.print", "sales.export", "sales.reports.view", "sales.void", "stock.view", "stock.manage", "stock.reports.view", "stock.print", "stock.export", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer", "suppliers.view", "suppliers.manage", "purchasing.view", "purchasing.manage", "purchasing.reports.view", "purchasing.print", "purchasing.export", "purchasing.edit", "purchasing.delete", "payroll.view", "payroll.manage", "payroll.approve", "payroll.reports.view", "payroll.print", "payroll.export", "leave.request", "leave.review", "accounts.view", "accounts.manage", "accounts.approve", "accounts.reports.view", "accounts.print", "accounts.export", "bills.all_departments", "waiterOrders.view", "waiterOrders.manage", "maintenance.company", "maintenance.periods", "maintenance.audit.view"] },
+  { name: "manager", displayName: "Manager", permissions: ["system.manager", "dashboard.view", "sales.view", "sales.manage", "sales.edit", "sales.print", "sales.export", "sales.reports.view", "sales.void", "stock.view", "stock.manage", "stock.reports.view", "stock.print", "stock.export", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer", "suppliers.view", "suppliers.manage", "purchasing.view", "purchasing.manage", "purchasing.reports.view", "purchasing.print", "purchasing.export", "purchasing.edit", "purchasing.delete", "payroll.view", "payroll.manage", "payroll.approve", "payroll.reports.view", "payroll.print", "payroll.export", "leave.request", "leave.review", "accounts.view", "accounts.manage", "accounts.approve", "accounts.reports.view", "accounts.print", "accounts.export", "bills.all_departments", "waiterOrders.view", "waiterOrders.manage", "maintenance.company", "maintenance.periods", "maintenance.audit.view"] },
   // Accountant: every FINANCIAL view (accounts, profit/loss, sales / purchase / stock reports incl. cost and margins, payroll cost reports).
   // Read, print and export only: no selling, no stock or purchase entry, no void/edit/delete, no user or role management.
   { name: "accountant", displayName: "Accountant", permissions: ["accounts.view", "accounts.reports.view", "accounts.print", "accounts.export", "sales.view", "sales.print", "sales.export", "sales.reports.view", "purchasing.view", "purchasing.print", "purchasing.export", "purchasing.reports.view", "suppliers.view", "stock.view", "stock.print", "stock.export", "stock.reports.view", "payroll.view", "payroll.reports.view", "payroll.print", "payroll.export", "leave.request", "maintenance.periods", "maintenance.audit.view"] },
@@ -172,26 +172,6 @@ export function permissionsWithNewDefaults(
   return add.length ? [...stored, ...add] : stored;
 }
 
-/**
- * A permission given on purpose must never meet a "no" because of a hard-coded manager check. These modules' manager-only
- * screens also accept the module's own management permission (e.g. a Store keeper given "payroll.manage" can run payroll).
- */
-export const MODULE_MANAGE_PERMISSION: Record<string, string> = {
-  payroll: "payroll.manage", hr: "payroll.manage", accounts: "accounts.manage",
-  // Same rule for every module whose "manage" permission is NOT part of the everyday staff roles (Cashier / Waiter hold sales.manage, so Sales is deliberately absent):
-  // whoever the Super Admin gave stock.manage / purchasing.manage to - any user, any role - is no longer refused by a manager-only check.
-  stock: "stock.manage", purchasing: "purchasing.manage",
-};
-
-/** Sidebar modules a permission needs to be usable (a user whose menu hides the module is refused by the server). */
-const PERMISSION_MODULES: Record<string, string[]> = {
-  sales: ["sales"], waiterOrders: ["waiterOrders"], bills: ["bills"], stock: ["stock"], suppliers: ["purchasing"], purchasing: ["purchasing"],
-  payroll: ["payroll", "hr"], leave: ["leave"], accounts: ["accounts"], maintenance: ["maintenance"], system: ["maintenance"],
-};
-export function modulesForPermissions(keys: string[]): string[] {
-  return [...new Set(keys.flatMap((k) => PERMISSION_MODULES[k.split(".")[0]] ?? []))];
-}
-
 /** Keys accepted by maintenance.saveSetting and the permission each one needs. */
 export const SETTING_KEYS: Record<string, string> = {
   system: "maintenance.system",
@@ -248,3 +228,12 @@ export function effectiveModules(tenantModules: string[] | undefined, menuAccess
   const mine = menuAccess ? new Set(cleanModules(menuAccess)) : null;
   return base.filter((k) => !mine || mine.has(k));
 }
+
+
+/** Permissions that allow custom roles to open manager-only module screens. Everyday Sales access is intentionally excluded. */
+export const MODULE_MANAGE_PERMISSION: Record<string, string> = {
+  stock: "stock.manage",
+  purchasing: "purchasing.manage",
+  payroll: "payroll.manage",
+  accounts: "accounts.manage",
+};

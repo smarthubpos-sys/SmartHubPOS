@@ -7,16 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Card, Loading, PageShell, SelectField, TextField } from "./_shared";
 import { useAuth } from "@/hooks/use-auth";
 import ModulePicker from "@/components/module-picker.tsx";
-import { ALL_MODULE_KEYS, PERMISSION_GROUPS, SUPER_ADMIN_ONLY_PERMISSIONS, USER_GRANTABLE_PERMISSIONS } from "@/convex/permissions";
-import { useStockRights } from "@/hooks/use-stock-rights.ts";
+import { ALL_MODULE_KEYS } from "@/convex/permissions";
 import { errorText, tr } from "@/lib/i18n.ts";
 
-type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; extra: string[]; pin: string; pinLoginEnabled: boolean; hasPin: boolean; staffCode: string };
-const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, extra: [], pin: "", pinLoginEnabled: false, hasPin: false, staffCode: "" };
+type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; pin: string; pinLoginEnabled: boolean; hasPin: boolean; staffCode: string };
+const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, pin: "", pinLoginEnabled: false, hasPin: false, staffCode: "" };
 
 export default function UsersPage() {
   const { user: me } = useAuth();
-  const { isSuperAdmin: meSuperAdmin } = useStockRights();
   const users = useQuery(api.maintenance.listUsers, {});
   // Needs only user-management permission (listRoles also needs Role Management, so a staff member given only "add users" could not open this page).
   const roles = useQuery(api.maintenance.listAssignableRoles, {});
@@ -42,10 +40,7 @@ export default function UsersPage() {
   // A user tied to ONE department can only create/manage users of that same department.
   // A user tied to one department, or given a few, can only give those same departments to others. null = no limit.
   const myLimit: string[] | null = isSuper ? null : me?.branchIds && me.branchIds.length > 1 ? me.branchIds.map(String) : me?.branchId && !me?.branchPicked ? [String(me.branchId)] : null;
-  // Every role EXCEPT the owner/manager ones must belong to a department when the business has departments (same rule as the server):
-  // before, only cashier/accountant/viewer were checked here, so a custom role such as "storekeeper" could be saved with no department.
-  const floatingRoles = ["super_admin", "superadmin", "admin", "administrator", "manager", "owner", "business_owner"];
-  const departmentRoles = { includes: (role: string) => !floatingRoles.includes(String(role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_")) };
+  const departmentRoles = ["cashier", "accountant", "viewer"];
   const pinOnlyRole = !!f && ["waiter", "waitress"].includes(f.role.trim().toLowerCase()); // waiters / waitresses are registered with a PIN, not a password // these must always belong to one department when the business has departments
   const needsBranch = !!f && !editingSelf && f.role !== "super_admin" && branches.length > 0 && departmentRoles.includes(f.role) && !f.allDepartments && f.branchIds.length === 0;
   const branchChoices = myLimit ? branches.filter((b) => myLimit.includes(b._id)) : branches;
@@ -112,15 +107,7 @@ export default function UsersPage() {
                 <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.menuAll} onChange={(e) => setF((p) => (p ? { ...p, menuAll: e.target.checked } : p))} />{tr("Zote ambazo biashara ina")}</label>
                 {!f.menuAll && <ModulePicker value={f.menu} onChange={(menu) => setF((p) => (p ? { ...p, menu } : p))} available={tenantModules} />}
                 <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.ownDataOnly} onChange={(e) => setF((p) => (p ? { ...p, ownDataOnly: e.target.checked } : p))} />{tr("Aone mauzo na bili zake tu (dashboard yake binafsi)")}</label>
-                <div className="space-y-1 border-t pt-2">
-                  <p className="text-sm font-medium">{tr("Ruhusa maalum kwa mtumiaji huyu (juu ya role yake)")}</p>
-                  <div className={meSuperAdmin ? "max-h-72 space-y-1 overflow-y-auto rounded-lg border p-2" : "space-y-1"}>
-                  {(meSuperAdmin ? PERMISSION_GROUPS.flatMap((grp) => grp.items) : USER_GRANTABLE_PERMISSIONS).map((g) => (
-                    <label key={g.key} className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" disabled={!meSuperAdmin && SUPER_ADMIN_ONLY_PERMISSIONS.includes(g.key)} checked={f.extra.includes(g.key)} onChange={(e) => setF((p) => (p ? { ...p, extra: e.target.checked ? [...p.extra, g.key] : p.extra.filter((x) => x !== g.key) } : p))} />{tr(g.label)}</label>
-                  ))}
-                  </div>
-                  <p className="text-xs text-muted-foreground">{tr("Ruhusa hii pia inaweza kutolewa kwa role nzima kupitia Role Management (Sales → Delete / cancel orders).")}</p>
-                </div>
+                <p className="border-t pt-2 text-xs text-muted-foreground">{tr("Ruhusa zote za kazi (View, Add, Edit, Delete, Manage) zinadhibitiwa kupitia Role Management. Hapa unachagua sidebar pekee.")}</p>
                 <p className="text-xs text-muted-foreground">{tr("Mfano mhudumu: ruhusu Sales na Bills tu, na weka 'aone mauzo na bili zake tu'. Huduma ambazo biashara haijalipia hazionekani hapa.")}</p>
               </div>
             )}
@@ -137,7 +124,7 @@ export default function UsersPage() {
               // Department access: ticked departments (1 = tied to it, 2+ = switches between them) or all departments.
               const dept = editingSelf || branches.length === 0 ? {} : { branchIds: (f.allDepartments ? [] : f.branchIds) as Id<"branches">[], allDepartments: f.allDepartments };
               // New users: send ownDataOnly only when ticked, so a normal user can always be created even if the backend is a version behind.
-              const access = f.role === "super_admin" ? {} : editing ? { ownDataOnly: f.ownDataOnly, extraPermissions: f.extra } : { ...(f.ownDataOnly ? { ownDataOnly: true } : {}), ...(f.extra.length ? { extraPermissions: f.extra } : {}) };
+              const access = f.role === "super_admin" ? {} : editing ? { ownDataOnly: f.ownDataOnly } : { ...(f.ownDataOnly ? { ownDataOnly: true } : {}) };
               const menu = f.menuAll ? {} : { menuAccess: f.menu };
               if (editing) {
                 const original = (users ?? []).find((u) => u._id === f.id)?.username;
@@ -190,7 +177,7 @@ export default function UsersPage() {
                   <td className="p-3">{u.isActive ? tr("Active") : tr("Disabled")}</td>
                   <td className="p-3">
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, extra: u.extraPermissions, pin: "", pinLoginEnabled: u.pinLoginEnabled, hasPin: u.hasPin, staffCode: u.staffCode ?? "" })}>{tr("Modify")}</Button>
+                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, pin: "", pinLoginEnabled: u.pinLoginEnabled, hasPin: u.hasPin, staffCode: u.staffCode ?? "" })}>{tr("Modify")}</Button>
                       <Button size="sm" variant="outline" onClick={() => { const p = prompt(tr("Password mpya ya {0}:", [u.username])); if (p) void run(() => reset({ userId: u._id, newPassword: p }), tr("Password imebadilishwa; ataingia upya.")); }}>{tr("Reset password")}</Button>
                       {String(me?._id) !== String(u._id) && (
                         <Button size="sm" variant="outline" onClick={() => void run(() => update({ userId: u._id, isActive: !u.isActive }), u.isActive ? tr("Amezimwa.") : tr("Amewashwa."))}>{u.isActive ? tr("Disable") : tr("Enable")}</Button>

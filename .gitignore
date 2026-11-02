@@ -38,11 +38,3 @@ tsconfig.tsbuildinfo
 fix-backup/
 .vercel
 .env*
-
-# backups
-*.bak
-*.backup
-*.backup-*
-*.before-*
-backup-*/
-*-backup-*/

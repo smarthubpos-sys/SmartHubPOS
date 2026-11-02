@@ -1,14 +1,11 @@
 import { ConvexError } from "convex/values";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
-import { ALL_PERMISSION_KEYS, MODULE_MANAGE_PERMISSION, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, effectiveModules, permissionsWithNewDefaults } from "./permissions";
+import { ALL_PERMISSION_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, effectiveModules, permissionsWithNewDefaults } from "./permissions";
 import { planStatus, tzToday } from "./plans";
 
 /** The parts of a user the access helpers read. A real user (Doc<"users">) fits; tests may pass a lighter object. */
-export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "extraPermissions" | "ownDataOnly" | "branchPicked" | "branchIds" | "allDepartments">> & {
-  /** Set by requireActiveUser: the business has departments but this user has not chosen one yet (see isDepartmentLocked). */
-  departmentsActive?: boolean;
-};
+export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "extraPermissions" | "ownDataOnly" | "branchPicked" | "branchIds" | "allDepartments">> & { departmentsActive?: boolean };
 /**
  * Departments a user is limited to when he was given SEVERAL (e.g. Bar + Kitchen): he works in one at a time and may switch
  * only between these. null = no such list (one department, or all departments).
@@ -70,14 +67,18 @@ export async function requireActiveUser(ctx: QueryCtx, module?: string, opts: { 
       if (allowed && !allowed.includes(module)) throw new ConvexError("Forbidden: module not available for your account");
     }
   }
-  // Department boundary for STAFF who were never given a department: in a business WITH departments such a user (not a manager/owner, not a Super Admin,
-  // not explicitly given "all departments") is "locked": scoped reads return only business-level rows, never the rows of any department or a mix of them.
-  // Owners/managers/Super Admin and "all departments" users keep the consolidated view on purpose (it is a designed, tested feature).
-  if (user.tenantId && !user.branchId && !user.allDepartments && !isSuperAdmin(user) && !(await isManagerRole(ctx, user))) {
-    const departmentsActive = (await activeDepartments(ctx, user.tenantId)).length > 0;
-    if (departmentsActive) return { ...user, departmentsActive } as Doc<"users"> & { departmentsActive?: boolean };
-  }
-  return user;
+
+  // `departmentsActive` is derived from the real branch records, not stored on users/tenants.
+  // It LOCKS only staff (cashier, viewer, custom non-manager roles) who have no department chosen: they see business-level rows only.
+  // Owners/managers/admins and a Super Admin inside a business stay unlocked: with no department chosen they see the combined figures of all departments.
+  const tenantId = user.tenantId;
+  const businessHasDepartments = tenantId
+    ? (await ctx.db.query("branches").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).collect())
+        .some((branch) => branch.isActive)
+    : false;
+  const departmentsActive = businessHasDepartments && !isSuperAdmin(user) && !(await isManagerRole(ctx, user));
+
+  return { ...user, departmentsActive };
 }
 
 /**
@@ -104,15 +105,12 @@ export async function isManagerRole(ctx: QueryCtx, user: MaybeUser) {
   return await roleHasPermission(ctx, user, "system.manager");
 }
 
-export async function requireManager(ctx: QueryCtx, module?: string, opts: { permission?: string } = {}) {
+export async function requireManager(ctx: QueryCtx, module?: string) {
   const user = await requireActiveUser(ctx, module);
   const role = normalizeRole(user.role);
   if (!["super_admin", "superadmin", "admin", "administrator", "manager", "owner", "business_owner"].includes(role)) {
     // Custom roles created in Maintenance > Role Management may carry the "system.manager" permission.
     if (await roleHasPermission(ctx, user, "system.manager")) return user;
-    // The permission the Super Admin gave for this kind of work also opens it (payroll.manage -> payroll screens, accounts.manage -> accounts).
-    const own = opts.permission ?? (module ? MODULE_MANAGE_PERMISSION[module] : undefined);
-    if (own && (await roleHasPermission(ctx, user, own))) return user;
     throw new ConvexError("Forbidden: manager permission required");
   }
   return user;
@@ -156,15 +154,13 @@ export async function permissionsOfRole(ctx: QueryCtx, tenantId: Id<"tenants"> |
 /** What one user can really do: his role's permissions plus the ones given to him directly (grantable list only). */
 export async function effectivePermissionsOf(ctx: QueryCtx, user: MaybeUser): Promise<string[]> {
   if (isSuperAdmin(user)) return [...ALL_PERMISSION_KEYS];
-  // What a Super Admin gave directly is honoured for every catalogue permission (who may STORE which key is decided when it is saved).
-  const known = new Set<string>(ALL_PERMISSION_KEYS);
-  const extra = (user?.extraPermissions ?? []).filter((k) => known.has(k));
+  const extra = (user?.extraPermissions ?? []).filter((k) => ALL_PERMISSION_KEYS.includes(k));
   return [...new Set([...(await permissionsOfRole(ctx, user?.tenantId, String(user?.role ?? ""))), ...extra])];
 }
 
 export async function roleHasPermission(ctx: QueryCtx, user: MaybeUser, permission: string) {
   if (isSuperAdmin(user)) return true;
-  // A permission given to this one user directly (Users form).
+  // A permission given to this one user directly (Users form), limited to the grantable list.
   if (user?.extraPermissions?.includes(permission) && ALL_PERMISSION_KEYS.includes(permission)) return true;
   const name = normalizeRole(user?.role);
   const row = await findRoleRow(ctx, user?.tenantId, name);
@@ -240,19 +236,14 @@ export async function logAudit(ctx: MutationCtx, user: MaybeUser, entry: { actio
   });
 }
 
-/**
- * True when the business has departments but this user is not inside one. Such a user must not see the rows of ANY department
- * (not one, not all mixed together): he has to choose a department first, exactly as writing already demands.
- */
-export function isDepartmentLocked(user: MaybeUser) {
-  return !!user && user.departmentsActive === true && !user.branchId && !!user.tenantId;
+/** A staff account in a department-enabled business must choose an allowed department before seeing department rows. */
+export function isDepartmentLocked(user: UserLike) {
+  return user?.departmentsActive === true && !!user.tenantId && !user.branchId && user.allDepartments !== true;
 }
-
-/** Does a record of department `recordBranchId` belong to what this user may see? One department = only that one; locked = only business-level rows. */
-export function sameDepartment(user: UserLike, recordBranchId: Id<"branches"> | undefined) {
-  if (user.branchId) return recordBranchId === user.branchId;
-  if (isDepartmentLocked(user)) return recordBranchId === undefined;
-  return true;
+export function sameDepartment(user: UserLike, branchId?: Id<"branches">) {
+  if (!branchId) return false;
+  const allowed = allowedBranchIds(user);
+  return user.branchId === branchId || !!allowed?.includes(branchId);
 }
 
 export function canAccessRecord(user: UserLike, record: ScopedRecord | null | undefined) {
@@ -260,13 +251,17 @@ export function canAccessRecord(user: UserLike, record: ScopedRecord | null | un
   // Super Admin with a selected business only sees that business; with none selected (business picker) sees all.
   if (isSuperAdmin(user) && !user.tenantId) return true;
   if (!user.tenantId || record.tenantId !== user.tenantId) return false;
-  return sameDepartment(user, record.branchId);
+  if (user.departmentsActive === true && !user.branchId && user.allDepartments !== true) return !record.branchId;
+  if (user.branchId && record.branchId !== user.branchId) return false;
+  return true;
 }
 
 export function filterScoped<T extends ScopedRecord>(user: UserLike, records: T[]): T[] {
   if (isSuperAdmin(user) && !user.tenantId) return records;
   if (!user.tenantId) return [];
-  return records.filter((record) => record.tenantId === user.tenantId && sameDepartment(user, record.branchId));
+  return records.filter((record) => record.tenantId === user.tenantId &&
+    (user.branchId ? record.branchId === user.branchId :
+      user.departmentsActive === true && user.allDepartments !== true ? !record.branchId : true));
 }
 
 /**
@@ -314,10 +309,14 @@ export function requireBusinessScope(user: UserLike) {
 export async function scopedRows<T extends TableNames>(ctx: QueryCtx, user: UserLike, table: T): Promise<Doc<T>[]> {
   if (isSuperAdmin(user) && !user.tenantId) return (await ctx.db.query(table).collect()) as unknown as Doc<T>[];
   if (!user.tenantId) return [];
-  // One department chosen = only its rows. Business has departments but none chosen = only business-level rows (branchId undefined), never a mix of departments.
-  // Audit logs have no department, so they are never narrowed.
-  const byBranch = (!!user.branchId || isDepartmentLocked(user)) && table !== "auditLogs";
-  return (await byScope(ctx, table).withIndex("by_scope", (q) => (byBranch ? q.eq("tenantId", user.tenantId).eq("branchId", user.branchId) : q.eq("tenantId", user.tenantId))).collect()) as unknown as Doc<T>[];
+  const byBranch = !!user.branchId && table !== "auditLogs";
+  const rows = (await byScope(ctx, table).withIndex("by_scope", (q) => (byBranch ? q.eq("tenantId", user.tenantId).eq("branchId", user.branchId) : q.eq("tenantId", user.tenantId))).collect()) as unknown as Doc<T>[];
+  // Same rule as filterScoped()/canAccessRecord(): a department-locked user (no department chosen, not "all departments")
+  // sees only business-wide rows, never the rows of any department.
+  if (!user.branchId && table !== "auditLogs" && user.departmentsActive === true && user.allDepartments !== true) {
+    return rows.filter((r) => !(r as unknown as ScopedRecord).branchId);
+  }
+  return rows;
 }
 
 /** Departments (locations such as Bar / Lounge / Kitchen) of a business. A business may have none. */
@@ -334,9 +333,5 @@ export async function activeDepartments(ctx: QueryCtx, tenantId: Id<"tenants"> |
 export async function getCompanySettings(ctx: QueryCtx, user: UserLike) {
   if (!user.tenantId) return null;
   const rows = await ctx.db.query("companySettings").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect();
-  // Own department's row, else the business-wide one. Never another department's row (its name/address would print on this department's documents);
-  // the "any row" fallback is kept only for a business that has no departments.
-  const own = rows.find((r) => user.branchId && r.branchId === user.branchId) ?? rows.find((r) => !r.branchId);
-  if (own) return own;
-  return user.branchId || isDepartmentLocked(user) ? null : (rows[0] ?? null);
+  return rows.find((r) => user.branchId && r.branchId === user.branchId) ?? rows.find((r) => !r.branchId) ?? rows[0] ?? null;
 }

@@ -32,38 +32,6 @@ export function showSellingPointInMenu({ role, permissions, modules, waiterOrder
 
 export type RouteAccess = "allowed" | "blocked" | "loading";
 
-/**
- * Permissions that open each sidebar module (ANY ONE of them is enough). The server refuses a screen without them, so the
- * sidebar must not show it either: a module is listed only for people who were really given something inside it.
- * "dashboard", "notifications", "help" and "leave" are not here: they have no permission of their own (leave has its own rule).
- */
-export const MODULE_PERMISSIONS: Record<string, readonly string[]> = {
-  sales: ["sales.view"],
-  stock: ["stock.view", "stock.manage", "stock.reports.view", "stock.print", "stock.export", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer", "stock.adjust"],
-  purchasing: ["purchasing.view", "purchasing.manage", "purchasing.reports.view", "purchasing.print", "purchasing.export", "purchasing.edit", "purchasing.delete", "suppliers.view", "suppliers.manage"],
-  accounts: ["accounts.view", "accounts.manage", "accounts.approve", "accounts.reports.view", "accounts.print", "accounts.export"],
-  bills: ["sales.view", "sales.manage", "bills.all_departments"],
-  payroll: ["payroll.view", "payroll.manage", "payroll.approve", "payroll.reports.view", "payroll.print", "payroll.export"],
-  hr: ["payroll.view", "payroll.manage"],
-  maintenance: ["system.manager", "maintenance.system", "maintenance.company", "maintenance.hardware", "maintenance.tax", "maintenance.numbering", "maintenance.periods", "maintenance.language", "maintenance.users", "maintenance.security", "maintenance.roles", "maintenance.audit.view"],
-};
-
-/** Sidebar: does an ordinary module show for this user? (Selling Point, Cashier and Leave have their own rules.) */
-export function showModuleInMenu({ role, permissions, modules, module }: { role: unknown; permissions: readonly string[] | undefined; modules: readonly string[] | null | undefined; module: string }): boolean {
-  if (isSuperAdminRole(role)) return true;
-  if (modules && !modules.includes(module)) return false;
-  const needs = MODULE_PERMISSIONS[module];
-  if (!needs) return true; // dashboard, notifications, help: everyone who has the module
-  return !!permissions && needs.some((k) => permissions.includes(k));
-}
-
-/** Permission(s) a Sales screen needs (any one): the same keys the server enforces on that screen. */
-export function salesScreenPermissions(pathname: string): readonly string[] {
-  if (pathname.startsWith("/sales/reports/")) return ["sales.reports.view"];
-  if (pathname === "/sales/invoicing" || pathname.startsWith("/sales/invoicing/") || pathname === "/sales/clients" || pathname === "/sales/clients/") return ["sales.manage"];
-  return ["sales.view"];
-}
-
 type RouteInput = {
   pathname: string;
   role: unknown;
@@ -84,11 +52,8 @@ export function routeAccess({ pathname, role, permissions, modules, moduleKey }:
   if (moduleKey && modules && !modules.includes(moduleKey)) return "blocked";
   const cashierDesk = pathname === "/cashier" || pathname.startsWith("/cashier/");
   if (cashierDesk && isSuperAdminRole(role)) return "blocked"; // orders and waiter money belong to the cashier, not the Super Admin
-  const inSales = pathname === "/sales" || pathname.startsWith("/sales/");
-  const first = pathname.split("/")[1] ?? "";
-  const moduleNeeds = !cashierDesk && !sellingPoint && !inSales ? MODULE_PERMISSIONS[first] : undefined;
-  const needed: readonly string[] | null = cashierDesk ? ["waiterOrders.manage"] : sellingPoint ? ["waiterOrders.view"] : inSales ? salesScreenPermissions(pathname) : moduleNeeds ?? null;
+  const needed = cashierDesk ? "waiterOrders.manage" : sellingPoint ? "waiterOrders.view" : pathname === "/sales" || pathname.startsWith("/sales/") ? "sales.view" : pathname === "/dashboard" || pathname.startsWith("/dashboard/") ? "dashboard.view" : null;
   if (!needed) return "allowed";
   if (!permissions) return "loading";
-  return needed.some((k) => permissions.includes(k)) ? "allowed" : "blocked";
+  return permissions.includes(needed) ? "allowed" : "blocked";
 }

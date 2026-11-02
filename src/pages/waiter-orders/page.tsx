@@ -154,9 +154,9 @@ export default function WaiterOrdersPage() {
           {queueHealth && queueHealth.allowed && queueHealth.mode !== "print" && queueHealth.otherDepartments === 0 && queueHealth.pendingAll === 0 && <p>{tr("Hakuna oda zilizotumwa na wahudumu kwa sasa. Zikitumwa zitatokea hapa zenyewe.")}</p>}
         </div>}
       </section>}
-      {/* Waiter orders are handed off to the cashier queue; do not duplicate them below the selling screen. */}
+      {/* Waiter bills remain available from the dedicated Bills screen; keep a direct route for waiter and cashier roles. */}
+      {(isWaiterRole || cashier) && <Link to="/bills" className="inline-flex rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted">{tr("Fungua Bills →")}</Link>}
       {/* Each optional panel has its own boundary: one panel failing (e.g. a Convex function not deployed yet) must not blank the whole page. */}
-      {/* Waiter bills live under the sidebar "Bills" menu (not duplicated here). */}
       {cashier && business?.canViewSales && role !== "super_admin" && role !== "superadmin" && <>
         <ErrorBoundary inline><StaffSettlement /></ErrorBoundary>
         <ErrorBoundary inline><WaiterDirectory /></ErrorBoundary>

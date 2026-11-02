@@ -20,7 +20,7 @@ const LEGACY_METHOD_ACCOUNT: Record<string, [string, string]> = {
 };
 
 /** An account that holds money: Cash / Bank / Mobile money or the account of one payment method. */
-export const isMoneyAccount = (a: Doc<"accounts"> | null | undefined) => !!a && a.type === "asset" && (["1000", "1010", "1020"].includes(a.code) || a.subtype === "payment_method");
+export const isMoneyAccount = (a: Doc<"accounts"> | null | undefined): a is Doc<"accounts"> => !!a && a.type === "asset" && (["1000", "1010", "1020"].includes(a.code) || a.subtype === "payment_method");
 
 /**
  * The ledger account a payment must be posted to.

@@ -10,7 +10,7 @@ import {
   activeDepartments, findRoleRow, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
   requireSuperAdminUser, resolveWriteScope, roleHasPermission, scopedRows, effectivePermissionsOf, permissionsOfRole } from "./access";
 import type { UserLike } from "./access";
-import { ALL_PERMISSION_KEYS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, modulesForPermissions, permissionsWithNewDefaults } from "./permissions";
+import { ALL_PERMISSION_KEYS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
 
 const LOGIN_DOMAIN = "login.smarthub.invalid";
 /**
@@ -320,21 +320,8 @@ export const saveRole = mutation({
     const existing = await ctx.db.query("roles").withIndex("by_tenant_name", (q) => q.eq("tenantId", tenantId).eq("name", name)).first();
     const isSystem = SYSTEM_ROLES.some((r) => r.name === name);
     assertSuperAdminKeysUnchanged(user, existing?.permissions ?? SYSTEM_ROLES.find((r) => r.name === name)?.permissions, permissions);
-    const before = existing?.permissions ?? SYSTEM_ROLES.find((r) => r.name === name)?.permissions ?? [];
     if (existing) await ctx.db.patch("roles", existing._id, { displayName: a.displayName.trim(), permissions, knownKeys: ALL_PERMISSION_KEYS });
     else await ctx.db.insert("roles", { name, displayName: a.displayName.trim(), permissions, isSystem, knownKeys: ALL_PERMISSION_KEYS, tenantId });
-    // A permission is useless when the user's menu hides its module. A per-user grant already opens the module; a grant to a whole role must do the same
-    // for every user of that role, not only for one person. Only by a Super Admin (a user administrator never widens menus).
-    const added = permissions.filter((k) => !before.includes(k));
-    if (isSuperAdmin(user) && added.length) {
-      const modulesToOpen = modulesForPermissions(added);
-      const staff = await ctx.db.query("users").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect();
-      for (const u of staff) {
-        if (u.tokenIdentifier !== undefined || normalizeRole(u.role) !== name || !u.menuAccess) continue;
-        const menu = await allowedMenu(ctx, tenantId, [...u.menuAccess, ...modulesToOpen]);
-        if (menu.length !== u.menuAccess.length) await ctx.db.patch("users", u._id, { menuAccess: menu });
-      }
-    }
     await logAudit(ctx, user, { action: "save_role", module: "maintenance", referenceId: name, details: `${permissions.length} permissions` });
     return name;
   },
@@ -365,21 +352,12 @@ function assertSuperAdminKeysUnchanged(actor: Parameters<typeof isSuperAdmin>[0]
   if (only(before) !== only(after)) throw new ConvexError("Ruhusa ya kubadili / kufuta stock inatolewa na kuondolewa na Super Admin pekee.");
 }
 
-/**
- * Keeps only permissions that may be given to a single user (unknown keys are refused, not silently dropped).
- * A Super Admin may give ANY permission of the catalogue; another user administrator only the short grantable list.
- */
-function cleanExtraPermissions(keys: string[], actor?: Parameters<typeof isSuperAdmin>[0]) {
-  const ok: string[] = isSuperAdmin(actor) ? [...ALL_PERMISSION_KEYS] : USER_GRANTABLE_PERMISSIONS.map((g) => g.key);
+/** Keeps only permissions that may be given to a single user (unknown keys are refused, not silently dropped). */
+function cleanExtraPermissions(keys: string[]) {
+  const ok = ALL_PERMISSION_KEYS.filter((key) => !SUPER_ADMIN_ONLY_PERMISSIONS.includes(key));
   const bad = keys.filter((k) => !ok.includes(k));
   if (bad.length) throw new ConvexError(`Ruhusa isiyojulikana kwa mtumiaji: ${bad.join(", ")}`);
   return [...new Set(keys)];
-}
-
-/** A permission is useless when the user's menu hides its module: when a Super Admin gives it, the module is opened too (only if he has a restricted menu). */
-async function menuWithGrantedModules(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, menu: string[] | undefined, extra: string[] | undefined) {
-  if (!menu || !extra?.length) return menu;
-  return await allowedMenu(ctx, tenantId, [...menu, ...modulesForPermissions(extra)]);
 }
 
 async function allowedMenu(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, wanted: string[]) {
@@ -546,11 +524,7 @@ export const listOffices = query({
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
     const tenants = (await ctx.db.query("tenants").collect()).filter((t) => isSuperAdmin(user) || t._id === user.tenantId);
-    // A user tied to one department (or a few) sees only those departments; the others do not even appear in his lists.
-    // Whoever was given "combine bills across departments" needs the full list.
-    const limit = departmentLimit(user);
-    const seesAll = !limit || (await roleHasPermission(ctx, user, "bills.all_departments"));
-    const branches = (await ctx.db.query("branches").collect()).filter((b) => tenants.some((t) => t._id === b.tenantId) && (seesAll || (limit?.includes(String(b._id)) ?? false)));
+    const branches = (await ctx.db.query("branches").collect()).filter((b) => tenants.some((t) => t._id === b.tenantId));
     return { tenants, branches };
   },
 });
@@ -724,10 +698,23 @@ export const updateUser = mutation({
     if (a.ownDataOnly !== undefined) patch.ownDataOnly = a.ownDataOnly ? true : undefined;
     if (a.extraPermissions !== undefined) {
       assertSuperAdminKeysUnchanged(actor, target.extraPermissions, a.extraPermissions);
-      patch.extraPermissions = cleanExtraPermissions(a.extraPermissions, actor);
-      if (isSuperAdmin(actor) && !a.clearMenuAccess) {
-        const menu = await menuWithGrantedModules(ctx, a.tenantId ?? target.tenantId, (patch.menuAccess as string[] | undefined) ?? target.menuAccess, a.extraPermissions);
-        if (menu) patch.menuAccess = menu;
+      const extras = cleanExtraPermissions(a.extraPermissions);
+      patch.extraPermissions = extras;
+      // A direct permission must also expose its module in the sidebar, while respecting the business subscription.
+      const moduleByPermission: Record<string, string> = {
+        "accounts.view": "accounts", "accounts.manage": "accounts",
+        "payroll.view": "payroll", "payroll.manage": "payroll",
+        "stock.view": "stock", "stock.manage": "stock",
+        "purchasing.view": "purchasing", "purchasing.manage": "purchasing",
+        "suppliers.view": "purchasing", "suppliers.manage": "purchasing",
+        "sales.view": "sales", "sales.manage": "sales",
+        "waiterOrders.view": "waiterOrders", "waiterOrders.manage": "waiterOrders",
+        "maintenance.users": "maintenance",
+      };
+      const grantedModules = [...new Set(extras.map(k => moduleByPermission[k]).filter((x): x is string => !!x))];
+      if (grantedModules.length) {
+        const currentMenu = a.menuAccess ?? target.menuAccess ?? [];
+        patch.menuAccess = await allowedMenu(ctx, a.tenantId ?? target.tenantId, [...currentMenu, ...grantedModules]);
       }
     }
     await ctx.db.patch("users", a.userId, patch);
@@ -856,11 +843,9 @@ export const finishUserSetup = internalMutation({
   args: { userId: v.id("users"), actorId: v.id("users"), name: v.string(), username: v.string(), role: v.string(), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()), requirePasswordChange: v.boolean(), menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())) },
   handler: async (ctx, a) => {
     const acc = resolveDepartmentAccess({ branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments });
-    const creator = await ctx.db.get("users", a.actorId);
-    const wantedMenu = a.menuAccess ? await allowedMenu(ctx, a.tenantId, a.menuAccess) : undefined;
     await ctx.db.patch("users", a.userId, {
       name: a.name, username: a.username, role: normalizeRole(a.role), tenantId: a.tenantId, branchId: acc.branchId, branchIds: acc.branchIds, allDepartments: acc.allDepartments, branchPicked: acc.branchPicked, isActive: true, requirePasswordChange: a.requirePasswordChange,
-      menuAccess: isSuperAdmin(creator) ? await menuWithGrantedModules(ctx, a.tenantId, wantedMenu, a.extraPermissions) : wantedMenu, ownDataOnly: a.ownDataOnly ? true : undefined, extraPermissions: a.extraPermissions?.length ? cleanExtraPermissions(a.extraPermissions, creator) : undefined,
+      menuAccess: a.menuAccess ? await allowedMenu(ctx, a.tenantId, a.menuAccess) : undefined, ownDataOnly: a.ownDataOnly ? true : undefined, extraPermissions: a.extraPermissions?.length ? cleanExtraPermissions(a.extraPermissions) : undefined,
     });
     const actor = await ctx.db.get("users", a.actorId);
     await logAudit(ctx, actor, { action: "create_user", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${a.username} (${a.role})` });
@@ -1210,8 +1195,6 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
 };
 
 const CLEAR_BATCH = 60;
-/** Business-wide lists: a department wipe leaves them (and their opening balances) alone. */
-const SHARED_MASTER_CATEGORIES = ["customers", "suppliers"];
 
 /** Super Admin check + selected business, used by the clear action before it asks for the password. */
 export const authorizeClear = internalQuery({
@@ -1225,9 +1208,6 @@ export const authorizeClear = internalQuery({
     const branch = branchId ? await ctx.db.get("branches", branchId) : null;
     if (branchId && (!branch || branch.tenantId !== user.tenantId)) throw new ConvexError("Idara haihusiani na biashara iliyochaguliwa.");
     if (branchId && a.categories.includes("auditLogs")) throw new ConvexError("Audit Logs ni za biashara nzima (hazigawanywi kwa idara). Chagua 'Biashara nzima' ili kuzifuta.");
-    // Customers and suppliers are shared by every department (a customer number works in all of them), so wiping ONE department must never delete them.
-    const sharedChosen = a.categories.filter((c) => SHARED_MASTER_CATEGORIES.includes(c));
-    if (branchId && sharedChosen.length) throw new ConvexError(`Customers na Suppliers ni za idara zote (mteja mmoja anatumika kwenye idara nyingi). Kuzifuta kungeharibu idara nyingine, kwa hiyo hazifutiki kwa idara moja. Ondoa: ${sharedChosen.join(", ")}; au chagua 'Biashara nzima' kama kweli unataka vyote.`);
     if (!a.categories.length) throw new ConvexError("Chagua angalau kundi moja la data.");
     const unknown = a.categories.filter((c) => !CLEAR_CATEGORIES[c]);
     if (unknown.length) throw new ConvexError(`Kundi lisilojulikana: ${unknown.join(", ")}`);
@@ -1270,8 +1250,6 @@ export const clearStepBatch = internalMutation({
       for (const p of parents) {
         const rows = await db.query(childTable).withIndex(index, (q) => q.eq(field, p._id)).take(200);
         for (const r of rows) {
-          // Rows that carry a department of their own and belong to ANOTHER department stay (a client is shared, its returns are not).
-          if (branchId && r.branchId !== undefined && r.branchId !== branchId) continue;
           if (childTable === "salesReturns") for (const l of await db.query("salesReturnLines").withIndex("by_return", (q) => q.eq("returnId", r._id)).collect()) await db.delete("salesReturnLines", l._id);
           await db.delete(childTable, r._id); deleted++;
         }
@@ -1301,7 +1279,7 @@ export const clearStepBatch = internalMutation({
         // so the quantities look as if these sales never happened. Not done when Stock / Products are cleared in the same run: that wipes the quantities anyway.
         if (step.restoreStock && a.restoreStock === true) {
           const product = await ctx.db.get("products", m.productId);
-          if (product && product.tenantId === a.tenantId && (!branchId || product.branchId === branchId)) { // another department's quantities are never touched
+          if (product && product.tenantId === a.tenantId) {
             const back = (m.qtyOut ?? 0) - (m.qtyIn ?? 0);
             if (back !== 0) await ctx.db.patch("products", product._id, { currentQty: Math.round((product.currentQty + back) * 1e6) / 1e6 });
           }
@@ -1329,12 +1307,10 @@ export const clearStepBatch = internalMutation({
         const all = await db.query(step.table).withIndex(step.index ?? "by_tenant", (q) => q.eq("tenantId", a.tenantId)).collect();
         const mine: DynamicDoc[] = [];
         for (const doc of all) {
-         const belongs =
-    step.table === "reportRuns"
-    ? doc.scope === String(branchId)
-    : step.table === "stockTransferLines"
-      ? (await ctx.db.get("stockTransfers", doc.transferId as Id<"stockTransfers">))?.branchId === branchId
-      : doc.branchId === branchId;
+          let belongs: boolean;
+          if (step.table === "reportRuns") belongs = doc.scope === String(branchId); // a saved period report is for "all" or for ONE department
+          else if (step.table === "stockTransferLines") { const t = await ctx.db.get("stockTransfers", doc.transferId as Id<"stockTransfers">); belongs = t?.branchId === branchId; }
+          else belongs = doc.branchId === branchId;
           if (belongs) mine.push(doc);
           if (mine.length > CLEAR_BATCH) break;
         }
