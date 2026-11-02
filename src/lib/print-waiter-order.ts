@@ -47,7 +47,7 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
   const company = (branding.companyName ?? "").trim();
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     @page{size:${pageSize};margin:0}*{box-sizing:border-box}
-    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:${width};max-width:${width};padding:0 2mm;box-sizing:border-box;overflow-wrap:anywhere;color:#000}
+    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0 auto;width:${paperWidth === "80mm" ? "72mm" : width};max-width:${paperWidth === "80mm" ? "72mm" : width};padding:0 1mm;box-sizing:border-box;overflow-wrap:anywhere;color:#000}
     .c{text-align:center}p{margin:0 0 3px}
     .title{font-size:15px;font-weight:800;margin:6px 0 2px;padding:3px 0;border-top:1px solid #000;border-bottom:1px solid #000}
     .head{display:flex;justify-content:space-between;align-items:flex-start;gap:4px}
