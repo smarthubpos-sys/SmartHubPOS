@@ -42,11 +42,12 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
     <td class="amount">${escapeHtml(Number(line.lineTotal).toLocaleString())}/=</td>
   </tr>`).join("");
   const width = paperWidth === "58mm" ? "58mm" : paperWidth === "A4" ? "190mm" : "80mm";
+  const pageSize = paperWidth === "A4" ? "A4" : `${width} auto`;
   const info = (label: string, value?: string) => value ? `<div class="row"><span class="lab">${escapeHtml(label)}</span><span>: ${escapeHtml(value)}</span></div>` : "";
   const company = (branding.companyName ?? "").trim();
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
-    @page{size:${width} auto;margin:3mm}*{box-sizing:border-box}
-    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:100%;overflow-wrap:anywhere;color:#000}
+    @page{size:${pageSize};margin:0}*{box-sizing:border-box}
+    body{font:12px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:${width};max-width:${width};padding:0 2mm;box-sizing:border-box;overflow-wrap:anywhere;color:#000}
     .c{text-align:center}p{margin:0 0 3px}
     .title{font-size:15px;font-weight:800;margin:6px 0 2px;padding:3px 0;border-top:1px solid #000;border-bottom:1px solid #000}
     .head{display:flex;justify-content:space-between;align-items:flex-start;gap:4px}
@@ -56,8 +57,8 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
     .row{display:flex;gap:2px}.lab{display:inline-block;min-width:22mm}
     table{width:100%;border-collapse:collapse;table-layout:fixed}
     th,td{padding:2px 1px;vertical-align:top;text-align:left}th{font-weight:800}
-    .qty{width:12%;overflow-wrap:anywhere}.name{width:56%;overflow-wrap:anywhere;word-break:normal}
-    .amount{width:32%;text-align:right;overflow-wrap:anywhere}th.amount{text-align:right}
+    .qty{width:10%;overflow-wrap:anywhere}.name{width:60%;min-width:0;overflow-wrap:anywhere;word-break:normal}
+    .amount{width:30%;text-align:right;white-space:nowrap;overflow-wrap:normal}th.amount{text-align:right}
     .total{display:flex;justify-content:space-between;font-weight:800;font-size:14px;margin:2px 0}
     .sign{display:flex;gap:2px;margin:10px 0 2px}.line{flex:1;border-bottom:1px solid #000}
   </style></head><body>
@@ -90,7 +91,7 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
     ${branding.footer ? `<p class="c">${escapeHtml(branding.footer)}</p>` : ""}
   </body></html>`;
   try {
-    await printHtmlViaQz(printerName.trim(), html);
+    await printHtmlViaQz(printerName.trim(), html, paperWidth);
     return true;
   } catch (error) {
     toast.error(`${tr("Imeshindikana kuchapa kupitia QZ Tray. Hakikisha QZ Tray imewashwa, printer imechaguliwa, na mipangilio ya cheti/signature imekamilika.")} ${error instanceof Error ? error.message : String(error ?? "")}`);
