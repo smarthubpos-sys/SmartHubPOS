@@ -224,7 +224,7 @@ export default function BillSheet({
             {bill.company.taxId && <p>TIN : {bill.company.taxId}</p>}
           </div>
           {bill.company.logoUrl && (
-            <img src={bill.company.logoUrl} alt="" className={`shrink-0 object-contain grayscale ${paper === "58mm" ? "max-h-10 max-w-[28%]" : paper === "A4" ? "max-h-24 max-w-[30%]" : "max-h-14 max-w-[30%]"}`} />
+            <img src={bill.company.logoUrl} alt="" className={`shrink-0 object-contain grayscale ${paper === "58mm" ? "max-h-11 max-w-[34%]" : paper === "A4" ? "max-h-24 max-w-[30%]" : "max-h-20 max-w-[38%]"}`} />
           )}
         </header>
         <h3 className="border-y border-black py-1 text-center text-base font-extrabold tracking-wide">{heading}</h3>

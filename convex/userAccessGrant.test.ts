@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { SYSTEM_ROLES } from "./permissions";
 import { modules } from "./tes.setup";
 
 /**
@@ -82,6 +83,24 @@ describe("a granted staff member can never become more powerful than he is", () 
     await expect(me.mutation(api.maintenance.updateUser, { userId: manager, name: "Taken over" })).rejects.toThrow(/Huwezi kusimamia/);
     await expect(me.mutation(api.maintenance.updateUser, { userId: granted, role: "manager" })).rejects.toThrow();
     await expect(me.mutation(api.maintenance.updateUser, { userId: granted, extraPermissions: ["maintenance.users", "sales.void"] })).rejects.toThrow();
+  });
+
+
+  it("a Manager with user-management access can assign and administer Waiter / Waitress accounts even when its saved role predates waiter permissions", async () => {
+    const { t, as, manager, target } = await setup();
+    // Simulate an older saved Manager role which knew about waiter permissions but did not grant them.
+    await t.run(async (ctx) => {
+      const all = SYSTEM_ROLES.find((r) => r.name === "manager")!.permissions;
+      await ctx.db.insert("roles", { name: "manager", displayName: "Manager", permissions: all.filter((k) => !["waiterOrders.view", "waiterOrders.manage"].includes(k)), knownKeys: all, isSystem: true });
+      await ctx.db.patch("users", manager, { extraPermissions: ["maintenance.users"] });
+    });
+    const me = as(manager);
+    const roles = await me.query(api.maintenance.listAssignableRoles, {});
+    expect(roles.find((r) => r.name === "waiter")?.assignable).toBe(true);
+    expect(roles.find((r) => r.name === "waitress")?.assignable).toBe(true);
+    await me.mutation(api.maintenance.updateUser, { userId: target, role: "waiter" });
+    await me.mutation(api.maintenance.updateUser, { userId: target, name: "Waiter Updated" });
+    expect((await me.query(api.maintenance.listUsers, {})).find((u) => u._id === target)?.role).toBe("waiter");
   });
 
   it("can pass on a permission he holds himself", async () => {

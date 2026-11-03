@@ -532,6 +532,16 @@ export const DICT: Record<string, { sw: string; en: string }> = {
   "sw": "＋ Ongeza Mstari",
   "en": "＋ Add Line"
  },
+ "Unaweza kuingiza Last Cost au Total; nyingine itahesabiwa yenyewe": { "sw": "Unaweza kuingiza Gharama ya mwisho au Jumla; sehemu nyingine itahesabiwa yenyewe", "en": "Enter Last Cost or Total; the other value will be calculated automatically" },
+ "Unpay": { "sw": "Rejesha malipo (Unpay)", "en": "Unpay" },
+ "Fanya Unpay kwanza kabla ya kuhariri invoice.": { "sw": "Rejesha malipo kwanza kabla ya kuhariri invoice.", "en": "Unpay the invoice before editing it." },
+ "Fanya Unpay kwanza kabla ya kufuta invoice.": { "sw": "Rejesha malipo kwanza kabla ya kufuta invoice.", "en": "Unpay the invoice before cancelling it." },
+ "Unpay itarejesha kiasi chote kilicholipwa ({0}) kwenye njia zilezile za malipo. Invoice itabaki kwenye mauzo lakini deni lake litafunguliwa tena.": { "sw": "Unpay itarejesha kiasi chote kilicholipwa ({0}) kwenye njia zilezile za malipo. Invoice itabaki kwenye mauzo lakini deni lake litafunguliwa tena.", "en": "Unpay will refund the full amount paid ({0}) to the original payment methods. The invoice stays in sales but its balance becomes due again." },
+ "Thibitisha kurudisha malipo yote ya invoice hii kwa njia za awali?": { "sw": "Unathibitisha kurudisha malipo yote ya invoice hii kwa njia za awali?", "en": "Confirm refunding all payments for this invoice to their original methods?" },
+ "Thibitisha Unpay": { "sw": "Thibitisha Unpay", "en": "Confirm Unpay" },
+ "Inarejesha...": { "sw": "Inarejesha...", "en": "Refunding..." },
+ "Invoice {0} sasa haijalipwa. Kiasi kilichorejeshwa: {1}": { "sw": "Invoice {0} sasa haijalipwa. Kiasi kilichorejeshwa: {1}", "en": "Invoice {0} is now unpaid. Amount refunded: {1}" },
+ "Imeshindikana kufanya Unpay.": { "sw": "Imeshindikana kufanya Unpay.", "en": "Could not unpay the invoice." },
  "Jumla ya invoice": {
   "sw": "Jumla ya invoice",
   "en": "Invoice total"

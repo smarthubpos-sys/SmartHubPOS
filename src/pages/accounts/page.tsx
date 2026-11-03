@@ -50,6 +50,7 @@ export default function AccountsPage() {
             title={tr("Accounts")}
             sections={accountsMenuItems}
             onClose={() => navigate("/dashboard")}
+            variant="accounts"
           />
         }
       />

@@ -32,17 +32,29 @@ function Overlay({ title, onClose, children }: { title: string; onClose: () => v
   );
 }
 
-type Line = { productId: string; qty: string; unitCost: string };
-const blankLine = (): Line => ({ productId: "", qty: "1", unitCost: "0" });
+type Line = { productId: string; qty: string; unitCost: string; total: string };
+const blankLine = (): Line => ({ productId: "", qty: "1", unitCost: "0", total: "0" });
 
 function LinesEditor({ lines, onChange, products }: { lines: Line[]; onChange: (l: Line[]) => void; products: Array<{ _id: Id<"products">; name: string }> }) {
-  const set = (i: number, patch: Partial<Line>) => onChange(lines.map((l, x) => (x === i ? { ...l, ...patch } : l)));
-  const total = lines.reduce((n, l) => n + (num(l.qty) || 0) * (num(l.unitCost) || 0), 0);
+  const set = (i: number, patch: Partial<Line>) => onChange(lines.map((l, x) => {
+    if (x !== i) return l;
+    const next = { ...l, ...patch };
+    const qty = num(next.qty);
+    if (Object.prototype.hasOwnProperty.call(patch, "total")) {
+      const lineTotal = num(next.total);
+      next.unitCost = Number.isFinite(qty) && qty > 0 && Number.isFinite(lineTotal) ? String(lineTotal / qty) : "0";
+    } else if (Object.prototype.hasOwnProperty.call(patch, "qty") || Object.prototype.hasOwnProperty.call(patch, "unitCost")) {
+      const unitCost = num(next.unitCost);
+      next.total = String((Number.isFinite(qty) ? qty : 0) * (Number.isFinite(unitCost) ? unitCost : 0));
+    }
+    return next;
+  }));
+  const total = lines.reduce((n, l) => n + (num(l.total) || 0), 0);
   return (
     <div className="space-y-2">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[560px] text-sm">
-          <thead><tr className="border-b text-left"><th className="p-2">{tr("Item Name")}</th><th className="p-2">{tr("Quantity")}</th><th className="p-2">{tr("Cost / Unit")}</th><th className="p-2 text-right">{tr("Total")}</th><th className="p-2" /></tr></thead>
+          <thead><tr className="border-b text-left"><th className="p-2">{tr("Item Name")}</th><th className="p-2">{tr("Quantity")}</th><th className="p-2">{tr("Last cost")}</th><th className="p-2 text-right">{tr("Total")}</th><th className="p-2" /></tr></thead>
           <tbody>
             {lines.map((l, i) => (
               <tr key={i} className="border-b">
@@ -53,14 +65,15 @@ function LinesEditor({ lines, onChange, products }: { lines: Line[]; onChange: (
                   </select>
                 </td>
                 <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.qty} onChange={(e) => set(i, { qty: e.target.value })} /></td>
-                <td className="p-2"><Input className="w-28" type="number" step="any" min="0" value={l.unitCost} onChange={(e) => set(i, { unitCost: e.target.value })} /></td>
-                <td className="p-2 text-right">{money((num(l.qty) || 0) * (num(l.unitCost) || 0))}</td>
+                <td className="p-2"><Input aria-label={tr("Last cost")} className="w-28" type="number" step="any" min="0" value={l.unitCost} onChange={(e) => set(i, { unitCost: e.target.value })} /></td>
+                <td className="p-2 text-right"><Input aria-label={tr("Total")} className="ml-auto w-32 text-right" type="number" step="any" min="0" value={l.total} onChange={(e) => set(i, { total: e.target.value })} /></td>
                 <td className="p-2"><Button variant="outline" size="sm" disabled={lines.length === 1} onClick={() => onChange(lines.filter((_, x) => x !== i))}>{tr("Ondoa")}</Button></td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      <p className="text-xs text-muted-foreground">{tr("Unaweza kuingiza Last Cost au Total; nyingine itahesabiwa yenyewe")}</p>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Button variant="outline" size="sm" onClick={() => onChange([...lines, blankLine()])}>{tr("＋ Add Line")}</Button>
         <div className="text-right"><span className="text-sm text-muted-foreground">{tr("Jumla")}: </span><span className="text-lg font-bold">{money(total)}</span></div>
@@ -87,7 +100,7 @@ function useSave(onClose: () => void) {
 
 type Products = Array<{ _id: Id<"products">; name: string }>;
 type Suppliers = Array<{ _id: Id<"suppliers">; name: string; isActive: boolean }>;
-const asLines = (lines: Array<{ productId: Id<"products">; qty: number; unitCost: number }>): Line[] => lines.map((l) => ({ productId: String(l.productId), qty: String(l.qty), unitCost: String(l.unitCost) }));
+const asLines = (lines: Array<{ productId: Id<"products">; qty: number; unitCost: number }>): Line[] => lines.map((l) => ({ productId: String(l.productId), qty: String(l.qty), unitCost: String(l.unitCost), total: String(l.qty * l.unitCost) }));
 
 function InvoiceEditDialog({ id, onClose }: { id: Id<"purchases">; onClose: () => void }) {
   const data = useQuery(api.purchasingEdit.purchaseForEdit, { purchaseId: id });

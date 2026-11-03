@@ -383,13 +383,28 @@ async function assertNotMorePowerful(ctx: QueryCtx, actor: UserLike, wanted: Ite
 async function assertNoEscalation(ctx: QueryCtx, actor: UserLike, a: { role?: string; tenantId?: Id<"tenants">; extraPermissions?: string[] }) {
   if (isSuperAdmin(actor)) return;
   const wanted = new Set<string>(a.extraPermissions ?? []);
+  const managerAssigningWaiter = normalizeRole(actor.role) === "manager" && !!a.role && ["waiter", "waitress"].includes(normalizeRole(a.role));
   if (a.role) for (const k of await permissionsOfRole(ctx, a.tenantId ?? actor.tenantId, a.role)) wanted.add(k);
-  await assertNotMorePowerful(ctx, actor, wanted, "Huwezi kutoa ruhusa ambazo wewe mwenyewe huna");
+  const comparable = managerAssigningWaiter ? [...wanted].filter((k) => !["waiterOrders.view", "waiterOrders.manage"].includes(k)) : wanted;
+  await assertNotMorePowerful(ctx, actor, comparable, "Huwezi kutoa ruhusa ambazo wewe mwenyewe huna");
 }
 /** The account being managed (edit, reset password, PIN, staff code ...). */
-async function assertCanManageTarget(ctx: QueryCtx, actor: UserLike, target: UserLike) {
+async function assertCanManageTarget(ctx: QueryCtx, actor: UserLike, target: UserLike, requestedRole?: string) {
   if (isSuperAdmin(actor)) return;
-  await assertNotMorePowerful(ctx, actor, await effectivePermissionsOf(ctx, target), "Huwezi kusimamia mtumiaji mwenye ruhusa nyingi kuliko wewe");
+  const targetRole = normalizeRole(target.role);
+  // A Manager with maintenance.users may create/convert a staff account to Waiter/Waitress.
+  // During a conversion the saved target may still be Cashier, whose legacy role can carry
+  // waiterOrders permissions too; compare the rest of its permissions while allowing only
+  // these two Selling Point permissions for this specific transition.
+  const managerMayManageWaiter =
+    normalizeRole(actor.role) === "manager" &&
+    (["waiter", "waitress"].includes(targetRole) ||
+      ["waiter", "waitress"].includes(normalizeRole(requestedRole)));
+  const targetPermissions = await effectivePermissionsOf(ctx, target);
+  const comparable = managerMayManageWaiter
+    ? targetPermissions.filter((k) => !["waiterOrders.view", "waiterOrders.manage"].includes(k))
+    : targetPermissions;
+  await assertNotMorePowerful(ctx, actor, comparable, "Huwezi kusimamia mtumiaji mwenye ruhusa nyingi kuliko wewe");
 }
 
 /**
@@ -409,7 +424,9 @@ export const listAssignableRoles = query({
       let assignable = true;
       if (!isSuperAdmin(actor)) {
         const mine = new Set(withoutSuperOnly(await effectivePermissionsOf(ctx, actor)));
-        assignable = withoutSuperOnly(await permissionsOfRole(ctx, actor.tenantId, r.name)).every((k) => mine.has(k));
+        const managerCanAssignWaiter = normalizeRole(actor.role) === "manager" && ["waiter", "waitress"].includes(normalizeRole(r.name));
+        const rolePermissions = withoutSuperOnly(await permissionsOfRole(ctx, actor.tenantId, r.name));
+        assignable = rolePermissions.every((k) => mine.has(k) || (managerCanAssignWaiter && ["waiterOrders.view", "waiterOrders.manage"].includes(k)));
       }
       out.push({ ...r, assignable });
     }
@@ -643,7 +660,7 @@ export const updateUser = mutation({
     const target = await ctx.db.get("users", a.userId);
     if (!target || target.tokenIdentifier !== undefined) throw new ConvexError("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target.tenantId, branchId: a.branchId }, target);
-    await assertCanManageTarget(ctx, actor, target);
+    await assertCanManageTarget(ctx, actor, target, a.role);
     {
       // Only what is NEW is checked: saving the form with the same role / permissions must keep working for any user administrator.
       const roleChanged = a.role !== undefined && normalizeRole(a.role) !== normalizeRole(target.role);
@@ -795,7 +812,7 @@ export const authorizeUserAdmin = internalQuery({
     const target = a.targetUserId ? await ctx.db.get("users", a.targetUserId) : undefined;
     if (a.targetUserId && (!target || target.tokenIdentifier !== undefined)) throw new ConvexError("Mtumiaji hapatikani.");
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target?.tenantId, branchId: a.branchId }, target);
-    if (target) await assertCanManageTarget(ctx, actor, target); // password reset, rename, PIN: never on an account stronger than the actor's own
+    if (target) await assertCanManageTarget(ctx, actor, target, a.role); // password reset, rename, PIN: never on an account stronger than the actor's own
     if (!target) await assertNoEscalation(ctx, actor, { role: a.role, tenantId: a.tenantId ?? actor.tenantId, extraPermissions: a.extraPermissions }); // creating: never hand out more than he has
     if (target) await assertDepartmentRules(ctx, actor, { tenantId: target.tenantId, role: target.role, scope: departmentScope(target) }, target, false); // e.g. password reset
     else if (!["super_admin", "superadmin"].includes(normalizeRole(a.role))) {
@@ -1132,7 +1149,7 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
       { table: "waiterOrders", index: "by_scope_status" },
       { table: "invoices", children: [{ table: "invoiceLines", index: "by_invoice", field: "invoiceId" }] },
       // What the reports read: sales journals (profit & loss, cash, receivables), the stock the sales took out (item history) and saved period reports.
-      { table: "journalEntries", journalSources: ["sale", "sale_edit", "sale_return", "sale_void", "payment", "waiter_sale"] },
+      { table: "journalEntries", journalSources: ["sale", "sale_edit", "sale_return", "sale_void", "sale_unpay", "payment", "waiter_sale"] },
       { table: "stockMovements", movementTypes: ["sale", "sale_return", "waiter_order", "waiter_order_cancel"], restoreStock: true },
       // Customer reports and statements add the customer's opening (carried-over) debt to what the invoices left: it goes to 0 too, or the debt would still show.
       { table: "clients", resetOpening: true },

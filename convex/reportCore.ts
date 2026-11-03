@@ -25,7 +25,7 @@ const CAPITAL_SOURCES = new Set(["capital", "owner_capital", "director_capital",
 export function cashSource(sourceType?: string): string {
   const s = sourceType ?? "manual";
   if (s === "sale" || s === "waiter_sale" || s === "payment") return "customer_receipts";
-  if (s === "sale_void" || s === "sale_return") return "customer_refunds";
+  if (s === "sale_void" || s === "sale_return" || s === "sale_unpay") return "customer_refunds";
   if (s === "purchase" || s === "supplier_payment" || s === "purchase_return") return "suppliers";
   if (s === "bill" || s === "bill_payment" || s === "bill_void") return "bills";
   if (s === "payroll") return "payroll";

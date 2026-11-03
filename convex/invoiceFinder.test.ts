@@ -4,6 +4,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { modules } from "./tes.setup";
+import { tzToday } from "./plans";
 
 /**
  * Fix 3 - INVOICE NUMBER, SEARCH, EDIT & CANCELLATION.
@@ -137,6 +138,114 @@ describe("search by invoice number", () => {
     expect(asCashier?.lines[0]).not.toHaveProperty("costAtSale");
   });
 });
+
+describe("unpaying a paid invoice", () => {
+  it("refunds payments to their original accounts, reopens the invoice balance, and leaves stock and sales intact", async () => {
+    const { t, as, owner, client, product } = await setup();
+    const inv = await as(owner).mutation(api.sales.createInvoice, { clientId: client, invoiceDate: DAY, lines: [{ productId: product, qty: 2, unitPrice: 100 }], paymentAmount: 200, paymentMethod: "cash" });
+    const beforeQty = await qtyOf(t, product);
+    const result = await as(owner).mutation(api.sales.unpayInvoice, { invoiceId: inv.invoiceId });
+    expect(result).toMatchObject({ invoiceNo: inv.invoiceNo, refunded: 200, outstanding: 200 });
+    const after = await t.run(async (ctx) => ({
+      invoice: await ctx.db.get("invoices", inv.invoiceId),
+      payments: await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", inv.invoiceId)).collect(),
+      journal: await ctx.db.query("journalLines").collect(),
+    }));
+    expect(after.invoice).toMatchObject({ status: "posted", total: 200, amountPaid: 0, outstanding: 200, paymentStatus: "unpaid" });
+    expect(after.payments.every((p) => p.voided)).toBe(true);
+    expect(await qtyOf(t, product)).toBe(beforeQty);
+    expect(after.journal.reduce((n, l) => n + l.debit, 0)).toBeCloseTo(after.journal.reduce((n, l) => n + l.credit, 0), 2);
+  });
+});
+
+  it("refuses Unpay when the Tanzania financial period is closed and leaves invoice and payments unchanged", async () => {
+    const { t, as, owner, tenantA, client, product } = await setup();
+
+    const inv = await as(owner).mutation(api.sales.createInvoice, {
+      clientId: client,
+      invoiceDate: DAY,
+      lines: [{ productId: product, qty: 2, unitPrice: 100 }],
+      paymentAmount: 200,
+      paymentMethod: "cash",
+    });
+
+    const today = tzToday();
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("financialPeriods", {
+        tenantId: tenantA,
+        name: "Kipindi kilichofungwa",
+        startDate: today,
+        endDate: today,
+        status: "closed",
+      });
+    });
+
+    await expect(
+      as(owner).mutation(api.sales.unpayInvoice, { invoiceId: inv.invoiceId }),
+    ).rejects.toThrow(/kimefungwa/i);
+
+    const after = await t.run(async (ctx) => ({
+      invoice: await ctx.db.get("invoices", inv.invoiceId),
+      payments: await ctx.db.query("customerPayments")
+        .withIndex("by_invoice", (q) => q.eq("invoiceId", inv.invoiceId))
+        .collect(),
+    }));
+
+    expect(after.invoice).toMatchObject({
+      amountPaid: 200,
+      outstanding: 0,
+      paymentStatus: "paid",
+      status: "posted",
+    });
+    expect(after.payments).toHaveLength(1);
+    expect(after.payments[0].voided).not.toBe(true);
+  });
+  it("refuses a second Unpay without changing the invoice again", async () => {
+    const { t, as, owner, client, product } = await setup();
+    const inv = await as(owner).mutation(api.sales.createInvoice, {
+      clientId: client,
+      invoiceDate: DAY,
+      lines: [{ productId: product, qty: 2, unitPrice: 100 }],
+      paymentAmount: 200,
+      paymentMethod: "cash",
+    });
+
+    await as(owner).mutation(api.sales.unpayInvoice, { invoiceId: inv.invoiceId });
+
+    await expect(
+      as(owner).mutation(api.sales.unpayInvoice, { invoiceId: inv.invoiceId }),
+    ).rejects.toThrow(/haina malipo/i);
+
+    const after = await t.run(async (ctx) => ({
+      invoice: await ctx.db.get("invoices", inv.invoiceId),
+      payments: await ctx.db.query("customerPayments")
+        .withIndex("by_invoice", (q) => q.eq("invoiceId", inv.invoiceId))
+        .collect(),
+    }));
+
+    expect(after.invoice).toMatchObject({
+      amountPaid: 0,
+      outstanding: 200,
+      paymentStatus: "unpaid",
+    });
+    expect(after.payments.filter((p) => p.voided)).toHaveLength(1);
+  });
+
+  it("refuses Unpay for a cashier without sales edit or void permission", async () => {
+    const { as, owner, cashier, client, product } = await setup();
+    const inv = await as(owner).mutation(api.sales.createInvoice, {
+      clientId: client,
+      invoiceDate: DAY,
+      lines: [{ productId: product, qty: 1, unitPrice: 100 }],
+      paymentAmount: 100,
+      paymentMethod: "cash",
+    });
+
+    await expect(
+      as(cashier).mutation(api.sales.unpayInvoice, { invoiceId: inv.invoiceId }),
+    ).rejects.toThrow(/Forbidden/i);
+  });
 
 describe("correcting an invoice (edit)", () => {
   async function sold() {

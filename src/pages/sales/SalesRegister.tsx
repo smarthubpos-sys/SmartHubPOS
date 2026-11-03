@@ -61,6 +61,8 @@ export default function SalesRegister() {
   const [start, setStart] = useState(monthStart());
   const [end, setEnd] = useState(today());
   const [clientId, setClientId] = useState("");
+  const [staffCode, setStaffCode] = useState("");
+  const [showItems, setShowItems] = useState(true);
   const needsLines = [ "reports/analysis", "reports/by-product", "reports/client-product", "reports/product-client", "reports/sold-items", "reports/by-supplier" ].includes(path);
   // Only the report screens read the report query (sales.reports.view). Everyday screens (payments, clients list, register totals)
   // use the basic one (sales.view), which never carries cost, profit or supplier data.
@@ -124,9 +126,15 @@ export default function SalesRegister() {
     case "reports/staff":
       rows = groupRows(invoices, (x) => x.staff, (x) => ({ Staff: x.staff, Invoices: 0, Jumla: 0, Imelipwa: 0, Deni: 0 }), (a, x) => { a.Invoices = num(a.Invoices) + 1; a.Jumla = round2(num(a.Jumla) + x.total); a.Imelipwa = round2(num(a.Imelipwa) + x.amountPaid); a.Deni = round2(num(a.Deni) + x.outstanding); }).sort((a, b) => num(b.Jumla) - num(a.Jumla));
       sumCols = [tr("Invoices"), tr("Jumla"), tr("Imelipwa"), tr("Deni")]; break;
-    case "reports/sold-items":
-      rows = lines.map((l) => ({ Tarehe: l.date, Invoice: l.invoiceNo, Mteja: l.clientName, Code: l.itemCode, Bidhaa: l.productName, Qty: l.qty, "Bei/kipande": l.unitPrice, Discount: l.discount, Jumla: l.net }));
-      sumCols = [tr("Jumla")]; break;
+    case "reports/sold-items": {
+      const code = staffCode.trim().toUpperCase();
+      const staffLines = code ? lines.filter((l) => (l.staffCode ?? "").toUpperCase() === code) : lines;
+      const staffInvoices = code ? invoices.filter((i) => (i.staffCode ?? "").toUpperCase() === code) : invoices;
+      rows = showItems
+        ? staffLines.map((l) => ({ Tarehe: l.date, Invoice: l.invoiceNo, Mhudumu: l.staff, "Staff Code": l.staffCode || "—", Code: l.itemCode, Bidhaa: l.productName, Qty: l.qty, "Bei/kipande": l.unitPrice, Discount: l.discount, Jumla: l.net }))
+        : staffInvoices.map((i) => ({ Tarehe: i.date, Invoice: i.invoiceNo, Mhudumu: i.staff, "Staff Code": i.staffCode || "—", Mteja: i.clientName, Jumla: i.total, Imelipwa: i.amountPaid, Deni: i.outstanding, Hali: i.paymentStatus }));
+      sumCols = showItems ? [tr("Jumla")] : [tr("Jumla"), tr("Imelipwa"), tr("Deni")]; break;
+    }
     case "reports/by-supplier":
       rows = groupRows(lines, (l) => l.supplierName, (l) => ({ Supplier: l.supplierName, Qty: 0, "Mauzo (bila tax)": 0, Cost: 0, Faida: 0 }), (a, l) => { a.Qty = round2(num(a.Qty) + l.qty); a["Mauzo (bila tax)"] = round2(num(a["Mauzo (bila tax)"]) + l.net); a.Cost = round2(num(a.Cost) + l.cost); a.Faida = round2(num(a.Faida) + l.profit); }).sort((a, b) => num(b["Mauzo (bila tax)"]) - num(a["Mauzo (bila tax)"]));
       sumCols = [tr("Mauzo (bila tax)"), tr("Cost"), tr("Faida")]; note = tr("Supplier ni wa mwisho aliyewasilisha bidhaa husika (kutoka kwenye Purchase/GRN ya mwisho)."); break;
@@ -193,6 +201,7 @@ export default function SalesRegister() {
         <Stat label={tr("Invoices")} value={totals.invoices} /><Stat label={tr("Mauzo (jumla)")} value={totals.sales} /><Stat label={tr("Tax")} value={totals.tax} /><Stat label={tr("Malipo yaliyopokelewa")} value={totals.payments} /><Stat label={tr("Deni la invoices")} value={totals.outstanding} />{totals.waiterDebt > 0 && <Stat label={tr("Madeni ya wahudumu (yaliyotokea)")} value={totals.waiterDebt} />}{totals.waiterDebtOpen > 0 && <Stat label={tr("Madeni ya wahudumu (bado yamebaki)")} value={totals.waiterDebtOpen} />}
       </div>
       {INVOICE_SEARCH_PATHS.includes(path) && <InvoiceFinder />}
+      {path === "reports/sold-items" && <section className="flex flex-wrap items-end gap-3 rounded-xl border bg-card p-4 print:hidden"><label className="grid min-w-56 flex-1 gap-1 text-sm">{tr("Staff Code ya mhudumu")}<Input value={staffCode} onChange={(e) => setStaffCode(e.target.value.toUpperCase())} placeholder={tr("Weka Staff Code")}/></label><label className="flex h-10 items-center gap-2 rounded-lg border px-3 text-sm"><input type="checkbox" className="h-4 w-4 accent-primary" checked={showItems} onChange={(e) => setShowItems(e.target.checked)}/>{tr("Items Report")}</label><p className="w-full text-xs text-muted-foreground">{tr("Acha Staff Code wazi kuona wote; weka code kuona mauzo ya mhudumu mmoja. Zima Items Report kuona invoice za mhudumu.")}</p></section>}
       {paymentForm}
       {lastReceipt && <TransactionReceipt title={tr("RISITI YA MALIPO YA MAUZO")} reference={lastReceipt.reference} date={lastReceipt.date} partyLabel={tr("Mteja")} party={lastReceipt.party} amount={lastReceipt.amount} method={lastReceipt.method} note={tr("Malipo yamepokelewa. Hifadhi risiti hii kwa kumbukumbu.")} />}
       {statementPicker}

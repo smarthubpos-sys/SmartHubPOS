@@ -88,6 +88,9 @@ export default function InvoiceFinder() {
 function InvoicePanel({ invoiceId, onClose }: { invoiceId: Id<"invoices">; onClose: () => void }) {
   const d = useQuery(api.sales.invoiceFull, { invoiceId });
   const [mode, setMode] = useState<"view" | "edit" | "cancel">("view");
+  const [showUnpay, setShowUnpay] = useState(false);
+  const unpayInvoice = useMutation(api.sales.unpayInvoice);
+  const [unpayBusy, setUnpayBusy] = useState(false);
   if (d === undefined) return <div className="rounded-lg border p-3 text-sm text-muted-foreground">{tr("Inapakia…")}</div>;
   if (d === null) return <div className="rounded-lg border p-3 text-sm">{tr("Invoice haipatikani.")} <Button size="sm" variant="outline" onClick={onClose}>{tr("Funga")}</Button></div>;
   const inv = d.invoice;
@@ -100,12 +103,20 @@ function InvoicePanel({ invoiceId, onClose }: { invoiceId: Id<"invoices">; onClo
         <h2 className="font-semibold">{tr("Invoice")} {inv.invoiceNo}{(inv.revision ?? 0) > 0 ? ` — ${tr("Imesahihishwa")} #${inv.revision}` : ""}{cancelled ? ` — ${tr("Imebatilishwa")}` : ""}</h2>
         <div className="flex flex-wrap gap-2">
           {d.canPrint && <Button size="sm" variant="outline" onClick={() => printInvoice(d)}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
-          {!cancelled && d.canEdit && mode !== "edit" && <Button size="sm" variant="outline" disabled={!!locked} title={locked} onClick={() => setMode("edit")}>{tr("Edit Invoice")}</Button>}
-          {!cancelled && d.canVoid && mode !== "cancel" && <Button size="sm" variant="destructive" onClick={() => setMode("cancel")}>{tr("Delete / Cancel Invoice")}</Button>}
+          {!cancelled && inv.amountPaid > 0 && d.canUnpay && mode === "view" && <Button size="sm" variant="outline" onClick={() => setShowUnpay((v) => !v)}>{tr("Unpay")}</Button>}
+          {!cancelled && d.canEdit && mode !== "edit" && <Button size="sm" variant="outline" disabled={!!locked || inv.amountPaid > 0} title={inv.amountPaid > 0 ? tr("Fanya Unpay kwanza kabla ya kuhariri invoice.") : locked} onClick={() => setMode("edit")}>{tr("Edit Invoice")}</Button>}
+          {!cancelled && d.canVoid && mode !== "cancel" && <Button size="sm" variant="destructive" disabled={inv.amountPaid > 0} title={inv.amountPaid > 0 ? tr("Fanya Unpay kwanza kabla ya kufuta invoice.") : undefined} onClick={() => setMode("cancel")}>{tr("Delete / Cancel Invoice")}</Button>}
           <Button size="sm" variant="ghost" onClick={onClose}>{tr("Funga")}</Button>
         </div>
       </div>
       {locked && !cancelled && d.canEdit && <p className="text-xs text-amber-700">{locked}</p>}
+      {showUnpay && inv.amountPaid > 0 && mode === "view" && <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+        <p className="text-sm">{tr("Unpay itarejesha kiasi chote kilicholipwa ({0}) kwenye njia zilezile za malipo. Invoice itabaki kwenye mauzo lakini deni lake litafunguliwa tena.", [fmt(inv.amountPaid)])}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" disabled={unpayBusy} onClick={() => { if (!window.confirm(tr("Thibitisha kurudisha malipo yote ya invoice hii kwa njia za awali?"))) return; setUnpayBusy(true); void unpayInvoice({ invoiceId }).then((r) => { toast.success(tr("Invoice {0} sasa haijalipwa. Kiasi kilichorejeshwa: {1}", [r.invoiceNo, fmt(r.refunded)])); setShowUnpay(false); }).catch((e) => toast.error(errorText(e, tr("Imeshindikana kufanya Unpay.")))).finally(() => setUnpayBusy(false)); }}>{unpayBusy ? tr("Inarejesha...") : tr("Thibitisha Unpay")}</Button>
+          <Button size="sm" variant="outline" disabled={unpayBusy} onClick={() => setShowUnpay(false)}>{tr("Ghairi")}</Button>
+        </div>
+      </div>}
       <p className="text-sm text-muted-foreground">{inv.invoiceDate} · {d.clientName}{d.department ? ` · ${d.department}` : ""}</p>
 
       {mode === "edit" ? <EditForm d={d} onDone={() => setMode("view")} onCancel={() => setMode("view")} />

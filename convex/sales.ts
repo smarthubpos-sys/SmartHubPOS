@@ -10,6 +10,7 @@ import { autoProduceForSale } from "./autoProduce";
 import { visibleClients } from "./clients";
 import { assertDate, assertFinite, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
+import { tzToday } from "./plans";
 
 const sameBusiness = (user: { tenantId?: unknown }, record: { tenantId?: unknown } | null | undefined) => !!record && record.tenantId === user.tenantId;
 
@@ -207,6 +208,47 @@ export const createInvoice = mutation({
     return { invoiceId, invoiceNo, subtotal, taxAmount, total, amountPaid: paid, outstanding: money(total-paid), creditWarning, duplicate: false };
     } catch (e) { throw surfaceError(e); }
   }
+});
+
+/**
+ * Unpay a posted invoice before it is corrected or cancelled. This refunds the recorded net
+ * payments to their original payment accounts, re-opens the full invoice balance, and keeps
+ * the sale and stock intact. Returns and customer-bill invoices must be resolved first.
+ */
+export const unpayInvoice = mutation({
+  args: { invoiceId: v.id("invoices") },
+  handler: async (ctx, a) => {
+    const user = await requireActiveUser(ctx, "sales");
+    if (!(await roleHasPermission(ctx, user, "sales.edit")) && !(await roleHasPermission(ctx, user, "sales.void"))) throw new ConvexError("Forbidden: huna ruhusa ya kurejesha malipo ya invoice.");
+    const invoice = await ctx.db.get("invoices", a.invoiceId);
+    if (!invoice || !canAccessRecord(user, invoice) || (isOwnDataOnly(user) && invoice.createdBy !== user._id)) throw new ConvexError("Invoice haipatikani.");
+    if (invoice.status !== "posted") throw new ConvexError("Invoice hii imebatilishwa; haiwezi kufanyiwa Unpay.");
+    if (invoice.customerBillId) throw new ConvexError("Invoice hii ipo kwenye Customer Bill. Iondoe kwenye bill kwanza.");
+    const lines = await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
+    if (lines.some((l) => (l.returnedQty ?? 0) > 0)) throw new ConvexError("Invoice hii ina marejesho ya bidhaa; haiwezi kufanyiwa Unpay.");
+    if (!(invoice.amountPaid > 0)) throw new ConvexError("Invoice hii haina malipo ya kurudisha.");
+    const payments = (await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect()).filter((p) => !p.voided);
+    const paidFromRows = money(payments.reduce((n, p) => n + p.amount, 0));
+    if (Math.abs(paidFromRows - invoice.amountPaid) > 0.01) throw new ConvexError("Malipo ya invoice hayalingani na kumbukumbu za malipo. Tafadhali kagua ledger kabla ya Unpay.");
+    const scope = { tenantId: invoice.tenantId, branchId: invoice.branchId };
+    const journalLines: Array<{ accountId: Id<"accounts">; debit: number; credit: number; description: string }> = [];
+    const receivable = await getSystemAccount(ctx, scope, "1100", "Accounts receivable", "asset");
+    journalLines.push({ accountId: receivable, debit: invoice.amountPaid, credit: 0, description: `Invoice ${invoice.invoiceNo} payment reversed to receivable` });
+    for (const payment of payments) {
+      if (!payment.amount) continue;
+      const accountId = await methodAccount(ctx, scope, { methodId: payment.paymentMethodId, method: payment.paymentMethod });
+      journalLines.push({ accountId, debit: payment.amount < 0 ? -payment.amount : 0, credit: payment.amount > 0 ? payment.amount : 0, description: `Unpay invoice ${invoice.invoiceNo} - refund via ${payment.paymentMethod}` });
+    }
+    await postSystemJournal(ctx, { scope, userId: user._id, date: tzToday(), reference: `SALEUNPAY-${invoice.invoiceNo}`, description: `Unpay invoice ${invoice.invoiceNo}`, sourceType: "sale_unpay", sourceId: String(a.invoiceId), lines: journalLines });
+    for (const payment of payments) await ctx.db.patch("customerPayments", payment._id, { voided: true });
+    await ctx.db.patch("invoices", a.invoiceId, { amountPaid: 0, outstanding: invoice.total, paymentStatus: "unpaid", notes: [invoice.notes, `Unpay: malipo ${invoice.amountPaid} yamerejeshwa; ${new Date().toISOString()}`].filter(Boolean).join(" | ") });
+    await bumpStats(ctx, scope, { receivable: invoice.amountPaid, date: invoice.invoiceDate });
+    const paidByDay = new Map<string, number>();
+    for (const payment of payments) paidByDay.set(payment.paymentDate, money((paidByDay.get(payment.paymentDate) ?? 0) + payment.amount));
+    for (const [day, amount] of paidByDay) if (amount) await bumpStats(ctx, scope, { date: day, collected: -amount });
+    await ctx.db.insert("auditLogs", { tenantId: invoice.tenantId, userId: user._id, userName: user.name ?? user.email ?? "user", action: "unpay_invoice", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `Invoice ${invoice.invoiceNo} unpaid; refunded ${invoice.amountPaid} to original payment methods`, timestamp: new Date().toISOString(), result: "success" });
+    return { invoiceNo: invoice.invoiceNo, refunded: invoice.amountPaid, outstanding: invoice.total };
+  },
 });
 
 /**
@@ -588,18 +630,18 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
     const getUnit = async (id: Id<"unitsOfMeasure"> | null | undefined) => (id ? memo(`unitsOfMeasure:${id}`, () => ctx.db.get("unitsOfMeasure", id)) : null);
     const getSupplier = async (id: Id<"suppliers"> | null | undefined) => (id ? memo(`suppliers:${id}`, () => ctx.db.get("suppliers", id)) : null);
     const getInvoice = async (id: Id<"invoices"> | null | undefined) => (id ? memo(`invoices:${id}`, () => ctx.db.get("invoices", id)) : null);
-    const staffCache = new Map<string, string>();
+    const staffCache = new Map<string, { name: string; code: string }>();
     const staffOf = async (id: Id<"users"> | null | undefined) => {
-      if (!id) return "â€”"; const key = String(id); if (staffCache.has(key)) return staffCache.get(key)!;
-      const u = await getUser(id); const name = u?.name ?? u?.username ?? u?.email ?? "Mtumiaji"; staffCache.set(key, name); return name;
+      if (!id) return { name: "â€”", code: "" }; const key = String(id); if (staffCache.has(key)) return staffCache.get(key)!;
+      const u = await getUser(id); const value = { name: u?.name ?? u?.username ?? u?.email ?? "Mtumiaji", code: u?.staffCode ?? "" }; staffCache.set(key, value); return value;
     };
 
-    const invoiceRows = [] as Array<{ _id: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; subtotal: number; discount: number; taxAmount: number; total: number; amountPaid: number; outstanding: number; paymentStatus: string; staff: string; source: string; notes: string }>;
-    const lines = [] as Array<{ invoiceId: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; staff: string; source: string; productId: Id<"products">; itemCode: string; productName: string; groupName: string; unit: string; supplierName: string; qty: number; unitPrice: number; discount: number; net: number; cost: number; profit: number }>;
+    const invoiceRows = [] as Array<{ _id: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; subtotal: number; discount: number; taxAmount: number; total: number; amountPaid: number; outstanding: number; paymentStatus: string; staff: string; staffCode: string; source: string; notes: string }>;
+    const lines = [] as Array<{ invoiceId: Id<"invoices">; invoiceNo: string; date: string; clientId: Id<"clients">; clientName: string; staff: string; staffCode: string; source: string; productId: Id<"products">; itemCode: string; productName: string; groupName: string; unit: string; supplierName: string; qty: number; unitPrice: number; discount: number; net: number; cost: number; profit: number }>;
     for (const inv of invoices) {
       if (basic) continue; // everyday screens get headline totals only, never per-invoice staff / line data
       const staff = await staffOf(inv.salespersonId ?? inv.createdBy);
-      invoiceRows.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, paymentStatus: inv.paymentStatus, staff, source: inv.salesSource ?? "â€”", notes: inv.notes ?? "" });
+      invoiceRows.push({ _id: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", subtotal: inv.subtotal, discount: inv.discount, taxAmount: inv.taxAmount, total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, paymentStatus: inv.paymentStatus, staff: staff.name, staffCode: staff.code, source: inv.salesSource ?? "â€”", notes: inv.notes ?? "" });
       if (!wantLines) continue;
       const factor = inv.subtotal > 0 ? (inv.subtotal - inv.discount) / inv.subtotal : 1;
       for (const l of await ctx.db.query("invoiceLines").withIndex("by_invoice", q => q.eq("invoiceId", inv._id)).collect()) {
@@ -608,7 +650,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
         const keep = l.qty > 0 ? keptQty / l.qty : 1;
         const p = await getProduct(l.productId); const net = money(l.lineTotal * keep * factor); const cost = money(keptQty * l.costAtSale);
         const group = await getGroup(p?.groupId); const unit = await getUnit(p?.unitId); const supplier = await getSupplier(p?.lastSupplierId);
-        lines.push({ invoiceId: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", staff, source: inv.salesSource ?? "â€”", productId: l.productId, itemCode: p?.itemCode ?? "â€”", productName: p?.name ?? "Bidhaa", groupName: p?.groupId ? group?.name ?? "â€”" : "â€”", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "â€”" : "â€”", qty: keptQty, unitPrice: l.unitPrice, discount: money(l.discount * keep), net, cost, profit: money(net - cost) });
+        lines.push({ invoiceId: inv._id, invoiceNo: inv.invoiceNo, date: inv.invoiceDate, clientId: inv.clientId, clientName: clientName.get(String(inv.clientId)) ?? "Mteja", staff: staff.name, staffCode: staff.code, source: inv.salesSource ?? "â€”", productId: l.productId, itemCode: p?.itemCode ?? "â€”", productName: p?.name ?? "Bidhaa", groupName: p?.groupId ? group?.name ?? "â€”" : "â€”", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "â€”" : "â€”", qty: keptQty, unitPrice: l.unitPrice, discount: money(l.discount * keep), net, cost, profit: money(net - cost) });
       }
     }
 
@@ -643,7 +685,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
           if (basic) continue;
           const no = `SP-${String(o._id).slice(-6).toUpperCase()}`;
           const who = o.customerName || "Selling Point";
-          invoiceRows.push({ _id: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, subtotal: paidHere, discount: 0, taxAmount: 0, total: paidHere, amountPaid: paidHere, outstanding: 0, paymentStatus: share < 1 || left > 0 ? "partial" : "paid", staff: o.waiterName, source: "Selling Point", notes: [o.tableNumber ? `Meza ${o.tableNumber}` : "", left > 0 ? `Deni la mhudumu lililobaki: ${left}` : ""].filter(Boolean).join(" · ") });
+          invoiceRows.push({ _id: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, subtotal: paidHere, discount: 0, taxAmount: 0, total: paidHere, amountPaid: paidHere, outstanding: 0, paymentStatus: share < 1 || left > 0 ? "partial" : "paid", staff: o.waiterName, staffCode: "", source: "Selling Point", notes: [o.tableNumber ? `Meza ${o.tableNumber}` : "", left > 0 ? `Deni la mhudumu lililobaki: ${left}` : ""].filter(Boolean).join(" · ") });
           if (!wantLines) continue;
           const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
           for (const l of o.lines) {
@@ -653,7 +695,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
             const unitCost = mq > 1e-8 ? mc / mq : (p?.weightedAvgCost ?? p?.lastPurchaseCost ?? 0);
             const group = await getGroup(p?.groupId); const unit = await getUnit(p?.unitId); const supplier = await getSupplier(p?.lastSupplierId);
             const net = money(l.lineTotal * share); const cost = money(l.qty * share * unitCost);
-            lines.push({ invoiceId: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, staff: o.waiterName, source: "Selling Point", productId: l.productId, itemCode: p?.itemCode ?? "—", productName: p?.name ?? l.productName, groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: l.qty * share, unitPrice: l.unitPrice, discount: 0, net, cost, profit: money(net - cost) });
+            lines.push({ invoiceId: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, staff: o.waiterName, staffCode: (await staffOf(o.waiterId)).code, source: "Selling Point", productId: l.productId, itemCode: p?.itemCode ?? "—", productName: p?.name ?? l.productName, groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: l.qty * share, unitPrice: l.unitPrice, discount: 0, net, cost, profit: money(net - cost) });
           }
         }
       }
@@ -716,6 +758,7 @@ async function invoiceRights(ctx: QueryCtx, user: UserLike) {
     canPrint: await roleHasPermission(ctx, user, "sales.print"),
     canEdit: await roleHasPermission(ctx, user, "sales.edit"),
     canVoid: await roleHasPermission(ctx, user, "sales.void"),
+    canUnpay: (await roleHasPermission(ctx, user, "sales.edit")) || (await roleHasPermission(ctx, user, "sales.void")),
   };
 }
 const canSeeInvoice = (user: UserLike, inv: Doc<"invoices"> | null): inv is Doc<"invoices"> => !!inv && canAccessRecord(user, inv) && !(isOwnDataOnly(user) && inv.createdBy !== user._id);
