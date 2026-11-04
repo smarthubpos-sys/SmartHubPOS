@@ -175,7 +175,10 @@ export const createInvoice = mutation({
     let invoiceNo = `${invoicePrefix}${String(nextNo).padStart(5, "0")}`;
     for (;;) {
       const clash = await ctx.db.query("invoices").withIndex("by_tenant_no", q => q.eq("tenantId", scope.tenantId).eq("invoiceNo", invoiceNo)).first();
-      if (!clash) break; nextNo++; invoiceNo = `${invoicePrefix}${String(nextNo).padStart(5, "0")}`;
+      const sellingPointClash = await ctx.db.query("waiterOrders").withIndex("by_tenant_invoice_no", q => q.eq("tenantId", scope.tenantId).eq("invoiceNo", invoiceNo)).first();
+      if (!clash && !sellingPointClash) break;
+      nextNo++;
+      invoiceNo = `${invoicePrefix}${String(nextNo).padStart(5, "0")}`;
     }
     if (sequence) await ctx.db.patch("salesSequences", sequence._id, { nextNumber: nextNo + 1 }); else await ctx.db.insert("salesSequences", { tenantId: scope.tenantId, nextNumber: nextNo + 1 });
     const invoiceId = await ctx.db.insert("invoices", { ...scope, invoiceNo, invoiceDate: args.invoiceDate, clientId: args.clientId, subtotal, discount, taxAmount, total, amountPaid: paid, outstanding: money(total-paid), paymentStatus: paid === total ? "paid" : paid > 0 ? "partial" : "unpaid", status: "posted", salespersonId: user._id, salesSource: args.salesSource, notes: args.notes, createdBy: user._id, postedAt: new Date().toISOString(), requestKey });
@@ -683,7 +686,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
           if (left > 0 && !openSeen.has(String(o._id))) { openSeen.add(String(o._id)); spDebtOpen = money(spDebtOpen + left); } // still owed by the waiter today, counted once per order
           spSales = money(spSales + paidHere); if (share >= 1 || o.settledAt) spCount++;
           if (basic) continue;
-          const no = `SP-${String(o._id).slice(-6).toUpperCase()}`;
+          const no = o.invoiceNo ?? `SP-${String(o._id).slice(-6).toUpperCase()}`;
           const who = o.customerName || "Selling Point";
           invoiceRows.push({ _id: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, subtotal: paidHere, discount: 0, taxAmount: 0, total: paidHere, amountPaid: paidHere, outstanding: 0, paymentStatus: share < 1 || left > 0 ? "partial" : "paid", staff: o.waiterName, staffCode: "", source: "Selling Point", notes: [o.tableNumber ? `Meza ${o.tableNumber}` : "", left > 0 ? `Deni la mhudumu lililobaki: ${left}` : ""].filter(Boolean).join(" · ") });
           if (!wantLines) continue;

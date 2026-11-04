@@ -5,6 +5,7 @@ import { stamp, type ReceiptBranding } from "./receipt-branding.ts";
 
 export type PrintableOrder = {
   customerName: string;
+  invoiceNo?: string;
   waiterName: string;
   total: number;
   tableNumber?: string;
@@ -74,6 +75,7 @@ export async function printWaiterOrder(order: PrintableOrder, printerName?: stri
     <hr>
     ${info(tr("Muda wa kufungua"), branding.openTime)}
     ${info(tr("Muda wa kuchapa"), stamp(new Date()))}
+    ${info(tr("Namba ya invoice"), order.invoiceNo)}
     ${info(tr("Namba ya bili"), branding.billId)}
     ${info(tr("Mhudumu"), order.waiterName)}
     ${info(tr("Mteja"), order.customerName)}

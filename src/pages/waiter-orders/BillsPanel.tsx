@@ -15,7 +15,7 @@ const isWaiterRole = (role?: string) => ["waiter", "waitress"].includes(String(r
 
 /**
  * Bills: orders grouped by table (orders without a table go under "Bila meza"); tick one or many, the total is recomputed on the server; print never touches stock or payments.
- * Everyone sees only HIS OWN bills. A waiter first GENERATES the bill ("Unda bili"); only then can he print it or send it to the cashier.
+ * Active queue only: after sending, the bill leaves the waiter's list; after cashier printing, it leaves the cashier's list. History remains searchable in Invoice Finder.
  * The cashier sees the waiter's bill on his screen only after the waiter sent it.
  */
 export default function BillsPanel() {

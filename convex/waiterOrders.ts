@@ -81,6 +81,27 @@ async function viewScope(ctx: Parameters<typeof resolveWriteScope>[0], user: Par
 const orderInScope = (user: { role?: string }, scope: ScopeLike, o: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }) =>
   o.tenantId === scope.tenantId && (isWaiter(user.role) || !scope.branchId || o.branchId === scope.branchId);
 
+
+/** Allocate Selling Point numbers from the same tenant-wide sequence used by Sales > Invoicing. */
+async function allocateSellingPointInvoiceNo(ctx: MutationCtx, user: Doc<"users">, tenantId: Id<"tenants">) {
+  const company = await getCompanySettings(ctx, user);
+  const prefix = company?.invoicePrefix ?? "INV-";
+  const seqRows = await ctx.db.query("salesSequences").withIndex("by_scope", q => q.eq("tenantId", tenantId)).collect();
+  const sequence = seqRows.find(x => x.branchId === undefined);
+  let nextNo = Math.max(sequence?.nextNumber ?? 1, ...seqRows.map(x => x.nextNumber));
+  let invoiceNo = `${prefix}${String(nextNo).padStart(5, "0")}`;
+  for (;;) {
+    const invoiceClash = await ctx.db.query("invoices").withIndex("by_tenant_no", q => q.eq("tenantId", tenantId).eq("invoiceNo", invoiceNo)).first();
+    const orderClash = await ctx.db.query("waiterOrders").withIndex("by_tenant_invoice_no", q => q.eq("tenantId", tenantId).eq("invoiceNo", invoiceNo)).first();
+    if (!invoiceClash && !orderClash) break;
+    nextNo++;
+    invoiceNo = `${prefix}${String(nextNo).padStart(5, "0")}`;
+  }
+  if (sequence) await ctx.db.patch("salesSequences", sequence._id, { nextNumber: nextNo + 1 });
+  else await ctx.db.insert("salesSequences", { tenantId, nextNumber: nextNo + 1 });
+  return invoiceNo;
+}
+
 export const list = query({
   args: {},
   handler: async (ctx) => {
@@ -200,8 +221,10 @@ export const place = mutation({
     }
 
     const now = new Date().toISOString();
+    const invoiceNo = await allocateSellingPointInvoiceNo(ctx, user, scope.tenantId);
     const orderId = await ctx.db.insert("waiterOrders", {
       tenantId: scope.tenantId,
+      invoiceNo,
       branchId: scope.branchId,
       customerName,
       tableNumber: args.tableNumber?.trim() || undefined,
@@ -392,8 +415,9 @@ export const submit = mutation({
       lines.push({ productId: product._id, productName: product.name, qty, unitPrice: product.sellingPrice, ...(discount > 0 ? { discount } : {}), lineTotal: Math.round((gross - discount) * 100) / 100 });
     }
     const now = new Date().toISOString();
+    const invoiceNo = await allocateSellingPointInvoiceNo(ctx, user, scope.tenantId);
     const orderId = await ctx.db.insert("waiterOrders", {
-      tenantId: scope.tenantId, branchId: scope.branchId,
+      tenantId: scope.tenantId, branchId: scope.branchId, invoiceNo,
       customerName: args.customerName?.trim() || "Mteja",
       tableNumber: args.tableNumber?.trim() || undefined,
       waiterId: user._id, waiterName: user.name || user.username || "Waiter",
@@ -419,7 +443,45 @@ export const submit = mutation({
 const billVisible = (user: { _id: Id<"users">; role?: string }, o: Doc<"waiterOrders">) =>
   o.waiterId === user._id || (!isWaiter(user.role) && !isSuper(user.role) && !!o.billSentAt);
 
-/** Orders for the Bills screen: your own orders, plus (cashier / manager) bills that waiters sent to the cashier. Optional table filter. Read-only. */
+/** Search archived Selling Point bills from the existing Invoice Finder. No default history listing. */
+export const searchBillsForFinder = query({
+  args: { search: v.string() },
+  handler: async (ctx, args) => {
+    const user = await requirePermission(ctx, "sales.view", "sales");
+    const scope = await viewScope(ctx, user).catch((e) => { throw surfaceError(e); });
+    if (!scope.tenantId) return [];
+    const raw = args.search.trim().replace(/^#/, "");
+    if (!raw || raw.length > 40) return [];
+    const company = await getCompanySettings(ctx, user);
+    const prefix = company?.invoicePrefix ?? "INV-";
+    const wanted = new Set([raw, raw.toUpperCase()]);
+    if (/^\d+$/.test(raw)) {
+      const padded = raw.padStart(5, "0");
+      wanted.add(padded);
+      wanted.add(`${prefix}${padded}`);
+    }
+    const rows = await ctx.db.query("waiterOrders")
+      .withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId))
+      .collect();
+    const needle = raw.toLowerCase();
+    return rows
+      .filter(o => orderInScope(user, scope, o)
+        && (!isWaiter(user.role) || o.branchId === scope.branchId)
+        && o.status !== "cancelled"
+        && billVisible(user, o)
+        && (!!o.invoiceNo && wanted.has(o.invoiceNo) || o.customerName.toLowerCase().includes(needle)))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 50)
+      .map(o => ({
+        _id: o._id, invoiceNo: o.invoiceNo ?? "—", invoiceDate: o.createdAt.slice(0, 10),
+        customerName: o.customerName, waiterName: o.waiterName, tableNumber: o.tableNumber,
+        total: o.total, status: o.status, billSentAt: o.billSentAt, billPrintedAt: o.billPrintedAt,
+        lines: o.lines.map(l => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })),
+      }));
+  },
+});
+
+/** Active Bills screen only: sent bills leave the waiter's list; printed bills leave the cashier's list. */
 export const listForBills = query({
   args: { table: v.optional(v.string()), includePrinted: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
@@ -429,7 +491,7 @@ export const listForBills = query({
     const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId)).collect();
     const needle = (args.table ?? "").trim().toLowerCase();
     return rows
-      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && billVisible(user, r))
+      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || !r.billSentAt) && billVisible(user, r))
       .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
   },

@@ -12,6 +12,8 @@ import { errorText, tr } from "@/lib/i18n.ts";
 import { methodArgs, pickMethodKey, usePaymentMethods } from "@/hooks/use-payment-methods.ts";
 import { printElement, readPaper } from "@/lib/print-area.ts";
 import { CANCEL_REASONS, editedTotals } from "./invoice-finder-helpers.ts";
+import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
+import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 
 const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const selectClass = "h-10 rounded-md border bg-background px-3";
@@ -56,6 +58,10 @@ export default function InvoiceFinder() {
   const [term, setTerm] = useState("");
   const [openId, setOpenId] = useState<Id<"invoices"> | null>(null);
   const results = useQuery(api.sales.searchInvoices, term ? { invoiceNo: term } : "skip");
+  const sellingPointResults = useQuery(api.waiterOrders.searchBillsForFinder, term ? { search: term } : "skip");
+  const settings = useQuery(api.maintenance.getSettings, {});
+  const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
+  const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
   // One invoice found: it opens straight away so the Edit / Cancel / Print panel is right there (until the user closes it for this search).
   const [closedFor, setClosedFor] = useState<string | null>(null);
   const shownId = openId ?? (results && results.length === 1 && closedFor !== term ? results[0]._id : null);
@@ -70,9 +76,9 @@ export default function InvoiceFinder() {
         <Button type="submit"><Search className="mr-1 h-4 w-4" />{tr("Tafuta")}</Button>
         {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); setOpenId(null); setClosedFor(null); }}>{tr("Futa utafutaji")}</Button>}
       </form>
-      {!term && <p className="text-sm text-muted-foreground">{tr("Invoice hazionyeshwi hapa. Andika namba ya invoice (au jina la mteja) kisha bonyeza Tafuta ili kuiona, kuichapisha, kuihariri au kuifuta.")}</p>}
+      {!term && <p className="text-sm text-muted-foreground">{tr("Hakuna historia inayoonyeshwa mpaka utafute. Andika namba ya invoice au jina la mteja; Sales invoices zinaweza kufunguliwa, na Selling Point bills zinaweza kuchapishwa tena.")}</p>}
       {term && results === undefined && <p className="text-sm text-muted-foreground">{tr("Inatafuta…")}</p>}
-      {term && results && results.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice iliyopatikana kwenye biashara/idara yako.")}</p>}
+      {term && results && sellingPointResults && results.length === 0 && sellingPointResults.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice iliyopatikana kwenye biashara/idara yako.")}</p>}
       {results && results.length > 0 && (
         <div className="overflow-x-auto"><table className="w-full text-sm">
           <thead><tr className="border-b text-left">{[tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Idara"), tr("Jumla"), tr("Deni"), tr("Hali"), ""].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
@@ -84,6 +90,21 @@ export default function InvoiceFinder() {
             </tr>
           ))}</tbody>
         </table></div>
+      )}
+      {term && sellingPointResults && sellingPointResults.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="font-semibold">{tr("Selling Point — bili za historia")}</h3>
+          <div className="overflow-x-auto"><table className="w-full text-sm">
+            <thead><tr className="border-b text-left">{[tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Mhudumu"), tr("Jumla"), tr("Hali"), ""].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
+            <tbody>{sellingPointResults.map((bill) => (
+              <tr key={bill._id} className="border-b">
+                <td className="p-2 font-medium">{bill.invoiceNo}</td><td className="p-2">{bill.invoiceDate}</td><td className="p-2">{bill.customerName}</td><td className="p-2">{bill.waiterName}</td><td className="p-2 tabular-nums">{fmt(bill.total)}</td>
+                <td className="p-2">{bill.billPrintedAt ? tr("Imechapishwa") : bill.billSentAt ? tr("Imetumwa kwa cashier") : tr("Bili ya mhudumu")}</td>
+                <td className="p-2"><Button size="sm" variant="outline" disabled={settings === undefined} onClick={() => void printWaiterOrder({ invoiceNo: bill.invoiceNo, customerName: bill.customerName, waiterName: bill.waiterName, tableNumber: bill.tableNumber, total: bill.total, lines: bill.lines }, qzPrinterFrom(hardware), hardware.paperWidth, { ...branding, title: tr("BILI YA HISTORIA") })}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button></td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        </div>
       )}
       {shownId && <InvoicePanel key={shownId} invoiceId={shownId} onClose={closePanel} />}
     </section>

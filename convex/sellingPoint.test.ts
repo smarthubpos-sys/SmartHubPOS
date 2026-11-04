@@ -119,13 +119,28 @@ describe("Selling Point: bills", () => {
     const seen = await asCashier.query(api.waiterOrders.listForBills, {});
     expect(seen.map((o) => String(o._id)).sort()).toEqual([String(a.orderId), String(b.orderId)].sort()); // only the SENT ones, not the third order
     expect((await asCashier.query(api.waiterOrders.billSummary, { orderIds: [a.orderId, b.orderId] })).total).toBe(2000 + 1000);
-    expect(await asWaiter.query(api.waiterOrders.listForBills, {})).toHaveLength(3); // the waiter still keeps all his own bills
+    expect(await asWaiter.query(api.waiterOrders.listForBills, {})).toHaveLength(1); // sent bills leave the waiter active list; history remains searchable
 
     expect(await asWaiter2.query(api.waiterOrders.listForBills, {})).toHaveLength(0); // another waiter never sees them
     expect(await asCashierOther.query(api.waiterOrders.listForBills, {})).toHaveLength(0); // nor a cashier of another business
 
     await asCashier.mutation(api.waiterOrders.markBillPrinted, { orderIds: [a.orderId, b.orderId] });
     expect(await asCashier.query(api.waiterOrders.listForBills, {})).toHaveLength(0); // printed bills leave the list
+  });
+
+  it("Invoice Finder searches archived Selling Point bills by invoice number or customer, scoped to the waiter and cashier", async () => {
+    const { t, asWaiter, asWaiter2, asCashier, asCashierOther, bia } = await setup();
+    const a = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "finder-1-abcdefgh", mode: "send", lines: [{ productId: bia, qty: 1 }] });
+    await asWaiter.mutation(api.waiterOrders.sendBillToCashier, { orderIds: [a.orderId] });
+    await asCashier.mutation(api.waiterOrders.markBillPrinted, { orderIds: [a.orderId] });
+    const invoiceNo = await t.run(async ctx => (await ctx.db.get("waiterOrders", a.orderId))?.invoiceNo ?? "");
+    const byName = await asWaiter.query(api.waiterOrders.searchBillsForFinder, { search: "Mteja" });
+    const byNumber = await asWaiter.query(api.waiterOrders.searchBillsForFinder, { search: invoiceNo });
+    expect(byNumber.map(x => x._id)).toEqual([a.orderId]);
+    expect(byName.map(x => x._id)).toEqual([a.orderId]);
+    expect(await asCashier.query(api.waiterOrders.searchBillsForFinder, { search: invoiceNo })).toHaveLength(1);
+    expect(await asWaiter2.query(api.waiterOrders.searchBillsForFinder, { search: invoiceNo })).toHaveLength(0);
+    expect(await asCashierOther.query(api.waiterOrders.searchBillsForFinder, { search: invoiceNo })).toHaveLength(0);
   });
 
   it("only a waiter sends his OWN orders; a cashier cannot send, nobody can send somebody else's order", async () => {

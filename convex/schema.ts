@@ -969,7 +969,8 @@ export default defineSchema({
     status: v.string(), // placed | pending (sent to cashier) | accepted (cashier printed/handled) | printed (waiter printed)
     stockDeducted: v.optional(v.boolean()),
     stockDeductedAt: v.optional(v.string()),
-    clientKey: v.optional(v.string()), // one random key per cart: a repeated tap / retry returns the SAME order instead of a second one
+    clientKey: v.optional(v.string()),
+    invoiceNo: v.optional(v.string()), // one random key per cart: a repeated tap / retry returns the SAME order instead of a second one
     sentAt: v.optional(v.string()),
     printedAt: v.optional(v.string()),
     settledAt: v.optional(v.string()), // cashier received the money for this order from the waiter (set only when the order is paid IN FULL)
@@ -998,6 +999,7 @@ export default defineSchema({
     .index("by_scope_status", ["tenantId", "branchId", "status"])
     .index("by_waiter", ["waiterId"])
     .index("by_client_key", ["waiterId", "clientKey"])
+    .index("by_tenant_invoice_no", ["tenantId", "invoiceNo"])
     .index("by_created", ["createdAt"]),
 
   // Money a cashier received from a waiter for sent / printed Selling Point orders. Orders are kept; they are only marked settled.
