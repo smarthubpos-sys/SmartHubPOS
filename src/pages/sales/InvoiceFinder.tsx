@@ -14,6 +14,7 @@ import { printElement, readPaper } from "@/lib/print-area.ts";
 import { CANCEL_REASONS, editedTotals } from "./invoice-finder-helpers.ts";
 import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 import { brandingFromSettings } from "@/lib/receipt-branding.ts";
+import { useAuth } from "@/hooks/use-auth";
 
 const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const selectClass = "h-10 rounded-md border bg-background px-3";
@@ -54,6 +55,8 @@ function printInvoice(d: Full) {
  * department, together with canPrint / canEdit / canVoid); the buttons here only follow those answers, the server enforces them again.
  */
 export default function InvoiceFinder() {
+  const { user: me } = useAuth();
+  const noBusiness = !!me && !me.tenantId; // Super Admin who has not opened a business yet: the finder only searches inside one business
   const [text, setText] = useState("");
   const [term, setTerm] = useState("");
   const [openId, setOpenId] = useState<Id<"invoices"> | null>(null);
@@ -76,6 +79,7 @@ export default function InvoiceFinder() {
         <Button type="submit"><Search className="mr-1 h-4 w-4" />{tr("Tafuta")}</Button>
         {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); setOpenId(null); setClosedFor(null); }}>{tr("Futa utafutaji")}</Button>}
       </form>
+      {noBusiness && <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">{tr("Hujachagua biashara. Chagua biashara kwanza (Super Admin), kisha tafuta invoice; Edit na Cancel/Delete zitaonekana.")}</p>}
       {!term && <p className="text-sm text-muted-foreground">{tr("Hakuna historia inayoonyeshwa mpaka utafute. Andika namba ya invoice au jina la mteja; Sales invoices zinaweza kufunguliwa, na Selling Point bills zinaweza kuchapishwa tena.")}</p>}
       {term && results === undefined && <p className="text-sm text-muted-foreground">{tr("Inatafuta…")}</p>}
       {term && results && sellingPointResults && results.length === 0 && sellingPointResults.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice iliyopatikana kwenye biashara/idara yako.")}</p>}
@@ -163,6 +167,7 @@ function SellingPointBillActions({
   return (
     <div className="flex min-w-[240px] flex-wrap gap-1">
       {!cancelled && bill.canPrint && <Button size="sm" variant="outline" disabled={!settingsReady} onClick={() => void printWaiterOrder({ invoiceNo: bill.invoiceNo, customerName, waiterName: bill.waiterName, tableNumber: tableNumber || undefined, total: bill.total, lines: bill.lines }, qzPrinterFrom(hardware), hardware.paperWidth, { ...branding, title: tr("BILI YA HISTORIA") })}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
+      {!cancelled && locked && (bill.canEdit || bill.canVoid) && <p className="w-full text-xs text-amber-700">{tr("Bili hii imepokelewa na cashier au imeshalipwa; haiwezi kuhaririwa wala kufutwa.")}</p>}
       {!cancelled && bill.canEdit && <Button size="sm" variant="outline" disabled={locked || busy} onClick={() => setEditing(v => !v)}><Pencil className="mr-1 h-4 w-4" />{tr("Edit")}</Button>}
       {!cancelled && bill.canVoid && <Button size="sm" variant="destructive" disabled={locked || busy} onClick={() => setConfirmCancel(v => !v)}><Trash2 className="mr-1 h-4 w-4" />{tr("Delete / Cancel")}</Button>}
       {editing && (
@@ -226,6 +231,8 @@ function InvoicePanel({ invoiceId, onClose }: { invoiceId: Id<"invoices">; onClo
         </div>
       </div>
       {locked && !cancelled && d.canEdit && <p className="text-xs text-amber-700">{locked}</p>}
+      {!cancelled && inv.amountPaid > 0 && (d.canEdit || d.canVoid) && mode === "view" && <p className="text-xs text-amber-700">{tr("Invoice hii ina malipo ({0}). Bonyeza Unpay kwanza; ndipo Edit na Delete / Cancel zitafunguka.", [fmt(inv.amountPaid)])}</p>}
+      {!cancelled && !d.canEdit && !d.canVoid && <p className="text-xs text-muted-foreground">{tr("Huna ruhusa ya Edit wala Cancel/Delete. Muombe Super Admin au Manager akupe ruhusa hizo kwenye User Settings.")}</p>}
       {showUnpay && inv.amountPaid > 0 && mode === "view" && <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
         <p className="text-sm">{tr("Unpay itarejesha kiasi chote kilicholipwa ({0}) kwenye njia zilezile za malipo. Invoice itabaki kwenye mauzo lakini deni lake litafunguliwa tena.", [fmt(inv.amountPaid)])}</p>
         <div className="flex flex-wrap gap-2">

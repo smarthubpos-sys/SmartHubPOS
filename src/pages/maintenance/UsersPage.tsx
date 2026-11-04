@@ -10,8 +10,14 @@ import ModulePicker from "@/components/module-picker.tsx";
 import { ALL_MODULE_KEYS } from "@/convex/permissions";
 import { errorText, tr } from "@/lib/i18n.ts";
 
-type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; pin: string; pinLoginEnabled: boolean; hasPin: boolean; staffCode: string };
-const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, pin: "", pinLoginEnabled: false, hasPin: false, staffCode: "" };
+type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; pin: string; pinLoginEnabled: boolean; hasPin: boolean; staffCode: string; extra: string[] };
+/** Switches given to ONE user on top of his role (the server checks that the giver has them himself; Super Admin always has all). */
+const USER_SWITCHES: { key: string; label: string; hint: string }[] = [
+  { key: "sales.edit", label: "Edit invoice", hint: "Anaweza kurekebisha invoice zilizohifadhiwa (bidhaa, idadi, bei)." },
+  { key: "sales.void", label: "Cancel / Delete invoice", hint: "Anaweza kufuta au kubatilisha invoice; stock inarudi na malipo yanarudishwa." },
+  { key: "sales.print", label: "Print invoice", hint: "Anaweza kuchapisha invoice na risiti." },
+];
+const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, pin: "", pinLoginEnabled: false, hasPin: false, staffCode: "", extra: [] };
 
 export default function UsersPage() {
   const { user: me } = useAuth();
@@ -103,13 +109,27 @@ export default function UsersPage() {
                 </p>
               </div>
             )}
+            {f.role === "super_admin" && <p className="rounded-xl border p-3 text-sm md:col-span-2">{tr("Super Admin ana ruhusa zote (Edit, Cancel/Delete, Print) kila wakati; hazizimwi.")}</p>}
+            {f.role !== "super_admin" && !editingSelf && (
+              <div className="space-y-2 rounded-xl border p-3 md:col-span-2">
+                <p className="text-sm font-medium">{tr("Ruhusa za invoice (kwa mtumiaji huyu pekee)")}</p>
+                {USER_SWITCHES.map((sw) => (
+                  <label key={sw.key} className="flex cursor-pointer items-start gap-2 text-sm">
+                    <input type="checkbox" className="mt-1 h-4 w-4 cursor-pointer accent-primary" checked={f.extra.includes(sw.key)}
+                      onChange={(e) => setF((p) => (p ? { ...p, extra: e.target.checked ? [...new Set([...p.extra, sw.key])] : p.extra.filter((k) => k !== sw.key) } : p))} />
+                    <span>{tr(sw.label)}<span className="block text-xs text-muted-foreground">{tr(sw.hint)}</span></span>
+                  </label>
+                ))}
+                <p className="text-xs text-muted-foreground">{tr("Unaweza kutoa tu ruhusa ulizonazo wewe mwenyewe. Zinaongezwa juu ya ruhusa za role yake.")}</p>
+              </div>
+            )}
             {f.role !== "super_admin" && !editingSelf && (
               <div className="space-y-2 rounded-xl border p-3 md:col-span-2">
                 <p className="text-sm font-medium">{tr("Menyu (sidebar) anazoweza kuona")}</p>
                 <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.menuAll} onChange={(e) => setF((p) => (p ? { ...p, menuAll: e.target.checked } : p))} />{tr("Zote ambazo biashara ina")}</label>
                 {!f.menuAll && <ModulePicker value={f.menu} onChange={(menu) => setF((p) => (p ? { ...p, menu } : p))} available={tenantModules} />}
                 <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.ownDataOnly} onChange={(e) => setF((p) => (p ? { ...p, ownDataOnly: e.target.checked } : p))} />{tr("Aone mauzo na bili zake tu (dashboard yake binafsi)")}</label>
-                <p className="border-t pt-2 text-xs text-muted-foreground">{tr("Ruhusa zote za kazi (View, Add, Edit, Delete, Manage) zinadhibitiwa kupitia Role Management. Hapa unachagua sidebar pekee.")}</p>
+                <p className="border-t pt-2 text-xs text-muted-foreground">{tr("Ruhusa za kawaida za kazi zinadhibitiwa kupitia Role Management; hapa unaweza kuongeza ruhusa za invoice kwa mtu mmoja, na kuchagua sidebar.")}</p>
                 <p className="text-xs text-muted-foreground">{tr("Mfano mhudumu: ruhusu Sales na Bills tu, na weka 'aone mauzo na bili zake tu'. Huduma ambazo biashara haijalipia hazionekani hapa.")}</p>
               </div>
             )}
@@ -135,10 +155,10 @@ export default function UsersPage() {
               }
               let savedUserId: Id<"users">;
               if (editing) {
-                await update({ userId: f.id!, name: f.name, role: f.role, tenantId, ...dept, ...(editingSelf ? {} : { ...access, ...(f.menuAll ? { clearMenuAccess: true } : menu) }) });
+                await update({ userId: f.id!, name: f.name, role: f.role, tenantId, ...dept, ...(editingSelf ? {} : { ...access, extraPermissions: f.extra, ...(f.menuAll ? { clearMenuAccess: true } : menu) }) });
                 savedUserId = f.id!;
               } else {
-                const createdId = await create({ name: f.name, username: f.username, ...(pinOnlyRole ? {} : { password: f.password }), role: f.role, tenantId, ...dept, ...access, ...menu, ...(f.pin ? { pin: f.pin, pinLoginEnabled: pinLogin } : {}) });
+                const createdId = await create({ name: f.name, username: f.username, ...(pinOnlyRole ? {} : { password: f.password }), role: f.role, tenantId, ...dept, ...access, ...menu, ...(f.extra.length ? { extraPermissions: f.extra } : {}), ...(f.pin ? { pin: f.pin, pinLoginEnabled: pinLogin } : {}) });
                 savedUserId = createdId as Id<"users">;
               }
               if (editing) { // a new user's PIN was already saved (and checked for duplicates) together with the account
@@ -179,7 +199,7 @@ export default function UsersPage() {
                   <td className="p-3">{u.isActive ? tr("Active") : tr("Disabled")}</td>
                   <td className="p-3">
                     <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, pin: "", pinLoginEnabled: u.pinLoginEnabled, hasPin: u.hasPin, staffCode: u.staffCode ?? "" })}>{tr("Modify")}</Button>
+                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, pin: "", pinLoginEnabled: u.pinLoginEnabled, hasPin: u.hasPin, staffCode: u.staffCode ?? "", extra: u.extraPermissions ?? [] })}>{tr("Modify")}</Button>
                       <Button size="sm" variant="outline" onClick={() => { const p = prompt(tr("Password mpya ya {0}:", [u.username])); if (p) void run(() => reset({ userId: u._id, newPassword: p }), tr("Password imebadilishwa; ataingia upya.")); }}>{tr("Reset password")}</Button>
                       {String(me?._id) !== String(u._id) && (
                         <Button size="sm" variant="outline" onClick={() => void run(() => update({ userId: u._id, isActive: !u.isActive }), u.isActive ? tr("Amezimwa.") : tr("Amewashwa."))}>{u.isActive ? tr("Disable") : tr("Enable")}</Button>
