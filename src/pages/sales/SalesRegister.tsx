@@ -47,6 +47,8 @@ function printSoldItem(row: Row, copies: number, paper: Paper, company: { name: 
 
 const selectClass = "h-10 rounded-md border bg-background px-3";
 // Report screens about product sales / invoices that carry the "search invoice by number" box.
+// Screens that would list invoices one under the other: the list stays hidden, an invoice appears only when it is searched by number.
+const INVOICE_LIST_HIDDEN = (path: string, showItems: boolean) => path === "reports/invoices" || (path === "reports/sold-items" && !showItems);
 const INVOICE_SEARCH_PATHS = ["reports/product-client", "reports/by-product", "reports/sold-items", "reports/invoices"];
 const TITLES: Record<string, string> = {
   payments: tr("Payment Received"), "clients/list": tr("List of Clients"), "reports/invoices": tr("Invoice Report"), "reports/summary": tr("Summary Sales Report"),
@@ -205,7 +207,7 @@ export default function SalesRegister() {
       {paymentForm}
       {lastReceipt && <TransactionReceipt title={tr("RISITI YA MALIPO YA MAUZO")} reference={lastReceipt.reference} date={lastReceipt.date} partyLabel={tr("Mteja")} party={lastReceipt.party} amount={lastReceipt.amount} method={lastReceipt.method} note={tr("Malipo yamepokelewa. Hifadhi risiti hii kwa kumbukumbu.")} />}
       {statementPicker}
-      {path === "reports/client-statement" && !clientId ? <p className="text-sm text-muted-foreground">{tr("Chagua mteja kuona statement yake.")}</p> : <ReportTable title={title === "Payment Received" ? tr("Malipo yaliyopokelewa") : title} rows={listRows} sumCols={path === "payments" ? ["Kiasi"] : sumCols} note={note} onPrintRow={path === "reports/sold-items" ? (row, copies, paper) => printSoldItem(row, copies, paper, data.company) : undefined} />}
+      {INVOICE_LIST_HIDDEN(path, showItems) ? null : path === "reports/client-statement" && !clientId ? <p className="text-sm text-muted-foreground">{tr("Chagua mteja kuona statement yake.")}</p> : <ReportTable title={title === "Payment Received" ? tr("Malipo yaliyopokelewa") : title} rows={listRows} sumCols={path === "payments" ? ["Kiasi"] : sumCols} note={note} onPrintRow={path === "reports/sold-items" ? (row, copies, paper) => printSoldItem(row, copies, paper, data.company) : undefined} />}
     </div>
   );
 }

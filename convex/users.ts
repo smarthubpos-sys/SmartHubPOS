@@ -77,7 +77,9 @@ export const updateCurrentUser = mutation({
         if (source.ownDataOnly) patch.ownDataOnly = source.ownDataOnly;
         patch.isActive = source.isActive ?? true;
       } else {
-        patch.role = isConfiguredAdmin || !otherSuperAdmin ? "super_admin" : "viewer";
+        // Super Admin only for the account named in SUPER_ADMIN_USERNAME. A business login never becomes Super Admin, and a new
+        // account is never promoted just because no Super Admin is active; only when NO name is configured at all (first setup) the very first account is.
+        patch.role = isConfiguredAdmin || (!configuredAdmin && !businessScopedLogin && !otherSuperAdmin) ? "super_admin" : "viewer";
         patch.isActive = true;
       }
       patch.requirePasswordChange = current.requirePasswordChange ?? source?.requirePasswordChange ?? false;

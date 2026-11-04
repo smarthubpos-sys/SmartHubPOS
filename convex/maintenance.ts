@@ -596,6 +596,9 @@ async function assertDepartmentRules(
 async function assertCanAssign(ctx: QueryCtx, actor: UserLike, target: { role?: string; tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, existing?: UserLike | null) {
   const role = target.role === undefined ? undefined : normalizeRole(target.role);
   if (role && ["super_admin", "superadmin"].includes(role) && !isSuperAdmin(actor)) throw new ConvexError("Super Admin pekee ndiye anaweza kutoa role ya Super Admin.");
+  // Nobody is ever PROMOTED to Super Admin (not even by a Super Admin): that account belongs to SUPER_ADMIN_USERNAME on the server.
+  // Saving an account that already is Super Admin with the same role stays allowed.
+  if (role && ["super_admin", "superadmin"].includes(role) && !(existing && isSuperAdmin(existing))) throw new ConvexError("Hakuna anayeweza kupandishwa kuwa Super Admin. Akaunti ya Super Admin imefungwa kwenye SUPER_ADMIN_USERNAME pekee.");
   if (existing && isSuperAdmin(existing) && !isSuperAdmin(actor)) throw new ConvexError("Huwezi kubadilisha akaunti ya Super Admin.");
   if (role && !["super_admin", "superadmin"].includes(role)) {
     const known = SYSTEM_ROLES.some((r) => r.name === role) || (await findRoleRow(ctx, target.tenantId ?? actor.tenantId, role));

@@ -56,16 +56,21 @@ export default function InvoiceFinder() {
   const [term, setTerm] = useState("");
   const [openId, setOpenId] = useState<Id<"invoices"> | null>(null);
   const results = useQuery(api.sales.searchInvoices, term ? { invoiceNo: term } : "skip");
+  // One invoice found: it opens straight away so the Edit / Cancel / Print panel is right there (until the user closes it for this search).
+  const [closedFor, setClosedFor] = useState<string | null>(null);
+  const shownId = openId ?? (results && results.length === 1 && closedFor !== term ? results[0]._id : null);
+  const closePanel = () => { setOpenId(null); setClosedFor(term); };
 
   return (
     <section className="space-y-3 rounded-xl border p-4 print:hidden">
-      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setOpenId(null); setTerm(text.trim()); }}>
+      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setOpenId(null); setClosedFor(null); setTerm(text.trim()); }}>
         <label className="grid gap-1 text-sm">{tr("Tafuta invoice kwa namba")}
-          <Input className="w-64" inputMode="text" placeholder="00001" value={text} onChange={(e) => setText(e.target.value)} aria-label={tr("Namba ya invoice")} />
+          <Input className="w-64" inputMode="text" autoFocus placeholder="00001" value={text} onChange={(e) => setText(e.target.value)} aria-label={tr("Namba ya invoice")} />
         </label>
         <Button type="submit"><Search className="mr-1 h-4 w-4" />{tr("Tafuta")}</Button>
-        {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); setOpenId(null); }}>{tr("Futa utafutaji")}</Button>}
+        {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); setOpenId(null); setClosedFor(null); }}>{tr("Futa utafutaji")}</Button>}
       </form>
+      {!term && <p className="text-sm text-muted-foreground">{tr("Invoice hazionyeshwi hapa. Andika namba ya invoice kisha bonyeza Tafuta ili kuiona, kuihariri au kuifuta.")}</p>}
       {term && results === undefined && <p className="text-sm text-muted-foreground">{tr("Inatafuta…")}</p>}
       {term && results && results.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice yenye namba hiyo kwenye biashara/idara yako.")}</p>}
       {results && results.length > 0 && (
@@ -80,7 +85,7 @@ export default function InvoiceFinder() {
           ))}</tbody>
         </table></div>
       )}
-      {openId && <InvoicePanel key={openId} invoiceId={openId} onClose={() => setOpenId(null)} />}
+      {shownId && <InvoicePanel key={shownId} invoiceId={shownId} onClose={closePanel} />}
     </section>
   );
 }

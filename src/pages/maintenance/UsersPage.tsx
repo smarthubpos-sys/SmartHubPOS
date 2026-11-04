@@ -30,8 +30,10 @@ export default function UsersPage() {
   const set = (k: keyof Form, v: string) => setF((p) => (p ? { ...p, [k]: v } : p));
   const isSuper = ["super_admin", "superadmin"].includes(String(me?.role ?? "").toLowerCase().replace(/[\s-]+/g, "_"));
   // A user administrator can only give roles that carry no more than he has himself (the one the edited user already has stays visible).
-  const roleOptions = (roles ?? []).filter((r) => isSuper || (r.name !== "super_admin" && (r.assignable || r.name === f?.role))).map((r) => [r.name, r.displayName] as [string, string]);
-  if (isSuper) roleOptions.unshift(["super_admin", tr("Super Admin")]);
+  // Every role of the business is listed; the ones above his own rights are marked and the server still refuses them.
+  const roleOptions = (roles ?? []).filter((r) => isSuper || r.name !== "super_admin").map((r) => [r.name, isSuper || r.assignable || r.name === f?.role ? r.displayName : `${r.displayName} ${tr("(juu ya ruhusa zako)")}`] as [string, string]);
+  // Super Admin is never handed out; it only shows when the account being edited already is one.
+  if (isSuper && String(f?.role ?? "").toLowerCase().replace(/[\s-]+/g, "_").replace("superadmin", "super_admin") === "super_admin") roleOptions.unshift(["super_admin", tr("Super Admin")]);
   const tenantName = (id?: string) => offices?.tenants.find((t) => t._id === id)?.name ?? "—";
   const branchName = (id?: string) => offices?.branches.find((b) => b._id === id)?.name ?? tr("Zote");
   const branches = (offices?.branches ?? []).filter((b) => b.tenantId === (f?.tenantId || me?.tenantId));
