@@ -436,12 +436,12 @@ export const submit = mutation({
 });
 
 /**
- * Who may see an order on the Bills screen. Every person keeps HIS OWN bills (orders he made himself). A waiter's orders reach the
- * cashier's Bills screen only after the waiter generated his bill and pressed "Send to cashier" (`billSentAt`). Super Admin never gets
- * other people's bills.
+ * Invoice Finder is an archive, not the cashier's live queue. Waiters see their own bills;
+ * cashiers see bills sent to them; Super Admin can audit bills across the selected business.
+ * This does not add Super Admin to the cashier receive/settlement workflow.
  */
 const billVisible = (user: { _id: Id<"users">; role?: string }, o: Doc<"waiterOrders">) =>
-  o.waiterId === user._id || (!isWaiter(user.role) && !isSuper(user.role) && !!o.billSentAt);
+  o.waiterId === user._id || (isSuper(user.role) || (!isWaiter(user.role) && !!o.billSentAt));
 
 /** Search archived Selling Point bills from the existing Invoice Finder. No default history listing. */
 export const searchBillsForFinder = query({

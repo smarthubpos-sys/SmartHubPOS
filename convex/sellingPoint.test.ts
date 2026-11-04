@@ -317,6 +317,27 @@ describe("Selling Point: Invoice Finder actions", () => {
     expect(history[0].status).toBe("cancelled");
   });
 
+  it("lets Super Admin find and administer another waiter's bill inside the selected business", async () => {
+    const { t, asBoss, asWaiter, boss, tenantId, bia } = await setup();
+    await t.run(async (ctx) => ctx.db.patch("users", boss, { tenantId }));
+    const created = await asWaiter.mutation(api.waiterOrders.submit, {
+      clientKey: "superadmin-finder-12345", mode: "print", customerName: "Mteja wa Juma",
+      lines: [{ productId: bia, qty: 1 }],
+    });
+    const before = await t.run(async (ctx) => ctx.db.get("waiterOrders", created.orderId));
+    const found = await asBoss.query(api.waiterOrders.searchBillsForFinder, { search: before!.invoiceNo! });
+    expect(found).toHaveLength(1);
+    expect(found[0].canEdit).toBe(true);
+    expect(found[0].canVoid).toBe(true);
+    await asBoss.mutation(api.waiterOrders.editBillFromFinder, {
+      orderId: created.orderId, customerName: "Mteja aliyerekebishwa",
+      lines: [{ productId: bia, qty: 1, unitPrice: 2500 }],
+    });
+    const edited = await t.run(async (ctx) => ctx.db.get("waiterOrders", created.orderId));
+    expect(edited?.customerName).toBe("Mteja aliyerekebishwa");
+    expect(edited?.invoiceNo).toBe(before?.invoiceNo);
+  });
+
   it("refuses to edit or cancel a bill after cashier settlement", async () => {
     const { asEditor, bia, t } = await setup();
     const created = await asEditor.mutation(api.waiterOrders.submit, {
