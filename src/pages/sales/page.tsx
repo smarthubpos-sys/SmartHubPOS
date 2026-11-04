@@ -4,6 +4,8 @@ import { ShoppingCart, CreditCard, UserPlus, List, FileText, BarChart2, Receipt,
 import InvoiceEntry from "@/pages/sales/InvoiceEntry.tsx";
 import SalesClients from "@/pages/sales/SalesClients.tsx";
 import SalesRegister from "@/pages/sales/SalesRegister.tsx";
+import InvoiceFinderPage from "@/pages/sales/InvoiceFinderPage.tsx";
+import { canSeeInvoiceFinder } from "@/pages/sales/invoice-finder-helpers.ts";
 import { tr } from "@/lib/i18n.ts";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
@@ -13,6 +15,7 @@ const salesMenuItems = [
     section: tr("Main Functions"),
     items: [
       { label: tr("Invoicing"), icon: FileText, path: "/sales/invoicing", description: tr("Create and manage sales invoices") },
+      { label: tr("Invoice Finder"), icon: Receipt, path: "/sales/invoice-finder", description: tr("Search an invoice, then print, edit or cancel it") },
       { label: tr("Add / Modify Client"), icon: UserPlus, path: "/sales/clients", description: tr("Manage customer accounts") },
     ],
   },
@@ -45,9 +48,12 @@ export default function SalesPage() {
   const myPerms = useQuery(api.maintenance.myPermissions, {});
   const canViewReports = !!myPerms?.includes("sales.reports.view");
 
+  const showFinder = canSeeInvoiceFinder(myPerms);
   const visibleSalesMenuItems = salesMenuItems
     .map((section) =>
-      section.section === tr("Sales Reports")
+      section.section === tr("Main Functions")
+        ? { ...section, items: section.items.filter((item) => item.path !== "/sales/invoice-finder" || showFinder) }
+        : section.section === tr("Sales Reports")
         ? {
             ...section,
             items: section.items.filter(
@@ -73,6 +79,7 @@ export default function SalesPage() {
       />
       <Route path="invoicing" element={<InvoiceEntry />} />
       <Route path="clients" element={<SalesClients />} />
+      <Route path="invoice-finder" element={<InvoiceFinderPage />} />
       <Route path="*" element={<SalesRegister />} />
     </Routes>
   );

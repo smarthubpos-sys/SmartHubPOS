@@ -372,6 +372,18 @@ async function allowedMenu(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, w
  *  - he cannot change, reset or deactivate a user who has more power than he has (otherwise he could take over the owner's account).
  * Super Admin is never limited. Permissions only a Super Admin may give (stock.adjust) are left out of the comparison (they have their own rule).
  */
+/**
+ * Manager hierarchy. A Manager who was allowed to manage users (maintenance.users) registers and manages Accountant, Cashier, Waiter,
+ * Waitress and Viewer as his own staff. He never hands out (or touches) Administrator, Owner or Super Admin. Any other role, such as
+ * a custom one, still follows the general rule: nothing above his own permissions.
+ */
+const MANAGER_STAFF_ROLES = ["accountant", "cashier", "waiter", "waitress", "viewer"];
+const ROLES_ABOVE_MANAGER = ["super_admin", "superadmin", "admin", "administrator", "owner", "business_owner"];
+const isManagerActor = (actor: UserLike) => normalizeRole(actor.role) === "manager";
+const managerStaffRole = (actor: UserLike, role?: string) => isManagerActor(actor) && !!role && MANAGER_STAFF_ROLES.includes(normalizeRole(role));
+function assertManagerStaysBelowAdmin(actor: UserLike, role: string | undefined, what: string) {
+  if (isManagerActor(actor) && role && ROLES_ABOVE_MANAGER.includes(normalizeRole(role))) throw new ConvexError(`Manager hawezi ${what} Administrator au Super Admin.`);
+}
 const withoutSuperOnly = (keys: Iterable<string>) => [...new Set(keys)].filter((k) => !SUPER_ADMIN_ONLY_PERMISSIONS.includes(k));
 async function assertNotMorePowerful(ctx: QueryCtx, actor: UserLike, wanted: Iterable<string>, message: string) {
   if (isSuperAdmin(actor)) return;
@@ -382,28 +394,20 @@ async function assertNotMorePowerful(ctx: QueryCtx, actor: UserLike, wanted: Ite
 /** Role and direct permissions a user administrator wants to hand out. */
 async function assertNoEscalation(ctx: QueryCtx, actor: UserLike, a: { role?: string; tenantId?: Id<"tenants">; extraPermissions?: string[] }) {
   if (isSuperAdmin(actor)) return;
+  assertManagerStaysBelowAdmin(actor, a.role, "kumpa mtu role ya");
   const wanted = new Set<string>(a.extraPermissions ?? []);
-  const managerAssigningWaiter = normalizeRole(actor.role) === "manager" && !!a.role && ["waiter", "waitress"].includes(normalizeRole(a.role));
-  if (a.role) for (const k of await permissionsOfRole(ctx, a.tenantId ?? actor.tenantId, a.role)) wanted.add(k);
-  const comparable = managerAssigningWaiter ? [...wanted].filter((k) => !["waiterOrders.view", "waiterOrders.manage"].includes(k)) : wanted;
-  await assertNotMorePowerful(ctx, actor, comparable, "Huwezi kutoa ruhusa ambazo wewe mwenyewe huna");
+  // A Manager's own staff roles (Accountant, Cashier, Waiter, Waitress, Viewer) are his to give; direct extra permissions are still compared.
+  if (a.role && !managerStaffRole(actor, a.role)) for (const k of await permissionsOfRole(ctx, a.tenantId ?? actor.tenantId, a.role)) wanted.add(k);
+  await assertNotMorePowerful(ctx, actor, wanted, "Huwezi kutoa ruhusa ambazo wewe mwenyewe huna");
 }
 /** The account being managed (edit, reset password, PIN, staff code ...). */
 async function assertCanManageTarget(ctx: QueryCtx, actor: UserLike, target: UserLike, requestedRole?: string) {
   if (isSuperAdmin(actor)) return;
-  const targetRole = normalizeRole(target.role);
-  // A Manager with maintenance.users may create/convert a staff account to Waiter/Waitress.
-  // During a conversion the saved target may still be Cashier, whose legacy role can carry
-  // waiterOrders permissions too; compare the rest of its permissions while allowing only
-  // these two Selling Point permissions for this specific transition.
-  const managerMayManageWaiter =
-    normalizeRole(actor.role) === "manager" &&
-    (["waiter", "waitress"].includes(targetRole) ||
-      ["waiter", "waitress"].includes(normalizeRole(requestedRole)));
-  const targetPermissions = await effectivePermissionsOf(ctx, target);
-  const comparable = managerMayManageWaiter
-    ? targetPermissions.filter((k) => !["waiterOrders.view", "waiterOrders.manage"].includes(k))
-    : targetPermissions;
+  assertManagerStaysBelowAdmin(actor, target.role, "kusimamia");
+  assertManagerStaysBelowAdmin(actor, requestedRole, "kumpa mtu role ya");
+  // A Manager manages his own staff roles whatever the role's permission list says; only what was given to that one person directly is compared.
+  const ownStaff = managerStaffRole(actor, target.role) && (!requestedRole || managerStaffRole(actor, requestedRole));
+  const comparable = ownStaff ? (target.extraPermissions ?? []) : await effectivePermissionsOf(ctx, target);
   await assertNotMorePowerful(ctx, actor, comparable, "Huwezi kusimamia mtumiaji mwenye ruhusa nyingi kuliko wewe");
 }
 
@@ -424,9 +428,8 @@ export const listAssignableRoles = query({
       let assignable = true;
       if (!isSuperAdmin(actor)) {
         const mine = new Set(withoutSuperOnly(await effectivePermissionsOf(ctx, actor)));
-        const managerCanAssignWaiter = normalizeRole(actor.role) === "manager" && ["waiter", "waitress"].includes(normalizeRole(r.name));
         const rolePermissions = withoutSuperOnly(await permissionsOfRole(ctx, actor.tenantId, r.name));
-        assignable = rolePermissions.every((k) => mine.has(k) || (managerCanAssignWaiter && ["waiterOrders.view", "waiterOrders.manage"].includes(k)));
+        assignable = isManagerActor(actor) && ROLES_ABOVE_MANAGER.includes(normalizeRole(r.name)) ? false : managerStaffRole(actor, r.name) || rolePermissions.every((k) => mine.has(k));
       }
       out.push({ ...r, assignable });
     }
@@ -595,6 +598,7 @@ async function assertDepartmentRules(
 
 async function assertCanAssign(ctx: QueryCtx, actor: UserLike, target: { role?: string; tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, existing?: UserLike | null) {
   const role = target.role === undefined ? undefined : normalizeRole(target.role);
+  assertManagerStaysBelowAdmin(actor, role, "kumpa mtu role ya");
   if (role && ["super_admin", "superadmin"].includes(role) && !isSuperAdmin(actor)) throw new ConvexError("Super Admin pekee ndiye anaweza kutoa role ya Super Admin.");
   // Nobody is ever PROMOTED to Super Admin (not even by a Super Admin): that account belongs to SUPER_ADMIN_USERNAME on the server.
   // Saving an account that already is Super Admin with the same role stays allowed.

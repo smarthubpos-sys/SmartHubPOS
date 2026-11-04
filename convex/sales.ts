@@ -764,7 +764,7 @@ async function invoiceRights(ctx: QueryCtx, user: UserLike) {
 const canSeeInvoice = (user: UserLike, inv: Doc<"invoices"> | null): inv is Doc<"invoices"> => !!inv && canAccessRecord(user, inv) && !(isOwnDataOnly(user) && inv.createdBy !== user._id);
 
 /**
- * Search by invoice number (Reports > Product Sales). "1", "00001" and "INV-00001" all find INV-00001.
+ * Search by invoice number ("1", "00001" and "INV-00001" all find INV-00001) or, when it is not a number of this business, by customer name / code / phone.
  * Only invoices of the user's own business (and department, when one is chosen) are ever returned.
  */
 export const searchInvoices = query({
@@ -780,6 +780,15 @@ export const searchInvoices = query({
     if (/^\d+$/.test(raw)) { const padded = raw.padStart(5, "0"); wanted.add(padded); wanted.add(`${prefix}${padded}`); }
     const found = new Map<string, Doc<"invoices">>();
     for (const no of wanted) for (const inv of await ctx.db.query("invoices").withIndex("by_tenant_no", (q) => q.eq("tenantId", tenantId).eq("invoiceNo", no)).take(20)) if (canSeeInvoice(user, inv)) found.set(String(inv._id), inv);
+    // Not an invoice number: look for the customer instead (name, code or phone) and list his latest invoices. Only this business, never a long list.
+    if (found.size === 0 && raw.length >= 3) {
+      const needle = raw.toLowerCase();
+      const clients = (await ctx.db.query("clients").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).take(1000))
+        .filter((c) => `${c.name} ${c.code} ${c.phone ?? ""}`.toLowerCase().includes(needle)).slice(0, 10);
+      for (const c of clients) for (const inv of await ctx.db.query("invoices").withIndex("by_client", (q) => q.eq("clientId", c._id)).order("desc").take(10)) {
+        if (inv.tenantId === tenantId && canSeeInvoice(user, inv)) found.set(String(inv._id), inv);
+      }
+    }
     const rights = await invoiceRights(ctx, user);
     const out = [];
     for (const inv of [...found.values()].slice(0, 20)) {

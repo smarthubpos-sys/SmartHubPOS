@@ -11,3 +11,6 @@ export function editedTotals(lines: Array<{ qty: string; price: string; discount
   const tax = round2((taxable * num(taxRate)) / 100);
   return { subtotal, discount, tax, total: round2(taxable + tax) };
 }
+
+/** The Invoice Finder tile of the Sales menu: shown to anybody who may view sales (the buttons inside follow sales.print / sales.edit / sales.void). */
+export const canSeeInvoiceFinder = (perms: readonly string[] | undefined | null) => !!perms?.includes("sales.view");
