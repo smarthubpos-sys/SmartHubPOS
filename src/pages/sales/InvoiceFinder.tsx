@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { toast } from "sonner";
-import { Printer, Search } from "lucide-react";
+import { Printer, Search, Pencil, Trash2, Save, X } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
@@ -99,8 +99,8 @@ export default function InvoiceFinder() {
             <tbody>{sellingPointResults.map((bill) => (
               <tr key={bill._id} className="border-b">
                 <td className="p-2 font-medium">{bill.invoiceNo}</td><td className="p-2">{bill.invoiceDate}</td><td className="p-2">{bill.customerName}</td><td className="p-2">{bill.waiterName}</td><td className="p-2 tabular-nums">{fmt(bill.total)}</td>
-                <td className="p-2">{bill.billPrintedAt ? tr("Imechapishwa") : bill.billSentAt ? tr("Imetumwa kwa cashier") : tr("Bili ya mhudumu")}</td>
-                <td className="p-2"><Button size="sm" variant="outline" disabled={settings === undefined} onClick={() => void printWaiterOrder({ invoiceNo: bill.invoiceNo, customerName: bill.customerName, waiterName: bill.waiterName, tableNumber: bill.tableNumber, total: bill.total, lines: bill.lines }, qzPrinterFrom(hardware), hardware.paperWidth, { ...branding, title: tr("BILI YA HISTORIA") })}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button></td>
+                <td className="p-2">{bill.status === "cancelled" ? tr("Imebatilishwa") : bill.billPrintedAt ? tr("Imechapishwa") : bill.billSentAt ? tr("Imetumwa kwa cashier") : tr("Bili ya mhudumu")}</td>
+                <td className="p-2"><SellingPointBillActions bill={bill} settingsReady={settings !== undefined} hardware={hardware} branding={branding} /></td>
               </tr>
             ))}</tbody>
           </table></div>
@@ -108,6 +108,96 @@ export default function InvoiceFinder() {
       )}
       {shownId && <InvoicePanel key={shownId} invoiceId={shownId} onClose={closePanel} />}
     </section>
+  );
+}
+
+type FinderSellingPointBill = FunctionReturnType<typeof api.waiterOrders.searchBillsForFinder>[number];
+
+function SellingPointBillActions({
+  bill, settingsReady, hardware, branding,
+}: {
+  bill: FinderSellingPointBill;
+  settingsReady: boolean;
+  hardware: { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
+  branding: ReturnType<typeof brandingFromSettings>;
+}) {
+  const editBill = useMutation(api.waiterOrders.editBillFromFinder);
+  const cancelBill = useMutation(api.waiterOrders.cancelBillFromFinder);
+  const [editing, setEditing] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [customerName, setCustomerName] = useState(bill.customerName);
+  const [tableNumber, setTableNumber] = useState(bill.tableNumber ?? "");
+  const [notes, setNotes] = useState(bill.notes ?? "");
+  const [reason, setReason] = useState("");
+  const [lines, setLines] = useState(bill.lines.map(line => ({
+    productId: line.productId, qty: String(line.qty), unitPrice: String(line.unitPrice),
+    discount: String(line.discount ?? 0), productName: line.productName,
+  })));
+  const [busy, setBusy] = useState(false);
+  const cancelled = bill.status === "cancelled";
+  const locked = bill.status === "accepted" || !bill.canEdit && !bill.canVoid;
+  const save = async () => {
+    setBusy(true);
+    try {
+      await editBill({
+        orderId: bill._id, customerName, tableNumber: tableNumber || undefined, notes: notes || undefined,
+        lines: lines.map(line => ({
+          productId: line.productId, qty: Number(line.qty), unitPrice: Number(line.unitPrice), discount: Number(line.discount || 0),
+        })),
+      });
+      toast.success(tr("Invoice imesasishwa; namba yake imehifadhiwa."));
+      setEditing(false);
+    } catch (error) { toast.error(errorText(error)); }
+    finally { setBusy(false); }
+  };
+  const cancel = async () => {
+    setBusy(true);
+    try {
+      await cancelBill({ orderId: bill._id, reason });
+      toast.success(tr("Invoice imebatilishwa; historia imehifadhiwa."));
+      setConfirmCancel(false);
+    } catch (error) { toast.error(errorText(error)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="flex min-w-[240px] flex-wrap gap-1">
+      {!cancelled && bill.canPrint && <Button size="sm" variant="outline" disabled={!settingsReady} onClick={() => void printWaiterOrder({ invoiceNo: bill.invoiceNo, customerName, waiterName: bill.waiterName, tableNumber: tableNumber || undefined, total: bill.total, lines: bill.lines }, qzPrinterFrom(hardware), hardware.paperWidth, { ...branding, title: tr("BILI YA HISTORIA") })}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
+      {!cancelled && bill.canEdit && <Button size="sm" variant="outline" disabled={locked || busy} onClick={() => setEditing(v => !v)}><Pencil className="mr-1 h-4 w-4" />{tr("Edit")}</Button>}
+      {!cancelled && bill.canVoid && <Button size="sm" variant="destructive" disabled={locked || busy} onClick={() => setConfirmCancel(v => !v)}><Trash2 className="mr-1 h-4 w-4" />{tr("Delete / Cancel")}</Button>}
+      {editing && (
+        <div className="mt-2 w-full space-y-2 rounded-md border p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-xs">{tr("Mteja")}<Input value={customerName} onChange={e => setCustomerName(e.target.value)} /></label>
+            <label className="text-xs">{tr("Meza")}<Input value={tableNumber} onChange={e => setTableNumber(e.target.value)} /></label>
+          </div>
+          <label className="block text-xs">{tr("Maelezo")}<Input value={notes} onChange={e => setNotes(e.target.value)} /></label>
+          {lines.map((line, i) => (
+            <div key={`${line.productId}-${i}`} className="grid grid-cols-4 gap-1 text-xs">
+              <span className="col-span-4 font-medium">{line.productName}</span>
+              <label>{tr("Qty")}<Input type="number" min="0.001" step="any" value={line.qty} onChange={e => setLines(prev => prev.map((x,j) => j === i ? { ...x, qty: e.target.value } : x))} /></label>
+              <label>{tr("Bei")}<Input type="number" min="0" step="any" value={line.unitPrice} onChange={e => setLines(prev => prev.map((x,j) => j === i ? { ...x, unitPrice: e.target.value } : x))} /></label>
+              <label>{tr("Punguzo")}<Input type="number" min="0" step="any" value={line.discount} onChange={e => setLines(prev => prev.map((x,j) => j === i ? { ...x, discount: e.target.value } : x))} /></label>
+              <span className="self-center text-right">{fmt(Math.max(0, Number(line.qty) * Number(line.unitPrice) - Number(line.discount)))}</span>
+            </div>
+          ))}
+          <div className="flex gap-2">
+            <Button size="sm" disabled={busy} onClick={() => void save()}><Save className="mr-1 h-4 w-4" />{tr("Hifadhi mabadiliko")}</Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setEditing(false)}><X className="mr-1 h-4 w-4" />{tr("Ghairi")}</Button>
+          </div>
+        </div>
+      )}
+      {confirmCancel && (
+        <div className="mt-2 w-full space-y-2 rounded-md border border-destructive/40 p-3">
+          <p className="text-xs">{tr("Bili itabatilishwa na stock itarudishwa. Rekodi na namba ya invoice vitahifadhiwa.")}</p>
+          <Input value={reason} onChange={e => setReason(e.target.value)} placeholder={tr("Sababu ya kubatilisha")} />
+          <div className="flex gap-2">
+            <Button size="sm" variant="destructive" disabled={busy || !reason.trim()} onClick={() => void cancel()}>{tr("Thibitisha kufuta")}</Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirmCancel(false)}>{tr("Ghairi")}</Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

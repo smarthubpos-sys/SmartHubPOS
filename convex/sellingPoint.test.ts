@@ -18,6 +18,7 @@ async function setup() {
     const boss = await ctx.db.insert("users", { name: "Boss", username: "boss", role: "super_admin", isActive: true });
     const waiter = await user(tenantId, "juma", "waiter", { staffCode: "W01" });
     const waiter2 = await user(tenantId, "neema", "waiter", { staffCode: "W02" });
+    const editor = await user(tenantId, "editor", "waiter", { staffCode: "W03", extraPermissions: ["sales.view", "sales.edit", "sales.void", "sales.print"] });
     const cashier = await user(tenantId, "cash", "cashier");
     const cashierOther = await user(other, "cash2", "cashier");
     const group = await ctx.db.insert("productGroups", { tenantId, code: "DR", name: "Vinywaji", isActive: true });
@@ -25,14 +26,14 @@ async function setup() {
     const soda = await ctx.db.insert("products", { tenantId, itemCode: "P2", name: "Soda", groupId: group, sellingPrice: 1000, openingQty: 3, currentQty: 3, isActive: true });
     const clientId = await ctx.db.insert("clients", { tenantId, code: "C1", name: "Mteja", openingBalance: 0, creditPolicy: "allow", isActive: true });
     await ctx.db.insert("invoices", { tenantId, invoiceNo: "INV-1", invoiceDate: day, clientId, subtotal: 6000, discount: 0, taxAmount: 0, total: 6000, amountPaid: 1000, outstanding: 5000, paymentStatus: "partial", status: "posted", createdBy: waiter });
-    return { tenantId, other, boss, waiter, waiter2, cashier, cashierOther, bia, soda };
+    return { tenantId, other, boss, waiter, waiter2, editor, cashier, cashierOther, bia, soda };
   });
   const as = (id: Id<"users">, n: number) => t.withIdentity({ subject: id, tokenIdentifier: `x|${n}` });
   const asBoss = as(ids.boss, 1);
   await asBoss.mutation(api.tenants.update, { tenantId: ids.tenantId, ...base, waiterEnabled: true, waitressEnabled: true });
   const qty = async (id: Id<"products">) => (await t.run(async (ctx) => ctx.db.get("products", id)))?.currentQty;
   const moves = async () => (await t.run(async (ctx) => ctx.db.query("stockMovements").collect())).length;
-  return { t, ...ids, asBoss, asWaiter: as(ids.waiter, 2), asWaiter2: as(ids.waiter2, 3), asCashier: as(ids.cashier, 4), asCashierOther: as(ids.cashierOther, 5), qty, moves };
+  return { t, ...ids, asBoss, asWaiter: as(ids.waiter, 2), asWaiter2: as(ids.waiter2, 3), asEditor: as(ids.editor, 6), asCashier: as(ids.cashier, 4), asCashierOther: as(ids.cashierOther, 5), qty, moves };
 }
 
 describe("Selling Point: one-time stock deduction", () => {
@@ -275,5 +276,60 @@ describe("Staff code across departments", () => {
     await asBoss.mutation(api.maintenance.setStaffCode, { userId: waiter2, staffCode: "J77" });
     expect((await asCashier.query(api.waiterDirectory.byStaffCode, { code: "W01", from: day, to: day }))?.staff.name).toBe("juma");
     expect(await asCashier.query(api.waiterDirectory.byStaffCode, { code: "J77", from: day, to: day })).toBeNull(); // other department
+  });
+});
+
+
+describe("Selling Point: Invoice Finder actions", () => {
+  it("edits a bill in place, keeps its invoice number, updates stock, then cancels without deleting history", async () => {
+    const { asEditor, bia, qty, t } = await setup();
+    const created = await asEditor.mutation(api.waiterOrders.submit, {
+      clientKey: "finder-edit-123456",
+      mode: "send",
+      customerName: "Mteja wa awali",
+      lines: [{ productId: bia, qty: 2 }],
+    });
+    const before = await t.run(async (ctx) => ctx.db.get("waiterOrders", created.orderId));
+    expect(before?.invoiceNo).toBeTruthy();
+    expect(await qty(bia)).toBe(8);
+
+    await asEditor.mutation(api.waiterOrders.editBillFromFinder, {
+      orderId: created.orderId,
+      customerName: "Mteja mpya",
+      lines: [{ productId: bia, qty: 3, unitPrice: 1800 }],
+    });
+    const edited = await t.run(async (ctx) => ctx.db.get("waiterOrders", created.orderId));
+    expect(edited?.invoiceNo).toBe(before?.invoiceNo);
+    expect(edited?.customerName).toBe("Mteja mpya");
+    expect(edited?.total).toBe(5400);
+    expect(await qty(bia)).toBe(7);
+
+    await asEditor.mutation(api.waiterOrders.cancelBillFromFinder, {
+      orderId: created.orderId,
+      reason: "Jaribio la kufuta",
+    });
+    const cancelled = await t.run(async (ctx) => ctx.db.get("waiterOrders", created.orderId));
+    expect(cancelled?.status).toBe("cancelled");
+    expect(cancelled?.invoiceNo).toBe(before?.invoiceNo);
+    expect(await qty(bia)).toBe(10);
+    const history = await asEditor.query(api.waiterOrders.searchBillsForFinder, { search: before!.invoiceNo! });
+    expect(history).toHaveLength(1);
+    expect(history[0].status).toBe("cancelled");
+  });
+
+  it("refuses to edit or cancel a bill after cashier settlement", async () => {
+    const { asEditor, bia, t } = await setup();
+    const created = await asEditor.mutation(api.waiterOrders.submit, {
+      clientKey: "finder-locked-12345",
+      mode: "send",
+      lines: [{ productId: bia, qty: 1 }],
+    });
+    await t.run(async (ctx) => ctx.db.patch("waiterOrders", created.orderId, { settledAt: new Date().toISOString(), paidAmount: 2000 }));
+    await expect(asEditor.mutation(api.waiterOrders.editBillFromFinder, {
+      orderId: created.orderId, customerName: "Badiliko", lines: [{ productId: bia, qty: 2, unitPrice: 2000 }],
+    })).rejects.toThrow(/malipo/i);
+    await expect(asEditor.mutation(api.waiterOrders.cancelBillFromFinder, {
+      orderId: created.orderId, reason: "Test",
+    })).rejects.toThrow(/malipo/i);
   });
 });

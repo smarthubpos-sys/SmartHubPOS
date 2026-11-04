@@ -464,20 +464,170 @@ export const searchBillsForFinder = query({
       .withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId))
       .collect();
     const needle = raw.toLowerCase();
+    const rights = {
+      canPrint: await roleHasPermission(ctx, user, "sales.print"),
+      canEdit: await roleHasPermission(ctx, user, "sales.edit"),
+      canVoid: await roleHasPermission(ctx, user, "sales.void"),
+    };
     return rows
       .filter(o => orderInScope(user, scope, o)
         && (!isWaiter(user.role) || o.branchId === scope.branchId)
-        && o.status !== "cancelled"
         && billVisible(user, o)
         && (!!o.invoiceNo && wanted.has(o.invoiceNo) || o.customerName.toLowerCase().includes(needle)))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, 50)
       .map(o => ({
         _id: o._id, invoiceNo: o.invoiceNo ?? "—", invoiceDate: o.createdAt.slice(0, 10),
-        customerName: o.customerName, waiterName: o.waiterName, tableNumber: o.tableNumber,
+        customerName: o.customerName, waiterName: o.waiterName, tableNumber: o.tableNumber, notes: o.notes,
         total: o.total, status: o.status, billSentAt: o.billSentAt, billPrintedAt: o.billPrintedAt,
-        lines: o.lines.map(l => ({ productName: l.productName, qty: l.qty, lineTotal: l.lineTotal })),
+        canPrint: rights.canPrint,
+        canEdit: rights.canEdit && o.status !== "cancelled" && o.status !== "accepted" && !o.handledAt && !o.settledAt && !(o.paidAmount ?? 0) && !o.collectionId,
+        canVoid: rights.canVoid && o.status !== "cancelled" && o.status !== "accepted" && !o.handledAt && !o.settledAt && !(o.paidAmount ?? 0) && !o.collectionId,
+        lines: o.lines.map(l => ({ productId: l.productId, productName: l.productName, qty: l.qty, unitPrice: l.unitPrice, discount: l.discount ?? 0, lineTotal: l.lineTotal })),
       }));
+  },
+});
+
+/** Edit an unpaid Selling Point bill from Invoice Finder without changing its invoice number. Stock is reversed and re-deducted atomically. */
+export const editBillFromFinder = mutation({
+  args: {
+    orderId: v.id("waiterOrders"),
+    customerName: v.string(),
+    tableNumber: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    lines: v.array(v.object({
+      productId: v.id("products"),
+      qty: v.number(),
+      unitPrice: v.number(),
+      discount: v.optional(v.number()),
+    })),
+  },
+  handler: async (ctx, args) => {
+    try {
+      const user = await requirePermission(ctx, "sales.edit", "sales");
+      const scope = await viewScope(ctx, user);
+      const order = await ctx.db.get("waiterOrders", args.orderId);
+      if (!scope.tenantId || !order || order.tenantId !== scope.tenantId || !orderInScope(user, scope, order)
+        || (isWaiter(user.role) && (order.branchId !== scope.branchId || order.waiterId !== user._id))) {
+        throw new ConvexError("Bili haipatikani kwenye biashara au tawi lako.");
+      }
+      if (order.status === "cancelled") throw new ConvexError("Bili hii imebatilishwa.");
+      if (order.status === "accepted" || order.handledAt || order.settledAt || order.collectionId || (order.paidAmount ?? 0) > 0) {
+        throw new ConvexError("Bili iliyopokelewa au yenye malipo haiwezi kuhaririwa. Shughulikia malipo kwanza.");
+      }
+      if (!args.lines.length) throw new ConvexError("Bili lazima iwe na angalau bidhaa moja.");
+      const customerName = args.customerName.trim();
+      if (!customerName || customerName.length > 120) throw new ConvexError("Jina la mteja si sahihi.");
+
+      const lines: Array<{ productId: Id<"products">; productName: string; qty: number; unitPrice: number; discount?: number; lineTotal: number }> = [];
+      for (const line of args.lines) {
+        if (!Number.isFinite(line.qty) || line.qty <= 0 || !Number.isFinite(line.unitPrice) || line.unitPrice < 0) {
+          throw new ConvexError("Kiasi au bei ya bidhaa si sahihi.");
+        }
+        const product = await ctx.db.get("products", line.productId);
+        if (!product || product.tenantId !== order.tenantId || (order.branchId && product.branchId && product.branchId !== order.branchId)) {
+          throw new ConvexError("Bidhaa haipo kwenye biashara au tawi lako.");
+        }
+        const gross = Math.round(line.qty * line.unitPrice * 100) / 100;
+        if (!Number.isFinite(gross)) throw new ConvexError("Jumla ya bidhaa si sahihi.");
+        const discount = line.discount ?? 0;
+        if (!Number.isFinite(discount) || discount < 0 || discount > gross + 1e-8) {
+          throw new ConvexError("Punguzo la bidhaa si sahihi.");
+        }
+        lines.push({
+          productId: product._id, productName: product.name, qty: line.qty, unitPrice: line.unitPrice,
+          ...(discount > 0 ? { discount } : {}),
+          lineTotal: Math.round((gross - discount) * 100) / 100,
+        });
+      }
+
+      const now = new Date().toISOString();
+      const orderScope = { tenantId: order.tenantId, branchId: order.branchId };
+      if (order.stockDeducted) {
+        const restore = new Map<string, number>();
+        for (const line of order.lines) restore.set(String(line.productId), (restore.get(String(line.productId)) ?? 0) + line.qty);
+        for (const [productId, qty] of restore) {
+          const product = await ctx.db.get("products", productId as Id<"products">);
+          if (!product || product.tenantId !== order.tenantId || (order.branchId && product.branchId && product.branchId !== order.branchId)) throw new ConvexError("Bidhaa ya awali haipatikani; stock haijabadilishwa.");
+          const balance = product.currentQty + qty;
+          await ctx.db.patch("products", product._id, { currentQty: balance });
+          await ctx.db.insert("stockMovements", {
+            ...orderScope, movementDate: now.slice(0, 10), productId: product._id,
+            movementType: "waiter_order_edit_return", referenceId: String(order._id),
+            referenceType: "waiterOrder", qtyIn: qty, qtyOut: 0, runningBalance: balance,
+            unitCost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0, createdBy: user._id,
+          });
+        }
+      }
+      const updated = {
+        ...order,
+        customerName,
+        tableNumber: args.tableNumber?.trim() || undefined,
+        notes: args.notes?.trim() || undefined,
+        lines,
+        total: Math.round(lines.reduce((sum, line) => sum + line.lineTotal, 0) * 100) / 100,
+        stockDeducted: false,
+        updatedAt: now,
+      };
+      await ctx.db.patch("waiterOrders", order._id, {
+        customerName: updated.customerName, tableNumber: updated.tableNumber, notes: updated.notes,
+        lines: updated.lines, total: updated.total, stockDeducted: false, billPrintedAt: undefined, updatedAt: now,
+      });
+      await deductStockOnce(ctx, updated as Doc<"waiterOrders">, user, orderScope);
+      await logAudit(ctx, user, {
+        action: "edit_selling_point_bill", module: "sales", referenceId: String(order._id),
+        referenceType: "waiterOrder", details: `${order.invoiceNo ?? order._id}; ${order.total} -> ${updated.total}`,
+      });
+      return { orderId: order._id, invoiceNo: order.invoiceNo, total: updated.total };
+    } catch (e) { throw surfaceError(e); }
+  },
+});
+
+/** Cancel an unpaid Selling Point bill from Invoice Finder. The record and invoice number remain in history. */
+export const cancelBillFromFinder = mutation({
+  args: { orderId: v.id("waiterOrders"), reason: v.string() },
+  handler: async (ctx, args) => {
+    try {
+      const user = await requirePermission(ctx, "sales.void", "sales");
+      const scope = await viewScope(ctx, user);
+      const order = await ctx.db.get("waiterOrders", args.orderId);
+      if (!scope.tenantId || !order || order.tenantId !== scope.tenantId || !orderInScope(user, scope, order)
+        || (isWaiter(user.role) && (order.branchId !== scope.branchId || order.waiterId !== user._id))) {
+        throw new ConvexError("Bili haipatikani kwenye biashara au tawi lako.");
+      }
+      if (order.status === "cancelled") return order._id;
+      if (order.status === "accepted" || order.handledAt || order.settledAt || order.collectionId || (order.paidAmount ?? 0) > 0) {
+        throw new ConvexError("Bili iliyopokelewa au yenye malipo haiwezi kubatilishwa. Shughulikia malipo kwanza.");
+      }
+      const reason = args.reason.trim();
+      if (!reason || reason.length > 300) throw new ConvexError("Weka sababu ya kubatilisha bili.");
+      const now = new Date().toISOString();
+      const orderScope = { tenantId: order.tenantId, branchId: order.branchId };
+      if (order.stockDeducted) {
+        const restore = new Map<string, number>();
+        for (const line of order.lines) restore.set(String(line.productId), (restore.get(String(line.productId)) ?? 0) + line.qty);
+        for (const [productId, qty] of restore) {
+          const product = await ctx.db.get("products", productId as Id<"products">);
+          if (!product || product.tenantId !== order.tenantId || (order.branchId && product.branchId && product.branchId !== order.branchId)) throw new ConvexError("Bidhaa ya bili haipatikani; stock haijabadilishwa.");
+          const balance = product.currentQty + qty;
+          await ctx.db.patch("products", product._id, { currentQty: balance });
+          await ctx.db.insert("stockMovements", {
+            ...orderScope, movementDate: now.slice(0, 10), productId: product._id,
+            movementType: "waiter_order_cancel", referenceId: String(order._id),
+            referenceType: "waiterOrder", qtyIn: qty, qtyOut: 0, runningBalance: balance,
+            unitCost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0, createdBy: user._id,
+          });
+        }
+      }
+      await ctx.db.patch("waiterOrders", order._id, {
+        status: "cancelled", stockDeducted: false, cancelledAt: now, cancelledBy: user._id, updatedAt: now,
+      });
+      await logAudit(ctx, user, {
+        action: "cancel_selling_point_bill", module: "sales", referenceId: String(order._id),
+        referenceType: "waiterOrder", details: `${order.invoiceNo ?? order._id}; ${order.total}; ${reason}`,
+      });
+      return order._id;
+    } catch (e) { throw surfaceError(e); }
   },
 });
 
