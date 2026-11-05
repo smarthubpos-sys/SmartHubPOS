@@ -11,6 +11,7 @@ import { fmt, monthStart, num, round2, today, type Row } from "@/pages/shared/re
 import { tr, errorText, trValue } from "@/lib/i18n.ts";
 import { printElement } from "@/lib/print-area.ts";
 import { useStockRights } from "@/hooks/use-stock-rights.ts";
+import { StockTakeScreen, StockValueScreen } from "@/pages/stock/StockTakeValue.tsx";
 
 const selectClass = "h-10 rounded-md border bg-background px-3";
 const loading = <div className="p-6 text-sm text-muted-foreground">{tr("Inapakia taarifa za stock…")}</div>;
@@ -371,18 +372,6 @@ function EarningsScreen() {
   );
 }
 
-function StockTakeScreen() {
-  const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
-  return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Stock Taking Report")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
-      {!data ? loading : <ReportTable title={tr("Hesabu (count) dhidi ya mfumo")} sumCols={["Tofauti", "Thamani ya tofauti"]} note="Kila Quantity Adjustment ni stock take: 'Mfumo' ni idadi kabla ya kurekebisha na 'Iliyohesabiwa' ni idadi mpya."
-        rows={data.adjustments.map((x) => ({ Tarehe: x.date, Code: x.itemCode, Bidhaa: x.productName, Mfumo: x.qtyBefore, Iliyohesabiwa: x.counted, Tofauti: x.difference, "Thamani ya tofauti": round2(x.difference * x.cost), Sababu: x.reason }))} />}
-    </div>
-  );
-}
-
 function TrackingScreen({ kind }: { kind: "expiry" | "serials" }) {
   const data = useQuery(api.inventory.stockRegisters, { light: true });
   if (!data) return loading;
@@ -452,6 +441,7 @@ export default function StockWorkspace() {
     case "reports/prices": screen = <QuantityScreen kind="prices" />; break;
     case "reports/earnings": screen = <EarningsScreen />; break;
     case "reports/stock-take": screen = <StockTakeScreen />; break;
+    case "reports/stock-value": screen = <StockValueScreen />; break;
     case "reports/expiry": screen = <TrackingScreen kind="expiry" />; break;
     case "reports/serials": screen = <TrackingScreen kind="serials" />; break;
     case "barcodes": screen = <BarcodesScreen />; break;

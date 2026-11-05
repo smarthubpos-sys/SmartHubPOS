@@ -1,6 +1,6 @@
 import { useNavigate, Routes, Route } from "react-router-dom";
 import ModuleMenu from "@/pages/layout/_components/ModuleMenu.tsx";
-import { Package, Sliders, FolderTree, Hash, ArrowLeftRight, BarChart2, Tag, TrendingUp, ClipboardList, Calendar, Barcode, AlertTriangle, X, History, FileSpreadsheet, Factory } from "lucide-react";
+import { Package, Sliders, Coins, FolderTree, Hash, ArrowLeftRight, BarChart2, Tag, TrendingUp, ClipboardList, Calendar, Barcode, AlertTriangle, X, History, FileSpreadsheet, Factory } from "lucide-react";
 import StockWorkspace from "@/pages/stock/StockWorkspace.tsx";
 import StockImport from "@/pages/stock/StockImport.tsx";
 import WarehousePage from "@/pages/stock/WarehousePage.tsx";
@@ -29,7 +29,8 @@ const stockMenuItems = [
       { label: tr("Quantity Report"), icon: BarChart2, path: "/stock/reports/quantity", description: tr("Stock quantity report") },
       { label: tr("Selling Price Report"), icon: Tag, path: "/stock/reports/prices", description: tr("Product price list") },
       { label: tr("Stock Earning Report"), icon: TrendingUp, path: "/stock/reports/earnings", description: tr("Profit by item") },
-      { label: tr("Stock Taking Report"), icon: ClipboardList, path: "/stock/reports/stock-take", description: tr("Count vs system") },
+      { label: tr("Stock Taking Report"), icon: ClipboardList, path: "/stock/reports/stock-take", description: tr("Count shelves, compare and correct stock") },
+      { label: tr("Stock Value Report"), icon: Coins, path: "/stock/reports/stock-value", description: tr("Value of stock at cost and selling price") },
       { label: tr("Expired Date Report"), icon: Calendar, path: "/stock/reports/expiry", description: tr("Expiring items") },
       { label: tr("Serial Number Report"), icon: Hash, path: "/stock/reports/serials", description: tr("Serial numbers") },
       { label: tr("Print Stock Barcodes"), icon: Barcode, path: "/stock/barcodes", description: tr("Print labels") },

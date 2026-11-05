@@ -4,7 +4,7 @@ import { v, ConvexError } from "convex/values";
 import { surfaceError } from "./surfaceError";
 import { assertAutoProducible, autoProduceForSale } from "./autoProduce";
 import type { Doc, Id } from "./_generated/dataModel";
-import { getCompanySettings, logAudit, normalizeRole, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
+import { getCompanySettings, isManagerRole, logAudit, normalizeRole, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
 import { resolveWaiterSettings, waiterOrdersAllowedFor } from "./waiterSettings";
 
 
@@ -438,7 +438,7 @@ export const submit = mutation({
 
 /**
  * Invoice Finder is an archive, not the cashier's live queue. Waiters see their own bills;
- * cashiers see bills sent to them; Super Admin can audit bills across the selected business.
+ * cashiers see bills sent to them; managers / admins / owners and the Super Admin see every waiter's bills of the business (search by number, customer or waiter name).
  * This does not add Super Admin to the cashier receive/settlement workflow.
  */
 const billVisible = (user: { _id: Id<"users">; role?: string }, o: Doc<"waiterOrders">) =>
@@ -465,6 +465,8 @@ export const searchBillsForFinder = query({
       .withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId))
       .collect();
     const needle = raw.toLowerCase();
+    // A manager / admin / owner audits EVERY waiter's bills (also those the waiter has not sent to the cashier yet); a cashier still sees only sent ones.
+    const seesAll = await isManagerRole(ctx, user);
     const rights = {
       canPrint: await roleHasPermission(ctx, user, "sales.print"),
       canEdit: await roleHasPermission(ctx, user, "sales.edit"),
@@ -473,8 +475,8 @@ export const searchBillsForFinder = query({
     return rows
       .filter(o => orderInScope(user, scope, o)
         && (!isWaiter(user.role) || o.branchId === scope.branchId)
-        && billVisible(user, o)
-        && (!!o.invoiceNo && wanted.has(o.invoiceNo) || o.customerName.toLowerCase().includes(needle)))
+        && (seesAll || billVisible(user, o))
+        && (!!o.invoiceNo && wanted.has(o.invoiceNo) || o.customerName.toLowerCase().includes(needle) || (seesAll && o.waiterName.toLowerCase().includes(needle))))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, 50)
       .map(o => ({

@@ -73,8 +73,8 @@ export default function InvoiceFinder() {
   return (
     <section className="space-y-3 rounded-xl border p-4 print:hidden">
       <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setOpenId(null); setClosedFor(null); setTerm(text.trim()); }}>
-        <label className="grid gap-1 text-sm">{tr("Tafuta invoice kwa namba au jina la mteja")}
-          <Input className="w-64" inputMode="text" autoFocus placeholder="00001 / jina la mteja" value={text} onChange={(e) => setText(e.target.value)} aria-label={tr("Namba ya invoice")} />
+        <label className="grid gap-1 text-sm">{tr("Tafuta invoice kwa namba, jina la mteja au mhudumu")}
+          <Input className="w-64" inputMode="text" autoFocus placeholder="00001 / mteja / mhudumu" value={text} onChange={(e) => setText(e.target.value)} aria-label={tr("Namba ya invoice")} />
         </label>
         <Button type="submit"><Search className="mr-1 h-4 w-4" />{tr("Tafuta")}</Button>
         {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); setOpenId(null); setClosedFor(null); }}>{tr("Futa utafutaji")}</Button>}
