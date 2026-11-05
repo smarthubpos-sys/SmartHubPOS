@@ -481,6 +481,10 @@ export const searchBillsForFinder = query({
         customerName: o.customerName, waiterName: o.waiterName, tableNumber: o.tableNumber, notes: o.notes,
         total: o.total, status: o.status, billSentAt: o.billSentAt, billPrintedAt: o.billPrintedAt,
         canPrint: rights.canPrint,
+        // Role rights, apart from the bill's state: the screen shows the buttons disabled with the reason instead of hiding them.
+        mayEdit: rights.canEdit, mayVoid: rights.canVoid,
+        lockReason: o.status === "cancelled" ? "" : o.status === "accepted" || o.handledAt ? "received"
+          : o.settledAt || o.collectionId || (o.paidAmount ?? 0) > 0 ? "paid" : "",
         canEdit: rights.canEdit && o.status !== "cancelled" && o.status !== "accepted" && !o.handledAt && !o.settledAt && !(o.paidAmount ?? 0) && !o.collectionId,
         canVoid: rights.canVoid && o.status !== "cancelled" && o.status !== "accepted" && !o.handledAt && !o.settledAt && !(o.paidAmount ?? 0) && !o.collectionId,
         lines: o.lines.map(l => ({ productId: l.productId, productName: l.productName, qty: l.qty, unitPrice: l.unitPrice, discount: l.discount ?? 0, lineTotal: l.lineTotal })),

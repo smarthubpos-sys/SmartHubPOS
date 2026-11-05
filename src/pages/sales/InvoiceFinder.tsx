@@ -139,6 +139,8 @@ function SellingPointBillActions({
   })));
   const [busy, setBusy] = useState(false);
   const cancelled = bill.status === "cancelled";
+  const showEdit = bill.mayEdit || bill.canEdit; // role right: the button stays visible (disabled with the reason) when the bill itself is locked
+  const showVoid = bill.mayVoid || bill.canVoid;
   const locked = bill.status === "accepted" || !bill.canEdit && !bill.canVoid;
   const save = async () => {
     setBusy(true);
@@ -167,9 +169,9 @@ function SellingPointBillActions({
   return (
     <div className="flex min-w-[240px] flex-wrap gap-1">
       {!cancelled && bill.canPrint && <Button size="sm" variant="outline" disabled={!settingsReady} onClick={() => void printWaiterOrder({ invoiceNo: bill.invoiceNo, customerName, waiterName: bill.waiterName, tableNumber: tableNumber || undefined, total: bill.total, lines: bill.lines }, qzPrinterFrom(hardware), hardware.paperWidth, { ...branding, title: tr("BILI YA HISTORIA") })}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
-      {!cancelled && locked && (bill.canEdit || bill.canVoid) && <p className="w-full text-xs text-amber-700">{tr("Bili hii imepokelewa na cashier au imeshalipwa; haiwezi kuhaririwa wala kufutwa.")}</p>}
-      {!cancelled && bill.canEdit && <Button size="sm" variant="outline" disabled={locked || busy} onClick={() => setEditing(v => !v)}><Pencil className="mr-1 h-4 w-4" />{tr("Edit")}</Button>}
-      {!cancelled && bill.canVoid && <Button size="sm" variant="destructive" disabled={locked || busy} onClick={() => setConfirmCancel(v => !v)}><Trash2 className="mr-1 h-4 w-4" />{tr("Delete / Cancel")}</Button>}
+      {!cancelled && locked && (showEdit || showVoid) && <p className="w-full text-xs text-amber-700">{bill.lockReason === "paid" ? tr("Bili hii ina malipo au imeshafungwa kwenye makusanyo; haiwezi kuhaririwa wala kufutwa. Shughulikia malipo kwanza.") : tr("Bili hii imepokelewa na cashier; haiwezi kuhaririwa wala kufutwa.")}</p>}
+      {!cancelled && showEdit && <Button size="sm" variant="outline" disabled={locked || busy} onClick={() => setEditing(v => !v)}><Pencil className="mr-1 h-4 w-4" />{tr("Edit")}</Button>}
+      {!cancelled && showVoid && <Button size="sm" variant="destructive" disabled={locked || busy} onClick={() => setConfirmCancel(v => !v)}><Trash2 className="mr-1 h-4 w-4" />{tr("Delete / Cancel")}</Button>}
       {editing && (
         <div className="mt-2 w-full space-y-2 rounded-md border p-3">
           <div className="grid grid-cols-2 gap-2">

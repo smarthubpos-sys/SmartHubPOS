@@ -317,6 +317,23 @@ describe("Selling Point: Invoice Finder actions", () => {
     expect(history[0].status).toBe("cancelled");
   });
 
+  it("a paid or received bill keeps the role rights visible (mayEdit / mayVoid) but is locked, with the reason", async () => {
+    const { t, asBoss, asWaiter, boss, tenantId, bia } = await setup();
+    await t.run(async (ctx) => ctx.db.patch("users", boss, { tenantId }));
+    const open = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "locked-open-123456", mode: "print", customerName: "A", lines: [{ productId: bia, qty: 1 }] });
+    const paid = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "locked-paid-123456", mode: "print", customerName: "B", lines: [{ productId: bia, qty: 1 }] });
+    await t.run(async (ctx) => ctx.db.patch("waiterOrders", paid.orderId, { paidAmount: 2000 }));
+    const find = async (id: typeof open.orderId) => {
+      const no = (await t.run(async (ctx) => ctx.db.get("waiterOrders", id)))!.invoiceNo!;
+      return (await asBoss.query(api.waiterOrders.searchBillsForFinder, { search: no }))[0];
+    };
+    const o = await find(open.orderId);
+    expect([o.mayEdit, o.mayVoid, o.canEdit, o.canVoid, o.lockReason]).toEqual([true, true, true, true, ""]);
+    const p = await find(paid.orderId);
+    expect([p.mayEdit, p.mayVoid, p.canEdit, p.canVoid, p.lockReason]).toEqual([true, true, false, false, "paid"]); // Super Admin too: the button shows, disabled, with the reason
+    await expect(asBoss.mutation(api.waiterOrders.cancelBillFromFinder, { orderId: paid.orderId, reason: "jaribio" })).rejects.toThrow();
+  });
+
   it("lets Super Admin find and administer another waiter's bill inside the selected business", async () => {
     const { t, asBoss, asWaiter, boss, tenantId, bia } = await setup();
     await t.run(async (ctx) => ctx.db.patch("users", boss, { tenantId }));
