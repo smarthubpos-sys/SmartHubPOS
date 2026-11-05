@@ -1228,7 +1228,9 @@ export const authorizeClear = internalQuery({
     if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza kabla ya kufuta data.");
     // Department scope: the department chosen on the form, else the one the Super Admin is working in. Only an explicit "whole business" wipes every department.
     if (a.wholeBusiness && a.branchId) throw new ConvexError("Chagua idara moja AU biashara nzima, si vyote viwili.");
-    const branchId = a.wholeBusiness ? undefined : (a.branchId ?? user.branchId);
+    // NEVER fall back to "whole business": with no department and no explicit whole-business flag nothing is deleted.
+    const branchId = a.wholeBusiness ? undefined : a.branchId;
+    if (!a.wholeBusiness && !branchId) throw new ConvexError("Chagua idara moja AU bonyeza waziwazi 'Biashara nzima'. Bila uchaguzi huu hakuna kinachofutwa.");
     const branch = branchId ? await ctx.db.get("branches", branchId) : null;
     if (branchId && (!branch || branch.tenantId !== user.tenantId)) throw new ConvexError("Idara haihusiani na biashara iliyochaguliwa.");
     if (branchId && a.categories.includes("auditLogs")) throw new ConvexError("Audit Logs ni za biashara nzima (hazigawanywi kwa idara). Chagua 'Biashara nzima' ili kuzifuta.");
@@ -1267,13 +1269,22 @@ export const clearStepBatch = internalMutation({
       await db.delete(step.table, doc._id);
     };
 
+    // A customer that another department has invoiced (a Super Admin may sell across departments) must survive this department's wipe.
+    const usedByOtherDepartment = async (clientId: Id<"clients">) => {
+      if (!branchId) return false;
+      const invs = await ctx.db.query("invoices").withIndex("by_client", (q) => q.eq("clientId", clientId)).collect();
+      return invs.some((i) => i.branchId !== branchId);
+    };
+
     if (step.via) {
       // Tables without their own tenantId: reach them through the business's clients / products.
       const [childTable, index, field] = step.table === "salesReturns" ? ["salesReturns", "by_client", "clientId"] : ["purchasePriceHistory", "by_product", "productId"];
       const parents = await db.query(step.via).withIndex("by_scope", (q) => (branchId ? q.eq("tenantId", a.tenantId).eq("branchId", branchId) : q.eq("tenantId", a.tenantId))).collect();
       for (const p of parents) {
+        if (childTable === "salesReturns" && await usedByOtherDepartment(p._id as Id<"clients">)) continue;
         const rows = await db.query(childTable).withIndex(index, (q) => q.eq(field, p._id)).take(200);
         for (const r of rows) {
+          if (branchId && childTable === "salesReturns" && r.branchId !== branchId) continue; // another department's return stays
           if (childTable === "salesReturns") for (const l of await db.query("salesReturnLines").withIndex("by_return", (q) => q.eq("returnId", r._id)).collect()) await db.delete("salesReturnLines", l._id);
           await db.delete(childTable, r._id); deleted++;
         }
@@ -1303,7 +1314,9 @@ export const clearStepBatch = internalMutation({
         // so the quantities look as if these sales never happened. Not done when Stock / Products are cleared in the same run: that wipes the quantities anyway.
         if (step.restoreStock && a.restoreStock === true) {
           const product = await ctx.db.get("products", m.productId);
-          if (product && product.tenantId === a.tenantId) {
+          // Department wipe: only products that belong to THIS department get their quantity back. A business-wide (shared) product
+          // is also sold by other departments, so its quantity is never changed by one department's wipe.
+          if (product && product.tenantId === a.tenantId && (!branchId || product.branchId === branchId)) {
             const back = (m.qtyOut ?? 0) - (m.qtyIn ?? 0);
             if (back !== 0) await ctx.db.patch("products", product._id, { currentQty: Math.round((product.currentQty + back) * 1e6) / 1e6 });
           }
@@ -1332,7 +1345,7 @@ export const clearStepBatch = internalMutation({
         const mine: DynamicDoc[] = [];
         for (const doc of all) {
           let belongs: boolean;
-          if (step.table === "reportRuns") belongs = doc.scope === String(branchId); // a saved period report is for "all" or for ONE department
+          if (step.table === "reportRuns") belongs = doc.scope === String(branchId) || doc.scope === "all"; // saved reports of this department AND the "all departments" ones (they still hold this department's figures; they are only cached copies and are rebuilt on demand)
           else if (step.table === "stockTransferLines") { const t = await ctx.db.get("stockTransfers", doc.transferId as Id<"stockTransfers">); belongs = t?.branchId === branchId; }
           else belongs = doc.branchId === branchId;
           if (belongs) mine.push(doc);
@@ -1340,6 +1353,14 @@ export const clearStepBatch = internalMutation({
         }
         for (const doc of mine.slice(0, CLEAR_BATCH)) { await removeWithChildren(doc); deleted++; }
         return { done: mine.length <= CLEAR_BATCH, deleted };
+      }
+      if (step.table === "clients") {
+        // Customers: keep the ones another department has invoiced, delete the rest of this department's.
+        const mine = await db.query("clients").withIndex("by_scope", (q) => q.eq("tenantId", a.tenantId).eq("branchId", branchId)).collect();
+        const del: DynamicDoc[] = [];
+        for (const c of mine) { if (await usedByOtherDepartment(c._id as Id<"clients">)) continue; del.push(c); if (del.length >= CLEAR_BATCH) break; }
+        for (const c of del) { await removeWithChildren(c); deleted++; }
+        return { done: del.length < CLEAR_BATCH, deleted };
       }
       const rows = await db.query(step.table).withIndex(step.index ?? "by_scope", (q) => q.eq("tenantId", a.tenantId).eq("branchId", branchId)).take(CLEAR_BATCH);
       for (const doc of rows) { await removeWithChildren(doc); deleted++; }
@@ -1366,18 +1387,31 @@ export const finishClear = internalMutation({
     if (a.categories.some((k) => CLEAR_CATEGORIES[k]?.rebuildStats)) {
       // Dashboard numbers come from small pre-computed rows. Empty them NOW (every day, not only the rebuilt window) so the dashboard
       // shows zeros immediately; the rebuild below then recalculates whatever data is really left (e.g. stock when only invoices were cleared).
-      const days = await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", a.tenantId)).take(8000);
-      for (const d of days) if (!branchId || d.branchId === branchId) await ctx.db.delete("statsDaily", d._id);
+      await clearStatsDailyPage(ctx, a.tenantId, branchId, null); // first page right now (dashboard shows zeros at once); a big business continues page by page
       const totals = await ctx.db.query("statsTotals").withIndex("by_tenant", (q) => q.eq("tenantId", a.tenantId)).collect();
       for (const t of totals) {
         if (branchId && t.branchId !== branchId) continue;
         await ctx.db.patch("statsTotals", t._id, { receivable: 0, payable: 0, billsDue: 0, topD7: [], topD30: [], topD90: [] });
       }
-      await ctx.scheduler.runAfter(0, internal.stats.requestRebuild, { tenantId: a.tenantId });
+      // The rebuild is started by the last page of clearStatsDailyBatch, so it never runs while old rows are still being removed.
     }
     const dept = branchId ? await ctx.db.get("branches", branchId) : null;
     await logAudit(ctx, actor, { action: "clear_data_file", module: "maintenance", details: `${a.categories.join(", ")} — ${a.counts}${dept ? ` — idara: ${dept.name}` : " — biashara nzima"}` });
   },
+});
+
+/** Deletes one page of the pre-computed daily dashboard rows of one department (or the whole business). A big business is never cut off by a read limit:
+ *  the next page is scheduled, and the dashboard rebuild starts only after the LAST page, so it never runs while old rows are still being removed. */
+async function clearStatsDailyPage(ctx: MutationCtx, tenantId: Id<"tenants">, branchId: Id<"branches"> | undefined, cursor: string | null) {
+  const page = await ctx.db.query("statsDaily").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).paginate({ numItems: 2000, cursor });
+  for (const d of page.page) if (!branchId || d.branchId === branchId) await ctx.db.delete("statsDaily", d._id);
+  if (!page.isDone) await ctx.scheduler.runAfter(0, internal.maintenance.clearStatsDailyBatch, { tenantId, branchId, cursor: page.continueCursor });
+  else await ctx.scheduler.runAfter(0, internal.stats.requestRebuild, { tenantId });
+}
+
+export const clearStatsDailyBatch = internalMutation({
+  args: { tenantId: v.id("tenants"), branchId: v.optional(v.id("branches")), cursor: v.optional(v.union(v.string(), v.null())) },
+  handler: async (ctx, a) => { await clearStatsDailyPage(ctx, a.tenantId, a.branchId, a.cursor ?? null); },
 });
 
 export const logClearFailure = internalMutation({

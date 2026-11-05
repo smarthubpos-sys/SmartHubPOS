@@ -160,3 +160,54 @@ describe("whole business and guards", () => {
     await expect(as.query(internal.maintenance.authorizeClear, { categories: ["invoices"], branchId: bar })).rejects.toThrow();
   });
 });
+
+describe("department wipe never reaches into another department", () => {
+  it("with no department and no explicit whole-business flag NOTHING is authorised (no silent fallback to the whole business)", async () => {
+    const { t, superId } = await setup();
+    const as = t.withIdentity({ subject: superId, tokenIdentifier: "x|1" });
+    await expect(as.query(internal.maintenance.authorizeClear, { categories: ["invoices"] })).rejects.toThrow(/Chagua idara/);
+  });
+
+  it("a business-wide (shared) product keeps its quantity when one department's sales are cleared with restore", async () => {
+    const { t, tenantA, bar, kitchen, superId } = await setup();
+    const shared = await t.run(async (ctx) => {
+      const productId = await ctx.db.insert("products", { tenantId: tenantA, itemCode: "P-SHARED", name: "Shared", openingQty: 10, currentQty: 8, sellingPrice: 100, isActive: true });
+      await ctx.db.insert("stockMovements", { tenantId: tenantA, branchId: bar, movementDate: "2026-10-02", productId, movementType: "sale", referenceId: "x", referenceType: "invoice", qtyIn: 0, qtyOut: 1, runningBalance: 9, createdBy: superId });
+      await ctx.db.insert("stockMovements", { tenantId: tenantA, branchId: kitchen, movementDate: "2026-10-02", productId, movementType: "sale", referenceId: "y", referenceType: "invoice", qtyIn: 0, qtyOut: 1, runningBalance: 8, createdBy: superId });
+      return productId;
+    });
+    await runCategory(t, superId, tenantA, "invoices", bar, true);
+    const p = await t.run(async (ctx) => await ctx.db.get("products", shared));
+    expect(p?.currentQty).toBe(8);
+  });
+
+  it("clearing Customers of one department keeps a customer that another department has invoiced, with that department's invoice intact", async () => {
+    const { t, tenantA, bar, kitchen, superId, a } = await setup();
+    const extra = await t.run(async (ctx) => {
+      // a Super Admin sold in the Kitchen to a Bar customer
+      const inv = await ctx.db.insert("invoices", { tenantId: tenantA, branchId: kitchen, invoiceNo: "INV-X", invoiceDate: "2026-10-03", clientId: a.bar.clientId, subtotal: 10, discount: 0, taxAmount: 0, total: 10, amountPaid: 0, outstanding: 10, paymentStatus: "unpaid", status: "posted", createdBy: superId });
+      const lone = await ctx.db.insert("clients", { tenantId: tenantA, branchId: bar, code: "C-LONE", name: "Lone", openingBalance: 0, creditPolicy: "allow", isActive: true });
+      return { inv, lone };
+    });
+    await runCategory(t, superId, tenantA, "customers", bar);
+    const left = await t.run(async (ctx) => ({ shared: await ctx.db.get("clients", a.bar.clientId), lone: await ctx.db.get("clients", extra.lone), kitchenClient: await ctx.db.get("clients", a.kitchen.clientId), inv: await ctx.db.get("invoices", extra.inv) }));
+    expect(left.shared).not.toBeNull();
+    expect(left.lone).toBeNull();
+    expect(left.kitchenClient).not.toBeNull();
+    expect(left.inv).not.toBeNull();
+  });
+
+  it("saved 'all departments' reports go with a department wipe, other departments' own saved reports stay", async () => {
+    const { t, tenantA, bar, kitchen, superId } = await setup();
+    const ids = await t.run(async (ctx) => {
+      const mk = (scope: string) => ctx.db.insert("reportRuns", { tenantId: tenantA, period: "month", startDate: "2026-10-01", endDate: "2026-10-31", scope, scopeLabel: scope, title: "R", netProfit: 0, netSales: 0, totalExpenses: 0, data: "{}", createdBy: superId, createdByName: "Super", createdAt: now } as never);
+      return { all: await mk("all"), bar: await mk(String(bar)), kit: await mk(String(kitchen)) };
+    });
+    await runCategory(t, superId, tenantA, "invoices", bar);
+    const left = await t.run(async (ctx) => ({ all: await ctx.db.get("reportRuns", ids.all), bar: await ctx.db.get("reportRuns", ids.bar), kit: await ctx.db.get("reportRuns", ids.kit) }));
+    expect(left.all).toBeNull();
+    expect(left.bar).toBeNull();
+    expect(left.kit).not.toBeNull();
+  });
+});
+

@@ -157,7 +157,8 @@ export function ClearDataPage() {
   const { busy, run } = useRun();
   const [picked, setPicked] = useState<string[]>([]);
   const [password, setPassword] = useState("");
-  const [scopeChoice, setScopeChoice] = useState<string | null>(null); // null = the department the Super Admin is working in (or the whole business when none is chosen)
+  const [scopeChoice, setScopeChoice] = useState<string | null>(null); // null = the department the Super Admin is working in; when there is none, NOTHING is selected until he chooses
+  const [typedName, setTypedName] = useState("");
 
   if (overview === undefined) return <PageShell title={tr("Clear Data File")}><Loading /></PageShell>;
   if (!overview.isSuperAdmin) {
@@ -165,18 +166,22 @@ export function ClearDataPage() {
   }
   const departments = overview.departments ?? [];
   // "all" = the whole business; otherwise the id of ONE department: only that department's data is deleted.
-  const scope = scopeChoice ?? (overview.currentBranchId && departments.some((d) => d._id === overview.currentBranchId) ? String(overview.currentBranchId) : "all");
-  const scopeName = scope === "all" ? tr("biashara nzima (idara zote)") : (departments.find((d) => String(d._id) === scope)?.name ?? "");
+  // "" = nothing chosen yet (never defaults to the whole business when the business has departments); "all" = whole business, on purpose.
+  const scope = scopeChoice ?? (overview.currentBranchId && departments.some((d) => d._id === overview.currentBranchId) ? String(overview.currentBranchId) : departments.length === 0 ? "all" : "");
+  const needsTypedName = scope === "all" && departments.length > 0; // wiping every department must be confirmed by typing the business name
+  const scopeName = scope === "" ? "" : scope === "all" ? tr("biashara nzima (idara zote)") : (departments.find((d) => String(d._id) === scope)?.name ?? "");
   const all = overview.categories.map((c) => c.key).filter((k) => scope === "all" || k !== "auditLogs"); // audit logs belong to the whole business, not to one department
   const toggle = (key: string) => setPicked((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
   const names = overview.categories.filter((c) => picked.includes(c.key)).map((c) => c.label).join(", ");
-  const canSubmit = !busy && !!overview.tenantName && picked.length > 0 && password.length > 0;
+  const canSubmit = !busy && !!overview.tenantName && scope !== "" && picked.length > 0 && password.length > 0 && (!needsTypedName || typedName.trim() === (overview.tenantName ?? ""));
 
   const submit = () => {
+    if (scope === "") return;
     if (!confirm(tr("Utafuta KUDUMU: {0} ya biashara {1} — {2}. Hatua hii haiwezi kurudishwa. Endelea?", [names, overview.tenantName, scope === "all" ? scopeName : tr("idara ya {0} PEKEE", [scopeName])]))) return;
     void run(async () => {
       const r = await clear({ categories: picked, password, ...(scope === "all" ? { wholeBusiness: true } : { branchId: scope as Id<"branches"> }) });
       setPassword("");
+      setTypedName("");
       setPicked([]);
       return r;
     }, tr("Data imefutwa."));
@@ -190,8 +195,8 @@ export function ClearDataPage() {
           : <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-sm">{tr("Chagua biashara kwanza (Badilisha biashara) kisha rudi hapa.")}</p>}
         {departments.length > 0 && (
           <SelectField label={tr("Data ya kufuta ni ya")} value={scope} onChange={(v) => { setScopeChoice(v); setPicked((p) => (v === "all" ? p : p.filter((k) => k !== "auditLogs"))); }}
-            options={[["all", tr("Biashara nzima (idara zote)")], ...departments.map((d) => [String(d._id), tr("Idara: {0} pekee", [d.name])] as [string, string])]}
-            hint={scope === "all" ? tr("Itafuta data ya idara ZOTE za biashara hii.") : tr("Itafuta data ya idara hii tu. Idara nyingine na orodha za biashara nzima (mfano suppliers wa biashara nzima) haziguswi.")} />
+            options={[["", tr("— Chagua idara —")], ["all", tr("Biashara nzima (idara zote)")], ...departments.map((d) => [String(d._id), tr("Idara: {0} pekee", [d.name])] as [string, string])]}
+            hint={scope === "" ? tr("Chagua idara moja, au 'Biashara nzima' kwa makusudi. Bila chaguo hakuna kinachofutwa.") : scope === "all" ? tr("Itafuta data ya idara ZOTE za biashara hii.") : tr("Itafuta data ya idara hii tu. Idara nyingine na orodha za biashara nzima (mfano suppliers wa biashara nzima) haziguswi.")} />
         )}
         <label className="flex items-center gap-2 text-sm font-medium">
           <input type="checkbox" checked={picked.length === all.length} onChange={(e) => setPicked(e.target.checked ? all : [])} />
@@ -207,6 +212,7 @@ export function ClearDataPage() {
         </div>
       </Card>
       <Card title={tr("Thibitisha kwa password ya Super Admin")}>
+        {needsTypedName && <TextField label={tr("Andika jina la biashara kuthibitisha: {0}", [overview.tenantName ?? ""])} value={typedName} onChange={setTypedName} hint={tr("Unafuta idara ZOTE. Andika jina kamili la biashara ndipo kitufe kiwake.")} />}
         <TextField label={tr("Password ya Super Admin")} type="password" value={password} onChange={setPassword} hint={tr("Ingiza password yako ya Super Admin ili kuruhusu kufuta.")} />
         <Button variant="destructive" disabled={!canSubmit} onClick={submit}>{busy ? tr("Inafuta…") : tr("Futa data iliyochaguliwa")}</Button>
         <p className="text-xs text-muted-foreground">{scope === "all" ? tr("Inafuta data ya biashara iliyochaguliwa tu (idara zote). Tengeneza backup kwanza kupitia Backup and Restore.") : tr("Inafuta data ya idara iliyochaguliwa tu. Tengeneza backup kwanza kupitia Backup and Restore.")}</p>
