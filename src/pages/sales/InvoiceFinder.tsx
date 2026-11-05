@@ -139,13 +139,16 @@ function SellingPointBillActions({
   })));
   const [busy, setBusy] = useState(false);
   const cancelled = bill.status === "cancelled";
-  const showEdit = bill.mayEdit || bill.canEdit; // role right: the button stays visible (disabled with the reason) when the bill itself is locked
-  const showVoid = bill.mayVoid || bill.canVoid;
-  const locked = bill.status === "accepted" || !bill.canEdit && !bill.canVoid;
+  const showEdit = bill.canEdit; // a bill received by the cashier or already paid can still be changed: the money is given back first
+  const showVoid = bill.canVoid;
+  const locked = false;
+  const paidText = tr("Bili hii ina malipo ya {0}. Ukihariri au kufuta, malipo yatarudishwa kwa njia zile zile (cash / bank / simu), mapato na makusanyo ya siku yatarekebishwa. Mrudishie mhudumu pesa yake.", [fmt(bill.paidAmount)]);
   const save = async () => {
     setBusy(true);
     try {
+      if (bill.hasPayment && !window.confirm(paidText)) { setBusy(false); return; }
       await editBill({
+        undoPayment: bill.hasPayment || undefined,
         orderId: bill._id, customerName, tableNumber: tableNumber || undefined, notes: notes || undefined,
         lines: lines.map(line => ({
           productId: line.productId, qty: Number(line.qty), unitPrice: Number(line.unitPrice), discount: Number(line.discount || 0),
@@ -159,7 +162,7 @@ function SellingPointBillActions({
   const cancel = async () => {
     setBusy(true);
     try {
-      await cancelBill({ orderId: bill._id, reason });
+      await cancelBill({ orderId: bill._id, reason, refundPayment: bill.hasPayment || undefined });
       toast.success(tr("Invoice imebatilishwa; historia imehifadhiwa."));
       setConfirmCancel(false);
     } catch (error) { toast.error(errorText(error)); }
@@ -169,7 +172,7 @@ function SellingPointBillActions({
   return (
     <div className="flex min-w-[240px] flex-wrap gap-1">
       {!cancelled && bill.canPrint && <Button size="sm" variant="outline" disabled={!settingsReady} onClick={() => void printWaiterOrder({ invoiceNo: bill.invoiceNo, customerName, waiterName: bill.waiterName, tableNumber: tableNumber || undefined, total: bill.total, lines: bill.lines }, qzPrinterFrom(hardware), hardware.paperWidth, { ...branding, title: tr("BILI YA HISTORIA") })}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
-      {!cancelled && locked && (showEdit || showVoid) && <p className="w-full text-xs text-amber-700">{bill.lockReason === "paid" ? tr("Bili hii ina malipo au imeshafungwa kwenye makusanyo; haiwezi kuhaririwa wala kufutwa. Shughulikia malipo kwanza.") : tr("Bili hii imepokelewa na cashier; haiwezi kuhaririwa wala kufutwa.")}</p>}
+      {!cancelled && bill.hasPayment && (showEdit || showVoid) && <p className="w-full text-xs text-amber-700">{paidText}</p>}
       {!cancelled && showEdit && <Button size="sm" variant="outline" disabled={locked || busy} onClick={() => setEditing(v => !v)}><Pencil className="mr-1 h-4 w-4" />{tr("Edit")}</Button>}
       {!cancelled && showVoid && <Button size="sm" variant="destructive" disabled={locked || busy} onClick={() => setConfirmCancel(v => !v)}><Trash2 className="mr-1 h-4 w-4" />{tr("Delete / Cancel")}</Button>}
       {editing && (
@@ -196,7 +199,7 @@ function SellingPointBillActions({
       )}
       {confirmCancel && (
         <div className="mt-2 w-full space-y-2 rounded-md border border-destructive/40 p-3">
-          <p className="text-xs">{tr("Bili itabatilishwa na stock itarudishwa. Rekodi na namba ya invoice vitahifadhiwa.")}</p>
+          <p className="text-xs">{bill.hasPayment ? tr("Bili itabatilishwa, stock itarudishwa na malipo ya {0} yatarudishwa. Rekodi na namba ya invoice vitahifadhiwa.", [fmt(bill.paidAmount)]) : tr("Bili itabatilishwa na stock itarudishwa. Rekodi na namba ya invoice vitahifadhiwa.")}</p>
           <Input value={reason} onChange={e => setReason(e.target.value)} placeholder={tr("Sababu ya kubatilisha")} />
           <div className="flex gap-2">
             <Button size="sm" variant="destructive" disabled={busy || !reason.trim()} onClick={() => void cancel()}>{tr("Thibitisha kufuta")}</Button>

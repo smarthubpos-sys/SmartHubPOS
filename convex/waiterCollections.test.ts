@@ -216,3 +216,98 @@ describe("Cashier counter sale: sells to his own customer and takes the money in
     await expect(asBoss.mutation(api.waiterCollections.counterSale, { clientKey: "counter-6-abcdefgh", ...args })).rejects.toThrow();
   });
 });
+
+describe("Invoice Finder: a bill received or paid by mistake can be cancelled / edited and the money goes back", () => {
+  /** Net (debit - credit) of every ledger account; a fully reversed sale leaves 0 on each. */
+  const net = async (t: Awaited<ReturnType<typeof setup>>["t"]) => t.run(async (ctx) => {
+    const m = new Map<string, number>();
+    for (const l of await ctx.db.query("journalLines").collect()) m.set(String(l.accountId), Math.round(((m.get(String(l.accountId)) ?? 0) + l.debit - l.credit) * 100) / 100);
+    return [...m.values()];
+  });
+  const send = (asWaiter: Awaited<ReturnType<typeof setup>>["asWaiter"], key: string, productId: Id<"products">, qty: number) =>
+    asWaiter.mutation(api.waiterOrders.submit, { clientKey: key, mode: "send", lines: [{ productId, qty }] });
+
+  it("cancelling a paid bill returns the payment: ledger nets to zero, the receipt is emptied, nobody owes anything", async () => {
+    const { t, asWaiter, asCashier, asBoss, waiter, productId } = await setup();
+    const a = await send(asWaiter, "refund-1-abcdefg", productId, 2);
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [a.orderId], splits: [{ method: "cash", amount: 4000 }] });
+    expect((await net(t)).some((x) => x !== 0)).toBe(true); // the sale is booked
+
+    await expect(asBoss.mutation(api.waiterOrders.cancelBillFromFinder, { orderId: a.orderId, reason: "Alilipishwa kimakosa" })).rejects.toThrow(/malipo/i); // needs the confirmation flag
+    await asBoss.mutation(api.waiterOrders.cancelBillFromFinder, { orderId: a.orderId, reason: "Alilipishwa kimakosa", refundPayment: true });
+
+    const order = await t.run(async (ctx) => ctx.db.get("waiterOrders", a.orderId));
+    expect(order?.status).toBe("cancelled");
+    expect(order?.paidAmount).toBe(0);
+    expect(order?.settledAt).toBeUndefined();
+    const receipts = await t.run(async (ctx) => ctx.db.query("waiterCollections").collect());
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].total).toBe(0);
+    expect(receipts[0].orderIds).toEqual([]);
+    expect(receipts[0].splits).toEqual([]);
+    expect((await net(t)).every((x) => x === 0)).toBe(true); // revenue, cash, cost of goods and inventory all back to zero
+    expect(await asCashier.query(api.waiterCollections.owing, {})).toHaveLength(0);
+    const audit = await t.run(async (ctx) => (await ctx.db.query("auditLogs").collect()).map((l) => l.action));
+    expect(audit).toContain("refund_selling_point_payment");
+  });
+
+  it("a part-paid order inside a receipt with another order: only its share goes back and its debt disappears", async () => {
+    const { t, asWaiter, asCashier, asBoss, waiter, productId } = await setup();
+    const a = await send(asWaiter, "refund-2-abcdefg", productId, 2); // 4000
+    const b = await send(asWaiter, "refund-3-abcdefg", productId, 1); // 2000
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [a.orderId, b.orderId], splits: [{ method: "cash", amount: 5000 }] }); // a paid 4000, b paid 1000, debt 1000
+
+    await asBoss.mutation(api.waiterOrders.cancelBillFromFinder, { orderId: b.orderId, reason: "Imerudi", refundPayment: true });
+
+    const receipt = (await t.run(async (ctx) => ctx.db.query("waiterCollections").collect()))[0];
+    expect(receipt.total).toBe(4000);
+    expect(receipt.orderIds).toEqual([a.orderId]);
+    expect(receipt.allocations).toEqual([{ orderId: a.orderId, amount: 4000 }]);
+    expect(receipt.splits.map((s) => s.amount)).toEqual([4000]);
+    expect(receipt.shortfall).toBe(0); // the 1000 the waiter still owed was for the cancelled order
+    const kept = await t.run(async (ctx) => ctx.db.get("waiterOrders", a.orderId));
+    expect(kept?.paidAmount).toBe(4000); // the other order is untouched
+    const sums = await net(t);
+    expect(sums.some((x) => x === 4000 || x === -4000)).toBe(true); // 4000 of sales and cash remain booked
+    expect(sums.reduce((n, x) => n + x, 0)).toBe(0); // and the books still balance
+  });
+
+  it("editing a paid bill gives the payment back first; afterwards it is unpaid and the cashier can receive it again", async () => {
+    const { t, asWaiter, asCashier, asBoss, waiter, productId } = await setup();
+    const a = await send(asWaiter, "refund-4-abcdefg", productId, 2);
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [a.orderId], splits: [{ method: "cash", amount: 4000 }] });
+
+    await expect(asBoss.mutation(api.waiterOrders.editBillFromFinder, { orderId: a.orderId, customerName: "Mteja", lines: [{ productId, qty: 1, unitPrice: 2000 }] })).rejects.toThrow(/malipo/i);
+    const r = await asBoss.mutation(api.waiterOrders.editBillFromFinder, { orderId: a.orderId, customerName: "Mteja", lines: [{ productId, qty: 1, unitPrice: 2000 }], undoPayment: true });
+    expect(r.refunded).toBe(4000);
+    expect(r.total).toBe(2000);
+
+    const owing = await asCashier.query(api.waiterCollections.owing, {});
+    expect(owing).toHaveLength(1);
+    expect(owing[0].total).toBe(2000);
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [a.orderId], splits: [{ method: "cash", amount: 2000 }] });
+    const sums = await net(t);
+    expect(sums.reduce((n, x) => n + x, 0)).toBe(0);
+    expect(sums.some((x) => x === 2000 || x === -2000)).toBe(true); // only the corrected 2000 stays booked
+  });
+
+  it("a bill received by the cashier but not paid yet can be cancelled with no payment flag", async () => {
+    const { t, asWaiter, asBoss, productId } = await setup();
+    const a = await send(asWaiter, "refund-5-abcdefg", productId, 1);
+    await t.run(async (ctx) => ctx.db.patch("waiterOrders", a.orderId, { status: "accepted", handledAt: new Date().toISOString() }));
+    await asBoss.mutation(api.waiterOrders.cancelBillFromFinder, { orderId: a.orderId, reason: "Imerudi" });
+    expect((await t.run(async (ctx) => ctx.db.get("waiterOrders", a.orderId)))?.status).toBe("cancelled");
+  });
+
+  it("a closed accounting period blocks the refund and nothing is written", async () => {
+    const { t, tenantId, asWaiter, asCashier, asBoss, waiter, productId } = await setup();
+    const a = await send(asWaiter, "refund-6-abcdefg", productId, 1);
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [a.orderId], splits: [{ method: "cash", amount: 2000 }] });
+    await t.run(async (ctx) => { await ctx.db.insert("financialPeriods", { tenantId, name: "Closed", startDate: "2000-01-01", endDate: "2999-12-31", status: "closed" } as never); });
+    await expect(asBoss.mutation(api.waiterOrders.cancelBillFromFinder, { orderId: a.orderId, reason: "Jaribio", refundPayment: true })).rejects.toThrow(/kimefungwa/);
+    const order = await t.run(async (ctx) => ctx.db.get("waiterOrders", a.orderId));
+    expect(order?.status).not.toBe("cancelled");
+    expect(order?.paidAmount).toBe(2000);
+  });
+});
+

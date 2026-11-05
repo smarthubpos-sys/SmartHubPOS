@@ -1,4 +1,5 @@
 import { mutation, query, type MutationCtx } from "./_generated/server";
+import { orderHasPayment, reverseOrderPayments } from "./waiterRefund";
 import { v, ConvexError } from "convex/values";
 import { surfaceError } from "./surfaceError";
 import { assertAutoProducible, autoProduceForSale } from "./autoProduce";
@@ -481,12 +482,10 @@ export const searchBillsForFinder = query({
         customerName: o.customerName, waiterName: o.waiterName, tableNumber: o.tableNumber, notes: o.notes,
         total: o.total, status: o.status, billSentAt: o.billSentAt, billPrintedAt: o.billPrintedAt,
         canPrint: rights.canPrint,
-        // Role rights, apart from the bill's state: the screen shows the buttons disabled with the reason instead of hiding them.
-        mayEdit: rights.canEdit, mayVoid: rights.canVoid,
-        lockReason: o.status === "cancelled" ? "" : o.status === "accepted" || o.handledAt ? "received"
-          : o.settledAt || o.collectionId || (o.paidAmount ?? 0) > 0 ? "paid" : "",
-        canEdit: rights.canEdit && o.status !== "cancelled" && o.status !== "accepted" && !o.handledAt && !o.settledAt && !(o.paidAmount ?? 0) && !o.collectionId,
-        canVoid: rights.canVoid && o.status !== "cancelled" && o.status !== "accepted" && !o.handledAt && !o.settledAt && !(o.paidAmount ?? 0) && !o.collectionId,
+        // A bill received by the cashier or already paid can still be edited / cancelled: the payment is given back first (see waiterRefund.ts).
+        hasPayment: orderHasPayment(o), paidAmount: o.paidAmount ?? (o.settledAt ? o.total : 0),
+        canEdit: rights.canEdit && o.status !== "cancelled",
+        canVoid: rights.canVoid && o.status !== "cancelled",
         lines: o.lines.map(l => ({ productId: l.productId, productName: l.productName, qty: l.qty, unitPrice: l.unitPrice, discount: l.discount ?? 0, lineTotal: l.lineTotal })),
       }));
   },
@@ -505,6 +504,7 @@ export const editBillFromFinder = mutation({
       unitPrice: v.number(),
       discount: v.optional(v.number()),
     })),
+    undoPayment: v.optional(v.boolean()), // required when the bill already has money received: the payment is given back, then the bill is edited
   },
   handler: async (ctx, args) => {
     try {
@@ -516,8 +516,8 @@ export const editBillFromFinder = mutation({
         throw new ConvexError("Bili haipatikani kwenye biashara au tawi lako.");
       }
       if (order.status === "cancelled") throw new ConvexError("Bili hii imebatilishwa.");
-      if (order.status === "accepted" || order.handledAt || order.settledAt || order.collectionId || (order.paidAmount ?? 0) > 0) {
-        throw new ConvexError("Bili iliyopokelewa au yenye malipo haiwezi kuhaririwa. Shughulikia malipo kwanza.");
+      if (orderHasPayment(order) && !args.undoPayment) {
+        throw new ConvexError("Bili hii ina malipo yaliyopokelewa. Thibitisha kurudisha malipo kwanza ili kuihariri.");
       }
       if (!args.lines.length) throw new ConvexError("Bili lazima iwe na angalau bidhaa moja.");
       const customerName = args.customerName.trim();
@@ -547,6 +547,7 @@ export const editBillFromFinder = mutation({
 
       const now = new Date().toISOString();
       const orderScope = { tenantId: order.tenantId, branchId: order.branchId };
+      const refund = await reverseOrderPayments(ctx, user, order, "bili imehaririwa"); // before the stock moves: the cost of goods is read from it
       if (order.stockDeducted) {
         const restore = new Map<string, number>();
         for (const line of order.lines) restore.set(String(line.productId), (restore.get(String(line.productId)) ?? 0) + line.qty);
@@ -580,16 +581,16 @@ export const editBillFromFinder = mutation({
       await deductStockOnce(ctx, updated as Doc<"waiterOrders">, user, orderScope);
       await logAudit(ctx, user, {
         action: "edit_selling_point_bill", module: "sales", referenceId: String(order._id),
-        referenceType: "waiterOrder", details: `${order.invoiceNo ?? order._id}; ${order.total} -> ${updated.total}`,
+        referenceType: "waiterOrder", details: `${order.invoiceNo ?? order._id}; ${order.total} -> ${updated.total}${refund.refunded > 0 ? `; malipo yaliyorudishwa ${refund.refunded}` : ""}`,
       });
-      return { orderId: order._id, invoiceNo: order.invoiceNo, total: updated.total };
+      return { orderId: order._id, invoiceNo: order.invoiceNo, total: updated.total, refunded: refund.refunded };
     } catch (e) { throw surfaceError(e); }
   },
 });
 
-/** Cancel an unpaid Selling Point bill from Invoice Finder. The record and invoice number remain in history. */
+/** Cancel a Selling Point bill from Invoice Finder (if money was received it is given back first). The record and invoice number remain in history. */
 export const cancelBillFromFinder = mutation({
-  args: { orderId: v.id("waiterOrders"), reason: v.string() },
+  args: { orderId: v.id("waiterOrders"), reason: v.string(), refundPayment: v.optional(v.boolean()) }, // refundPayment: required when money was already received
   handler: async (ctx, args) => {
     try {
       const user = await requirePermission(ctx, "sales.void", "sales");
@@ -600,13 +601,14 @@ export const cancelBillFromFinder = mutation({
         throw new ConvexError("Bili haipatikani kwenye biashara au tawi lako.");
       }
       if (order.status === "cancelled") return order._id;
-      if (order.status === "accepted" || order.handledAt || order.settledAt || order.collectionId || (order.paidAmount ?? 0) > 0) {
-        throw new ConvexError("Bili iliyopokelewa au yenye malipo haiwezi kubatilishwa. Shughulikia malipo kwanza.");
+      if (orderHasPayment(order) && !args.refundPayment) {
+        throw new ConvexError("Bili hii ina malipo yaliyopokelewa. Thibitisha kurudisha malipo kabla ya kuifuta.");
       }
       const reason = args.reason.trim();
       if (!reason || reason.length > 300) throw new ConvexError("Weka sababu ya kubatilisha bili.");
       const now = new Date().toISOString();
       const orderScope = { tenantId: order.tenantId, branchId: order.branchId };
+      const refund = await reverseOrderPayments(ctx, user, order, reason); // before the stock moves: the cost of goods is read from it
       if (order.stockDeducted) {
         const restore = new Map<string, number>();
         for (const line of order.lines) restore.set(String(line.productId), (restore.get(String(line.productId)) ?? 0) + line.qty);
@@ -628,7 +630,7 @@ export const cancelBillFromFinder = mutation({
       });
       await logAudit(ctx, user, {
         action: "cancel_selling_point_bill", module: "sales", referenceId: String(order._id),
-        referenceType: "waiterOrder", details: `${order.invoiceNo ?? order._id}; ${order.total}; ${reason}`,
+        referenceType: "waiterOrder", details: `${order.invoiceNo ?? order._id}; ${order.total}; ${reason}${refund.refunded > 0 ? `; malipo yaliyorudishwa ${refund.refunded}` : ""}`,
       });
       return order._id;
     } catch (e) { throw surfaceError(e); }
