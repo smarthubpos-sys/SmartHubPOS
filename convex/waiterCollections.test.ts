@@ -291,6 +291,17 @@ describe("Invoice Finder: a bill received or paid by mistake can be cancelled / 
     expect(sums.some((x) => x === 2000 || x === -2000)).toBe(true); // only the corrected 2000 stays booked
   });
 
+  it("the Sales register lists money received from waiters by method, and it follows a refund", async () => {
+    const { asWaiter, asCashier, asBoss, waiter, productId } = await setup();
+    const a = await send(asWaiter, "refund-7-abcdefg", productId, 2);
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [a.orderId], splits: [{ method: "cash", amount: 3000 }] }); // 4000 due, 1000 left as the waiter's debt
+    const day = await asBoss.query(api.sales.salesRegisters, {});
+    expect(day.spByMethod).toEqual([{ method: "cash", amount: 3000 }]);
+    expect(day.totals.waiterDebt).toBe(1000);
+    await asBoss.mutation(api.waiterOrders.cancelBillFromFinder, { orderId: a.orderId, reason: "Imerudi", refundPayment: true });
+    expect((await asBoss.query(api.sales.salesRegisters, {})).spByMethod).toEqual([]);
+  });
+
   it("a bill received by the cashier but not paid yet can be cancelled with no payment flag", async () => {
     const { t, asWaiter, asBoss, productId } = await setup();
     const a = await send(asWaiter, "refund-5-abcdefg", productId, 1);

@@ -661,6 +661,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
     // They are not invoices, so they are added here to the report rows and the headline totals (never to client balances or receivables).
     const SP_CLIENT = "selling-point" as unknown as Id<"clients">;
     let spSales = 0, spCount = 0, spTruncated = false, spDebt = 0, spDebtOpen = 0;
+    const spMethods = new Map<string, number>(); // money the cashier received from waiters, by payment method (for the day-end check)
     const openSeen = new Set<string>();
     if (tenantId) {
       const cols = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => {
@@ -673,6 +674,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
       spTruncated = cols.length > REG_CAP;
       for (const c of cols.slice(0, REG_CAP)) {
         const inScopeCol = !branchId || c.branchId === branchId;
+        if (inScopeCol && !isOwnDataOnly(user)) for (const sp of c.splits) spMethods.set(sp.method, money((spMethods.get(sp.method) ?? 0) + sp.amount));
         if (inScopeCol && !isOwnDataOnly(user)) spDebt = money(spDebt + (c.shortfall ?? 0)); // debt the waiter was left with at this receipt (shows on that day's report)
         for (const orderId of c.orderIds) {
           const o = await ctx.db.get("waiterOrders", orderId);
@@ -734,6 +736,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
       company: { name: companyRow?.companyName ?? "", address: companyRow?.address ?? "", phone: companyRow?.phone ?? "", currencySymbol: companyRow?.currencySymbol ?? "TSh", decimalPlaces: companyRow?.decimalPlaces ?? 0 },
       clients: clients.map(c => ({ _id: c._id, code: c.code, name: c.name, phone: c.phone ?? "", email: c.email ?? "", address: c.address ?? "", contactPerson: c.contactPerson ?? "", openingBalance: c.openingBalance, creditLimit: c.creditLimit ?? null, creditPolicy: c.creditPolicy, isActive: c.isActive })),
       invoices: invoiceRows, lines, payments, balances,
+      spByMethod: [...spMethods.entries()].map(([method, amount]) => ({ method, amount })),
       openInvoices: openInvoicesRaw.sort((x, y) => x.invoiceDate.localeCompare(y.invoiceDate)).map(i => ({ _id: i._id, invoiceNo: i.invoiceNo, clientId: i.clientId, clientName: clientName.get(String(i.clientId)) ?? "Mteja", total: i.total, outstanding: i.outstanding, date: i.invoiceDate })),
       truncated: truncated || spTruncated,
       totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0) + spSales), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0) + spSales), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), invoices: invoices.length + spCount, waiterDebt: spDebt, waiterDebtOpen: spDebtOpen },
