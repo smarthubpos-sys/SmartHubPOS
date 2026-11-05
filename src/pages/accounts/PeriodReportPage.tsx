@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { useSearchParams } from "react-router-dom";
-import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { FileBarChart, Printer } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
@@ -12,19 +11,15 @@ import { formatDate, formatNumber, localDate } from "@/lib/format.ts";
 import { errorText, getLocale, tr } from "@/lib/i18n.ts";
 import { printElement } from "@/lib/print-area.ts";
 import { scrollAppToTop } from "@/lib/app-scroll.ts";
-import { bucketDaily, chunkRange, halve, periodRange, sumSections, summarize, type Period, type Row, type Summary } from "@/convex/reportCore.ts";
+import { chunkRange, halve, periodRange, statement, sumSections, summarize, type DebtRow, type ExpenseItem, type Period, type Row, type Statement, type Summary } from "@/convex/reportCore.ts";
 import { toast } from "sonner";
 
-type Section = { bk: string; name: string; rows: Row[] };
+type Section = { bk: string; name: string; rows: Row[]; items?: ExpenseItem[] };
+type Debts = { waiters: DebtRow[]; customers: DebtRow[] };
 type Meta = { period: Period; from: string; to: string; scopeLabel: string; title: string; generatedAt: string; preparedBy: string };
 type Header = { businessName: string; address: string; phone: string; email: string; tin: string; currencySymbol: string; decimalPlaces: number; preparedBy: string };
 
 const CHUNK_DAYS = 7;
-const SOURCE_LABEL = (k: string) => ({
-  customer_receipts: tr("Mapokezi kutoka kwa wateja"), customer_refunds: tr("Marejesho kwa wateja"), suppliers: tr("Malipo kwa wasambazaji"),
-  bills: tr("Bili na matumizi"), payroll: tr("Mishahara"), capital: tr("Mtaji na mikopo"), other: tr("Mengineyo (journal za mkono)"),
-} as Record<string, string>)[k] ?? k;
-
 /** Accounting style: negatives in brackets, zero as a dash. */
 const acct = (n: number, d: number) => (Math.abs(n) < 0.005 ? "–" : n < 0 ? `(${formatNumber(-n, d)})` : formatNumber(n, d));
 
@@ -37,167 +32,184 @@ const periodName = (p: string) => p === "day" ? tr("Ripoti ya Siku") : p === "mo
 
 /* ───────────────────────────────────────── the printable report ───────────────────────────────────────── */
 
-function ReportDocument({ meta, sections, header, innerRef }: { meta: Meta; sections: Section[]; header: Header; innerRef: RefObject<HTMLDivElement | null> }) {
-  const d = header.decimalPlaces;
-  const cols = useMemo(() => {
-    const own = sections.map((s) => ({ key: s.bk, label: s.name, s: summarize(s.rows) }));
-    return own.length > 1 ? [...own, { key: "total", label: tr("JUMLA"), s: summarize(sumSections(sections.map((x) => x.rows))) }] : own;
-  }, [sections]);
-  const total: Summary = (cols[cols.length - 1] ?? { s: summarize([]) }).s;
-  const multi = cols.length > 1;
-  const expenseCodes = total.expenses.map((e) => ({ code: e.code, name: e.name }));
-  const otherIncomeCodes = total.otherIncomeLines.map((e) => ({ code: e.code, name: e.name }));
-  const trend = useMemo(() => meta.period === "day" ? [] : bucketDaily(total.daily, meta.period === "year" ? "month" : "day"), [total.daily, meta.period]);
+const INK = "#0f2742"; // one accent colour only: deep navy
 
-  const th = "border border-[#1e3a5f] bg-[#1e3a5f] px-2 py-1.5 text-right text-[11px] font-semibold uppercase tracking-wide text-white";
-  const td = "px-2 py-1 text-right tabular-nums";
-  const rowOf = (label: string, pick: (s: Summary) => number, opts: { bold?: boolean; indent?: boolean; top?: boolean; double?: boolean; muted?: boolean } = {}) => (
-    <tr className={`${opts.top ? "border-t border-neutral-500" : ""} ${opts.double ? "border-b-4 border-double border-neutral-700" : "border-b border-neutral-200"} ${opts.bold ? "font-bold" : ""} ${opts.muted ? "text-neutral-500" : ""}`}>
-      <td className={`px-2 py-1 ${opts.indent ? "pl-6" : ""}`}>{label}</td>
-      {cols.map((c) => <td key={c.key} className={`${td} ${multi && c.key === "total" ? "bg-neutral-100 font-semibold" : ""}`}>{acct(pick(c.s), d)}</td>)}
-    </tr>
+function ReportDocument({ meta, sections, debts, header, innerRef }: { meta: Meta; sections: Section[]; debts: Debts | null; header: Header; innerRef: RefObject<HTMLDivElement | null> }) {
+  const d = header.decimalPlaces;
+  const money = (n: number) => formatNumber(n, d);
+  const W = useMemo(() => debts?.waiters ?? [], [debts]);
+  const C = useMemo(() => debts?.customers ?? [], [debts]);
+  const sum = (rows: DebtRow[], f: (r: DebtRow) => number) => rows.reduce((n, r) => n + f(r), 0);
+
+  const total = useMemo(() => summarize(sumSections(sections.map((x) => x.rows))), [sections]);
+  const st: Statement = useMemo(() => statement(total, sum(W, (r) => r.amount), sum(W, (r) => r.cost), sum(C, (r) => r.amount)), [total, W, C]);
+  const perDept = useMemo(() => sections.length < 2 ? [] : sections.map((x) => {
+    const w = W.filter((r) => r.bk === x.bk), c = C.filter((r) => r.bk === x.bk);
+    return { bk: x.bk, name: x.name, st: statement(summarize(x.rows), sum(w, (r) => r.amount), sum(w, (r) => r.cost), sum(c, (r) => r.amount)) };
+  }), [sections, W, C]);
+
+  // Expenses exactly as entered; an old saved report without the list falls back to its category totals.
+  const items = useMemo(() => {
+    const list = sections.flatMap((x) => x.items ?? []).sort((p, q) => p.d.localeCompare(q.d) || p.t.localeCompare(q.t));
+    return list.length ? list : total.expenses.map((e) => ({ bk: "", d: "", t: e.name, c: "", a: e.amount }));
+  }, [sections, total.expenses]);
+  const hasDates = items.some((i) => i.d);
+  const dateCol = meta.period === "day" ? false : hasDates;
+
+  const num = "px-2 py-1.5 text-right tabular-nums";
+  const head = "border-b-2 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-500";
+  const h2 = "mb-2 text-[11px] font-bold uppercase tracking-[0.18em]";
+  const loss = st.profitAfter < 0;
+  const channelBoxes: Array<[string, number]> = [["CASH", total.channels.cash], ["LIPA", total.channels.lipa], ["BANK", total.channels.bank], ...(Math.abs(total.channels.other) >= 0.005 ? [[tr("NYINGINE"), total.channels.other] as [string, number]] : [])];
+  const big = (label: string, value: number, tone = "") => (
+    <div className="border-t-2 pt-2" style={{ borderColor: INK }}>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-500">{label}</p>
+      <p className={`mt-1 text-xl font-bold tabular-nums ${tone}`}>{acct(value, d)}</p>
+    </div>
   );
-  const band = (label: string) => <tr><td colSpan={cols.length + 1} className="bg-neutral-100 px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-[#1e3a5f]">{label}</td></tr>;
-  const kpi = (label: string, value: number, sub?: string, tone = "text-neutral-900") => (
-    <div className="rounded border border-neutral-300 bg-white p-3"><p className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">{label}</p><p className={`text-lg font-bold tabular-nums ${tone}`}>{acct(value, d)}</p>{sub && <p className="text-[11px] text-neutral-500">{sub}</p>}</div>
+  const line = (label: string, value: number, o: { strong?: boolean; sub?: boolean; double?: boolean; tone?: string } = {}) => (
+    <tr className={`${o.strong ? "font-bold" : ""} ${o.double ? "border-t-2 border-neutral-800" : "border-t border-neutral-200"}`}>
+      <td className={`px-2 py-1.5 ${o.sub ? "pl-6 text-neutral-600" : ""}`}>{label}</td>
+      <td className={`${num} ${o.tone ?? ""}`}>{acct(value, d)}</td>
+    </tr>
   );
 
   return (
-    <div ref={innerRef} className="mx-auto w-full max-w-5xl space-y-5 rounded-lg border border-neutral-300 bg-white p-6 text-neutral-900 shadow-sm md:p-8">
+    <div ref={innerRef} className="mx-auto w-full max-w-3xl space-y-6 rounded-lg border border-neutral-200 bg-white p-6 text-[12px] leading-snug text-neutral-900 shadow-sm md:p-10">
       {/* Letterhead */}
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b-2 border-[#1e3a5f] pb-3">
+      <header className="flex items-end justify-between gap-4 border-b-2 pb-3" style={{ borderColor: INK }}>
         <div>
-          <p className="text-xl font-bold tracking-tight text-[#1e3a5f]">{header.businessName || tr("Biashara")}</p>
-          <p className="text-xs text-neutral-600">{[header.address, header.phone, header.email].filter(Boolean).join(" · ")}</p>
-          {header.tin && <p className="text-xs text-neutral-600">TIN: {header.tin}</p>}
+          <p className="text-xl font-bold tracking-tight" style={{ color: INK }}>{header.businessName || tr("Biashara")}</p>
+          <p className="text-[11px] text-neutral-500">{[header.address, header.phone, header.email].filter(Boolean).join(" · ")}</p>
+          {header.tin && <p className="text-[11px] text-neutral-500">TIN: {header.tin}</p>}
         </div>
         <div className="text-right">
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-neutral-500">{periodName(meta.period)}</p>
-          <p className="text-lg font-bold text-[#1e3a5f]">{tr("Taarifa ya Mapato, Matumizi na Fedha")}</p>
-          <p className="text-xs text-neutral-600">{tr("Statement of Income, Expenses and Cash Movement")}</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">{periodName(meta.period)}</p>
+          <p className="text-lg font-bold" style={{ color: INK }}>{periodText(meta.period, meta.from, meta.to)}</p>
+          {meta.to !== meta.from && <p className="text-[11px] text-neutral-500">{formatDate(meta.from)} – {formatDate(meta.to)}</p>}
         </div>
       </header>
 
-      <div className="grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2 md:grid-cols-4">
-        <p><span className="text-neutral-500">{tr("Kipindi")}:</span> <b>{periodText(meta.period, meta.from, meta.to)}</b></p>
-        <p><span className="text-neutral-500">{tr("Tarehe")}:</span> <b>{formatDate(meta.from)}{meta.to !== meta.from ? ` – ${formatDate(meta.to)}` : ""}</b></p>
-        <p><span className="text-neutral-500">{tr("Idara")}:</span> <b>{meta.scopeLabel}</b></p>
-        <p><span className="text-neutral-500">{tr("Sarafu")}:</span> <b>{header.currencySymbol}</b></p>
+      {/* The four numbers that matter */}
+      <div className="grid grid-cols-2 gap-x-5 gap-y-4 md:grid-cols-4">
+        {big(tr("MAUZO"), st.sales)}
+        {big(tr("MATUMIZI"), st.expenses)}
+        {big(tr("MADENI"), st.debts)}
+        {big(loss ? tr("HASARA") : tr("FAIDA"), loss ? -st.profitAfter : st.profitAfter, loss ? "text-red-700" : "text-emerald-700")}
       </div>
 
-      {/* Key figures */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        {kpi(tr("Mauzo halisi"), total.netSales, total.returns > 0 ? tr("Baada ya marejesho: {0}", [acct(total.returns, d)]) : undefined)}
-        {kpi(tr("Faida ya mauzo"), total.grossProfit, `${total.grossMarginPct}%`)}
-        {kpi(tr("Jumla ya matumizi"), total.totalExpenses)}
-        {kpi(tr("Faida halisi"), total.netProfit, `${total.netMarginPct}%`, total.netProfit < 0 ? "text-red-700" : "text-emerald-700")}
-      </div>
-
-      {/* 1. Income statement */}
+      {/* 1. Sales, capital, profit */}
       <section>
-        <h2 className="mb-1 text-sm font-bold uppercase tracking-wide text-[#1e3a5f]">1. {tr("Taarifa ya Mapato na Matumizi (Income Statement)")}</h2>
-        <div className="overflow-x-auto"><table className="w-full border-collapse text-xs">
-          <thead><tr><th className={`${th} text-left`}>{tr("Maelezo")}</th>{cols.map((c) => <th key={c.key} className={th}>{c.label}</th>)}</tr></thead>
-          <tbody>
-            {band(tr("Mapato"))}
-            {rowOf(tr("Mauzo (baada ya punguzo)"), (s) => s.sales, { indent: true })}
-            {rowOf(tr("Toa: marejesho ya mauzo"), (s) => -s.returns, { indent: true })}
-            {rowOf(tr("Mauzo halisi"), (s) => s.netSales, { bold: true, top: true })}
-            {band(tr("Gharama ya mauzo"))}
-            {rowOf(tr("Gharama ya bidhaa zilizouzwa"), (s) => s.cogs, { indent: true })}
-            {rowOf(tr("FAIDA YA MAUZO (Gross profit)"), (s) => s.grossProfit, { bold: true, top: true })}
-            {rowOf(tr("Kiwango cha faida ya mauzo (%)"), (s) => s.grossMarginPct, { indent: true, muted: true })}
-            {otherIncomeCodes.length > 0 && band(tr("Mapato mengine"))}
-            {otherIncomeCodes.map((x) => rowOf(x.name, (s) => s.otherIncomeLines.find((l) => l.code === x.code)?.amount ?? 0, { indent: true }))}
-            {band(tr("Matumizi ya uendeshaji"))}
-            {expenseCodes.length === 0 && <tr><td colSpan={cols.length + 1} className="px-2 py-1 pl-6 text-neutral-500">{tr("Hakuna matumizi yaliyorekodiwa kwenye kipindi hiki.")}</td></tr>}
-            {expenseCodes.map((x) => rowOf(x.name, (s) => s.expenses.find((l) => l.code === x.code)?.amount ?? 0, { indent: true }))}
-            {rowOf(tr("Jumla ya matumizi"), (s) => s.totalExpenses, { bold: true, top: true })}
-            {rowOf(tr("FAIDA HALISI / (HASARA)"), (s) => s.netProfit, { bold: true, top: true, double: true })}
-            {rowOf(tr("Kiwango cha faida halisi (%)"), (s) => s.netMarginPct, { indent: true, muted: true })}
-          </tbody>
-        </table></div>
-      </section>
-
-      {/* 2. Cash movement */}
-      <section>
-        <h2 className="mb-1 text-sm font-bold uppercase tracking-wide text-[#1e3a5f]">2. {tr("Mwenendo wa Fedha (Cash and Money Accounts Movement)")}</h2>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="overflow-x-auto"><table className="w-full border-collapse text-xs">
-            <thead><tr><th className={`${th} text-left`}>{tr("Akaunti ya fedha")}</th><th className={th}>{tr("Zilizoingia")}</th><th className={th}>{tr("Zilizotoka")}</th><th className={th}>{tr("Net")}</th></tr></thead>
-            <tbody>
-              {total.money.length === 0 && <tr><td colSpan={4} className="px-2 py-1 text-neutral-500">{tr("Hakuna mwenendo wa fedha.")}</td></tr>}
-              {total.money.map((m) => <tr key={m.code} className="border-b border-neutral-200"><td className="px-2 py-1">{m.name}</td><td className={td}>{acct(m.in, d)}</td><td className={td}>{acct(m.out, d)}</td><td className={td}>{acct(m.net, d)}</td></tr>)}
-              <tr className="border-t border-neutral-500 font-bold"><td className="px-2 py-1">{tr("Jumla")}</td><td className={td}>{acct(total.cashIn, d)}</td><td className={td}>{acct(total.cashOut, d)}</td><td className={td}>{acct(total.netCash, d)}</td></tr>
-            </tbody>
-          </table></div>
-          <div className="overflow-x-auto"><table className="w-full border-collapse text-xs">
-            <thead><tr><th className={`${th} text-left`}>{tr("Chanzo / matumizi ya fedha")}</th><th className={th}>{tr("Zilizoingia")}</th><th className={th}>{tr("Zilizotoka")}</th><th className={th}>{tr("Net")}</th></tr></thead>
-            <tbody>
-              {total.sources.length === 0 && <tr><td colSpan={4} className="px-2 py-1 text-neutral-500">{tr("Hakuna mwenendo wa fedha.")}</td></tr>}
-              {total.sources.map((x) => <tr key={x.key} className="border-b border-neutral-200"><td className="px-2 py-1">{SOURCE_LABEL(x.key)}</td><td className={td}>{acct(x.in, d)}</td><td className={td}>{acct(x.out, d)}</td><td className={td}>{acct(x.net, d)}</td></tr>)}
-            </tbody>
-          </table></div>
-        </div>
-        <p className="mt-1 text-[10px] text-neutral-500">{tr("Uhamisho kati ya akaunti za fedha unaonekana kama kuingia na kutoka kwa wakati mmoja.")}</p>
-      </section>
-
-      {/* 3. Other figures */}
-      <section>
-        <h2 className="mb-1 text-sm font-bold uppercase tracking-wide text-[#1e3a5f]">3. {tr("Taarifa Nyingine za Kipindi")}</h2>
-        <div className="grid gap-4 md:grid-cols-2">
-          <table className="w-full border-collapse text-xs"><tbody>
-            {([
-              [tr("Mabadiliko ya madeni ya wateja (Receivables)"), total.receivableChange],
-              [tr("Mabadiliko ya madeni ya wasambazaji (Payables)"), total.supplierPayableChange],
-              [tr("Mabadiliko ya madeni ya bili (Bills payable)"), total.billsPayableChange],
-              [tr("Kodi iliyokusanywa (Tax collected, net)"), total.taxCollected],
-            ] as Array<[string, number]>).map(([l, v]) => <tr key={l} className="border-b border-neutral-200"><td className="px-2 py-1">{l}</td><td className={td}>{acct(v, d)}</td></tr>)}
-          </tbody></table>
-          <table className="w-full border-collapse text-xs"><tbody>
-            {([
-              [tr("Idadi ya invoices zilizotolewa"), total.counts.invoices],
-              [tr("Invoices zilizobatilishwa"), total.counts.voids],
-              [tr("Marejesho ya bidhaa (returns)"), total.counts.returns],
-              [tr("Miamala yote ya hesabu iliyochakatwa"), total.counts.entries],
-            ] as Array<[string, number]>).map(([l, v]) => <tr key={l} className="border-b border-neutral-200"><td className="px-2 py-1">{l}</td><td className={td}>{formatNumber(v, 0)}</td></tr>)}
-          </tbody></table>
-        </div>
-      </section>
-
-      {/* 4. Trend */}
-      {trend.length > 1 && (
-        <section>
-          <h2 className="mb-1 text-sm font-bold uppercase tracking-wide text-[#1e3a5f]">4. {meta.period === "year" ? tr("Mwenendo kwa Mwezi") : tr("Mwenendo kwa Siku")}</h2>
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={trend} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#d4d4d4" />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v: string) => (v.length === 7 ? v.slice(5) : v.slice(8))} />
-                <YAxis tick={{ fontSize: 10 }} tickFormatter={(v: number) => formatNumber(v, 0)} width={70} />
-                <Tooltip formatter={(v) => formatNumber(Number(v), d)} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="sales" name={tr("Mauzo halisi")} fill="#1e3a5f" isAnimationActive={false} />
-                <Bar dataKey="expenses" name={tr("Matumizi")} fill="#c2410c" isAnimationActive={false} />
-                <Bar dataKey="profit" name={tr("Faida")} fill="#15803d" isAnimationActive={false} />
-              </BarChart>
-            </ResponsiveContainer>
+        <h2 className={h2} style={{ color: INK }}>1. {tr("Mauzo, Mtaji na Faida")}</h2>
+        <table className="w-full border-collapse"><tbody>
+          {line(tr("Mauzo ya jumla"), st.sales, { strong: true })}
+          {line(tr("Mtaji (gharama ya bidhaa zilizouzwa)"), st.capital, { sub: true })}
+          {line(tr("Faida ya mauzo"), st.grossProfit, { strong: true })}
+          {Math.abs(st.otherIncome) >= 0.005 && line(tr("Mapato mengine"), st.otherIncome, { sub: true })}
+          {line(tr("Toa: matumizi"), -st.expenses, { sub: true })}
+          {line(loss ? tr("HASARA") : tr("FAIDA HALISI"), st.profitAfter, { strong: true, double: true, tone: loss ? "text-red-700" : "text-emerald-700" })}
+        </tbody></table>
+        {loss ? (
+          <div className="mt-3 border-l-4 border-red-600 bg-red-50 px-3 py-2 text-red-900">
+            <p className="font-bold">{tr("Matumizi yamezidi faida. Mtaji umeliwa: {0}", [money(st.capitalEaten)])}</p>
+            <p>{tr("Mtaji uliobaki: {0} kati ya {1}.", [money(st.capitalLeft), money(st.capital)])}</p>
           </div>
+        ) : (
+          <p className="mt-2 text-[11px] text-neutral-500">{tr("Matumizi yamelipwa kutoka kwenye faida; mtaji wote ({0}) umebaki salama.", [money(st.capital)])}</p>
+        )}
+        {st.debts > 0 && <p className="mt-1 text-[11px] text-neutral-500">{tr("Mauzo ya jumla yanajumuisha madeni ambayo hayajakusanywa.")}</p>}
+      </section>
+
+      {/* 2. Expenses in detail */}
+      <section>
+        <h2 className={h2} style={{ color: INK }}>2. {tr("Matumizi (kwa undani)")}</h2>
+        <table className="w-full border-collapse">
+          <thead><tr>
+            {dateCol && <th className={`${head} text-left`} style={{ borderColor: INK }}>{tr("Tarehe")}</th>}
+            <th className={`${head} text-left`} style={{ borderColor: INK }}>{tr("Maelezo")}</th>
+            <th className={`${head} text-left`} style={{ borderColor: INK }}>{tr("Aina")}</th>
+            <th className={`${head} text-right`} style={{ borderColor: INK }}>{tr("Kiasi")}</th>
+          </tr></thead>
+          <tbody>
+            {items.length === 0 && <tr><td colSpan={dateCol ? 4 : 3} className="px-2 py-2 text-neutral-500">{tr("Hakuna matumizi yaliyorekodiwa kwenye kipindi hiki.")}</td></tr>}
+            {items.map((i, n) => (
+              <tr key={n} className="border-b border-neutral-200">
+                {dateCol && <td className="whitespace-nowrap px-2 py-1.5 text-neutral-600">{i.d ? formatDate(i.d) : ""}</td>}
+                <td className="px-2 py-1.5">{i.t}</td>
+                <td className="px-2 py-1.5 text-neutral-600">{i.c}</td>
+                <td className={num}>{acct(i.a, d)}</td>
+              </tr>
+            ))}
+            {items.length > 0 && <tr className="border-t-2 border-neutral-800 font-bold"><td colSpan={dateCol ? 3 : 2} className="px-2 py-1.5">{tr("Jumla ya matumizi")}</td><td className={num}>{acct(st.expenses, d)}</td></tr>}
+          </tbody>
+        </table>
+      </section>
+
+      {/* 3. Debts */}
+      <section>
+        <h2 className={h2} style={{ color: INK }}>3. {tr("Madeni")}</h2>
+        <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">{tr("Wahudumu (waiters / waitresses) — hawajakabidhi pesa")}</p>
+        <table className="w-full border-collapse">
+          <thead><tr><th className={`${head} text-left`} style={{ borderColor: INK }}>{tr("Jina")}</th><th className={`${head} text-right`} style={{ borderColor: INK }}>{tr("Oda")}</th><th className={`${head} text-right`} style={{ borderColor: INK }}>{tr("Anadaiwa")}</th></tr></thead>
+          <tbody>
+            {W.length === 0 && <tr><td colSpan={3} className="px-2 py-2 text-neutral-500">{tr("Hakuna deni la mhudumu.")}</td></tr>}
+            {mergeByName(W).map((r) => <tr key={r.name} className="border-b border-neutral-200"><td className="px-2 py-1.5">{r.name}</td><td className={num}>{formatNumber(r.orders, 0)}</td><td className={num}>{acct(r.amount, d)}</td></tr>)}
+            {W.length > 0 && <tr className="border-t-2 border-neutral-800 font-bold"><td className="px-2 py-1.5">{tr("Jumla")}</td><td className={num}>{formatNumber(sum(W, (r) => r.orders), 0)}</td><td className={num}>{acct(sum(W, (r) => r.amount), d)}</td></tr>}
+          </tbody>
+        </table>
+        {C.length > 0 && (
+          <>
+            <p className="mb-1 mt-4 text-[10px] font-semibold uppercase tracking-wider text-neutral-500">{tr("Wateja (mauzo ya mkopo)")}</p>
+            <table className="w-full border-collapse">
+              <tbody>
+                {mergeByName(C).map((r) => <tr key={r.name} className="border-b border-neutral-200"><td className="px-2 py-1.5">{r.name}</td><td className={num}>{formatNumber(r.orders, 0)}</td><td className={num}>{acct(r.amount, d)}</td></tr>)}
+                <tr className="border-t-2 border-neutral-800 font-bold"><td className="px-2 py-1.5">{tr("Jumla")}</td><td className={num}>{formatNumber(sum(C, (r) => r.orders), 0)}</td><td className={num}>{acct(sum(C, (r) => r.amount), d)}</td></tr>
+              </tbody>
+            </table>
+          </>
+        )}
+      </section>
+
+      {/* 4. Money received */}
+      <section>
+        <h2 className={h2} style={{ color: INK }}>4. {tr("Pesa Zilizopokelewa")}</h2>
+        <div className={`grid gap-x-5 gap-y-3 ${channelBoxes.length > 3 ? "grid-cols-4" : "grid-cols-3"}`}>
+          {channelBoxes.map(([label, value]) => (
+            <div key={label} className="border-t border-neutral-300 pt-2"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-500">{label}</p><p className="mt-0.5 text-base font-bold tabular-nums">{acct(value, d)}</p></div>
+          ))}
+        </div>
+        <p className="mt-2 text-right text-[11px] text-neutral-600">{tr("Jumla iliyopokelewa")}: <b className="tabular-nums text-neutral-900">{acct(total.channels.total, d)}</b></p>
+      </section>
+
+      {/* By department (only when the report covers more than one) */}
+      {perDept.length > 1 && (
+        <section>
+          <h2 className={h2} style={{ color: INK }}>{tr("Kwa Idara")}</h2>
+          <table className="w-full border-collapse">
+            <thead><tr><th className={`${head} text-left`} style={{ borderColor: INK }}>{tr("Idara")}</th><th className={`${head} text-right`} style={{ borderColor: INK }}>{tr("Mauzo")}</th><th className={`${head} text-right`} style={{ borderColor: INK }}>{tr("Matumizi")}</th><th className={`${head} text-right`} style={{ borderColor: INK }}>{tr("Faida / (Hasara)")}</th></tr></thead>
+            <tbody>{perDept.map((x) => <tr key={x.bk} className="border-b border-neutral-200"><td className="px-2 py-1.5">{x.name}</td><td className={num}>{acct(x.st.sales, d)}</td><td className={num}>{acct(x.st.expenses, d)}</td><td className={`${num} ${x.st.profitAfter < 0 ? "text-red-700" : ""}`}>{acct(x.st.profitAfter, d)}</td></tr>)}</tbody>
+          </table>
         </section>
       )}
 
       {/* Sign-off */}
-      <section className="grid gap-6 pt-6 text-xs sm:grid-cols-3">
-        {[tr("Imeandaliwa na"), tr("Imekaguliwa na"), tr("Imeidhinishwa na")].map((l, i) => (
-          <div key={l}><div className="h-8 border-b border-neutral-500">{i === 0 ? <span className="text-neutral-700">{meta.preparedBy}</span> : null}</div><p className="pt-1 text-neutral-500">{l} · {tr("Sahihi / Tarehe")}</p></div>
+      <section className="grid grid-cols-2 gap-8 pt-6">
+        {[tr("Imeandaliwa na"), tr("Imekaguliwa na")].map((l, i) => (
+          <div key={l}><div className="h-8 border-b border-neutral-500">{i === 0 ? <span className="text-neutral-700">{meta.preparedBy}</span> : null}</div><p className="pt-1 text-[10px] text-neutral-500">{l} · {tr("Sahihi / Tarehe")}</p></div>
         ))}
       </section>
-      <footer className="border-t border-neutral-300 pt-2 text-[10px] leading-relaxed text-neutral-500">
-        {tr("Msingi wa ripoti: accrual, kutoka kwenye miamala iliyopostiwa kwenye daftari la hesabu (ledger). Mauzo ni baada ya punguzo na bila kodi; marejesho na invoices zilizobatilishwa zimeondolewa.")}{" "}
-        {tr("Imetolewa na SmartHub POS tarehe {0}.", [new Date(meta.generatedAt).toLocaleString(getLocale())])}
+      <footer className="border-t border-neutral-200 pt-2 text-[10px] text-neutral-400">
+        {tr("Imetolewa na SmartHub POS tarehe {0}.", [new Date(meta.generatedAt).toLocaleString(getLocale())])} · {header.currencySymbol}
       </footer>
     </div>
   );
+}
+
+/** One line per person (a name can come from several departments). */
+function mergeByName(rows: DebtRow[]) {
+  const m = new Map<string, { name: string; orders: number; amount: number }>();
+  for (const r of rows) { const c = m.get(r.name) ?? { name: r.name, orders: 0, amount: 0 }; c.orders += r.orders; c.amount += r.amount; m.set(r.name, c); }
+  return [...m.values()].sort((a, b) => b.amount - a.amount);
 }
 
 /* ───────────────────────────────────────── page ───────────────────────────────────────── */
@@ -220,7 +232,7 @@ export default function PeriodReportPage() {
   const [scope, setScope] = useState("all");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
-  const [result, setResult] = useState<{ meta: Meta; sections: Section[] } | null>(null);
+  const [result, setResult] = useState<{ meta: Meta; sections: Section[]; debts: Debts | null } | null>(null);
   const [openId, setOpenId] = useState<Id<"reportRuns"> | null>(null);
   const opened = useQuery(api.periodReport.getRun, openId ? { id: openId } : "skip");
   const docRef = useRef<HTMLDivElement>(null);
@@ -241,6 +253,7 @@ export default function PeriodReportPage() {
       const queue = chunkRange(from, to, CHUNK_DAYS);
       setProgress({ done: 0, total: queue.length });
       const byBranch = new Map<string, Map<string, Row>>();
+      const itemsBy = new Map<string, ExpenseItem[]>();
       let done = 0;
       while (queue.length) {
         const piece = queue.shift()!;
@@ -256,15 +269,18 @@ export default function PeriodReportPage() {
             const key = `${r.g}|${r.k}`; const cur = acc.get(key);
             if (cur) { cur.a += r.a; cur.b += r.b; cur.c += r.c; } else acc.set(key, { ...r });
           }
+          if (s.items.length) itemsBy.set(s.bk, [...(itemsBy.get(s.bk) ?? []), ...s.items]);
         }
         done++; setProgress((p) => ({ ...p, done }));
       }
-      // One column per department (all of them, even those with no activity, so the report always shows every department asked for).
+      const debtsRes = await convex.query(api.periodReport.debts, { from, to, scope: effectiveScope });
+      const debts: Debts = { waiters: debtsRes.waiters, customers: debtsRes.customers };
+      // One section per department (all of them, even those with no activity, so the report always shows every department asked for).
       const wanted = effectiveScope === "all" ? [...departments.map((x) => x.id), ...(byBranch.has("none") ? ["none"] : [])] : [effectiveScope];
-      const sections: Section[] = (wanted.length ? wanted : ["none"]).map((bk) => ({ bk, name: departments.length === 0 ? header.businessName || tr("Biashara") : nameOf(bk), rows: [...(byBranch.get(bk)?.values() ?? [])].map((r) => ({ ...r, a: Math.round(r.a * 100) / 100, b: Math.round(r.b * 100) / 100, c: Math.round(r.c * 100) / 100 })) }));
+      const sections: Section[] = (wanted.length ? wanted : ["none"]).map((bk) => ({ bk, name: departments.length === 0 ? header.businessName || tr("Biashara") : nameOf(bk), rows: [...(byBranch.get(bk)?.values() ?? [])].map((r) => ({ ...r, a: Math.round(r.a * 100) / 100, b: Math.round(r.b * 100) / 100, c: Math.round(r.c * 100) / 100 })), items: itemsBy.get(bk) ?? [] }));
       const meta: Meta = { period, from, to, scopeLabel, title: `${periodName(period)} — ${periodText(period, from, to)} — ${scopeLabel}`, generatedAt: new Date().toISOString(), preparedBy: header.preparedBy };
-      setResult({ meta, sections });
-      try { await save({ period, startDate: from, endDate: to, scope: effectiveScope, scopeLabel, title: meta.title, sections }); toast.success(tr("Ripoti imeundwa na kuhifadhiwa kwenye historia.")); }
+      setResult({ meta, sections, debts });
+      try { await save({ period, startDate: from, endDate: to, scope: effectiveScope, scopeLabel, title: meta.title, sections, debts }); toast.success(tr("Ripoti imeundwa na kuhifadhiwa kwenye historia.")); }
       catch (e) { toast.warning(errorText(e, "Ripoti imeundwa lakini haikuhifadhiwa kwenye historia.")); }
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuunda ripoti.")); }
     finally { setBusy(false); }
@@ -276,12 +292,12 @@ export default function PeriodReportPage() {
     autoRan.current = true; void generate();
   }, [params, header, options, generate]);
 
-  const shown = openId && opened ? { meta: { period: opened.period as Period, from: opened.startDate, to: opened.endDate, scopeLabel: opened.scopeLabel, title: opened.title, generatedAt: opened.createdAt, preparedBy: opened.createdByName }, sections: opened.sections } : result;
+  const shown = openId && opened ? { meta: { period: opened.period as Period, from: opened.startDate, to: opened.endDate, scopeLabel: opened.scopeLabel, title: opened.title, generatedAt: opened.createdAt, preparedBy: opened.createdByName }, sections: opened.sections, debts: opened.debts } : result;
   const monthValue = anchor.slice(0, 7);
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
-      <PageHeader icon={FileBarChart} title={tr("Ripoti ya Siku / Mwezi / Mwaka")} subtitle={tr("Mauzo, marejesho, matumizi, faida na mwenendo wa fedha kwa idara moja au zote.")} />
+      <PageHeader icon={FileBarChart} title={tr("Ripoti ya Siku / Mwezi / Mwaka")} subtitle={tr("Mauzo, matumizi, madeni, mtaji na faida kwa siku, mwezi au mwaka.")} />
 
       <Panel title={tr("Unda ripoti")}>
         <div className="grid gap-3 md:grid-cols-4">
@@ -308,16 +324,16 @@ export default function PeriodReportPage() {
       {shown && header && (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => printElement(docRef.current, "A4", { landscape: shown.sections.length > 2 })}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha / Hifadhi PDF")}</Button>
+            <Button variant="outline" size="sm" onClick={() => printElement(docRef.current, "A4")}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha / Hifadhi PDF")}</Button>
           </div>
-          <ReportDocument meta={shown.meta} sections={shown.sections} header={header} innerRef={docRef} />
+          <ReportDocument meta={shown.meta} sections={shown.sections} debts={shown.debts} header={header} innerRef={docRef} />
         </div>
       )}
       {openId && opened === null && <Empty>{tr("Ripoti hii haipatikani.")}</Empty>}
 
       <Panel title={tr("Historia ya ripoti zilizoundwa")}>
         {!history ? <p className="text-sm text-muted-foreground">{tr("Inapakia…")}</p> : history.length === 0 ? <Empty>{tr("Hakuna ripoti iliyoundwa bado.")}</Empty> : (
-          <Table head={[tr("Ripoti"), tr("Aina"), tr("Idara"), tr("Mauzo halisi"), tr("Matumizi"), tr("Faida halisi"), tr("Ameunda"), ""]}>
+          <Table head={[tr("Ripoti"), tr("Aina"), tr("Idara"), tr("Mauzo"), tr("Matumizi"), tr("Faida halisi"), tr("Ameunda"), ""]}>
             {history.map((h) => (
               <tr key={h._id}>
                 <td className="font-medium">{periodText(h.period as Period, h.startDate, h.endDate)}</td>

@@ -4,7 +4,7 @@ import { v, ConvexError } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { activeDepartments, allowedBranchIds, isSuperAdmin, logAudit, requireActiveUser, requirePermission, roleHasPermission } from "./access";
 import type { UserLike } from "./access";
-import { accRows, entryRows, isDate, round2, summarize, type JEntry, type Row } from "./reportCore";
+import { accRows, channelOfKind, entryRows, isDate, round2, statement, summarize, type DebtRow, type ExpenseItem, type JEntry, type Row } from "./reportCore";
 
 /**
  * PERIOD REPORT (Accounts > Ripoti ya Siku / Mwezi / Mwaka)
@@ -47,17 +47,21 @@ export const chunk = query({
     const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     if (!isDate(a.from) || !isDate(a.to) || a.to < a.from) throw new ConvexError("Tarehe za ripoti si sahihi.");
     const sc = await reportScope(ctx, user, a.scope);
-    if (!sc.tenantId) return { tooBig: false, sections: [] as Array<{ bk: string; rows: Row[] }> };
+    if (!sc.tenantId) return { tooBig: false, sections: [] as Array<{ bk: string; rows: Row[]; items: ExpenseItem[] }> };
     // One department chosen/locked: read only its entries, so a big department cannot make a small one "too big".
     const tenantId = sc.tenantId;
     const onlyBranch = sc.only ? ctx.db.normalizeId("branches", sc.only) : null;
     const entries = onlyBranch
       ? await ctx.db.query("journalEntries").withIndex("by_scope_date", (q) => q.eq("tenantId", tenantId).eq("branchId", onlyBranch).gte("entryDate", a.from).lte("entryDate", a.to)).take(MAX_ENTRIES + 1)
       : await ctx.db.query("journalEntries").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("entryDate", a.from).lte("entryDate", a.to)).take(MAX_ENTRIES + 1);
-    if (entries.length > MAX_ENTRIES) return { tooBig: true, sections: [] as Array<{ bk: string; rows: Row[] }> };
+    if (entries.length > MAX_ENTRIES) return { tooBig: true, sections: [] as Array<{ bk: string; rows: Row[]; items: ExpenseItem[] }> };
 
     const accounts = new Map<string, Doc<"accounts"> | null>();
     const byBranch = new Map<string, Map<string, Row>>();
+    const itemsBy = new Map<string, ExpenseItem[]>();
+    // Which channel (CASH / LIPA / BANK) each payment-method account belongs to.
+    const kindOf = new Map<string, string>();
+    for (const m of await ctx.db.query("paymentMethods").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect()) if (m.accountId) kindOf.set(String(m.accountId), m.kind);
     for (const e of entries) {
       if (e.status !== "posted") continue;
       const bk = bkey(e.branchId);
@@ -67,12 +71,82 @@ export const chunk = query({
         const k = String(l.accountId);
         if (!accounts.has(k)) accounts.set(k, await ctx.db.get("accounts", l.accountId));
         const ac = accounts.get(k);
-        if (ac) lines.push({ code: ac.code, name: ac.name, type: ac.type, subtype: ac.subtype, debit: l.debit, credit: l.credit });
+        if (ac) {
+          lines.push({ code: ac.code, name: ac.name, type: ac.type, subtype: ac.subtype, debit: l.debit, credit: l.credit, channel: ac.subtype === "payment_method" && kindOf.has(k) ? channelOfKind(kindOf.get(k)) : undefined });
+          // Every operating expense exactly as it was entered (date, who/what, category, amount); cost of goods is not an expense line.
+          if (ac.type === "expense" && ac.code !== "5000") {
+            const amount = round2((l.debit || 0) - (l.credit || 0));
+            if (amount !== 0) { const list = itemsBy.get(bk) ?? []; list.push({ bk, d: e.entryDate, t: (e.description || "").slice(0, 160), c: ac.name, a: amount }); itemsBy.set(bk, list); }
+          }
+        }
       }
       let acc = byBranch.get(bk); if (!acc) { acc = new Map(); byBranch.set(bk, acc); }
       entryRows({ entryDate: e.entryDate, sourceType: e.sourceType, lines }, acc);
     }
-    return { tooBig: false, sections: [...byBranch.entries()].map(([bk, acc]) => ({ bk, rows: accRows(acc) })) };
+    const keys = new Set([...byBranch.keys(), ...itemsBy.keys()]);
+    return { tooBig: false, sections: [...keys].map((bk) => ({ bk, rows: accRows(byBranch.get(bk) ?? new Map()), items: itemsBy.get(bk) ?? [] })) };
+  },
+});
+
+/**
+ * DEBTS of the period: (1) waiters / waitresses who sold on orders made in the period but have not handed over the money yet (listed by name),
+ * (2) customers who took goods on credit (invoices of the period with an outstanding balance). One row per department and name.
+ * `cost` = what the unpaid goods cost (taken from the stock movements of the order), so the report can split sales into capital and profit.
+ */
+const MAX_DEBT_ORDERS = 2000;
+const eatDay = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10); // East Africa Time business day
+export const debts = query({
+  args: { from: v.string(), to: v.string(), scope: v.optional(v.string()) },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
+    if (!isDate(a.from) || !isDate(a.to) || a.to < a.from) throw new ConvexError("Tarehe za ripoti si sahihi.");
+    const sc = await reportScope(ctx, user, a.scope);
+    const waiters: DebtRow[] = [], customers: DebtRow[] = [];
+    if (!sc.tenantId) return { waiters, customers, truncated: false };
+    const tenantId = sc.tenantId;
+    const branchIds = sc.only ? [ctx.db.normalizeId("branches", sc.only)] : [...sc.departments.map((d) => ctx.db.normalizeId("branches", d.id)), undefined];
+    let seen = 0, truncated = false;
+    const byWaiter = new Map<string, DebtRow>();
+    for (const branchId of branchIds) {
+      if (branchId === null) continue;
+      for (const status of ["pending", "accepted", "printed"]) {
+        const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId).eq("branchId", branchId).eq("status", status)).take(MAX_DEBT_ORDERS + 1);
+        for (const o of rows) {
+          if (o.settledAt || o.cancelledAt) continue;
+          const day = eatDay(o.createdAt);
+          if (day < a.from || day > a.to) continue;
+          const left = Math.max(0, round2(o.total - (o.paidAmount ?? 0)));
+          if (left <= 0) continue;
+          if (++seen > MAX_DEBT_ORDERS) { truncated = true; break; }
+          const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
+          const full = moves.reduce((n, m) => n + (m.qtyOut - m.qtyIn) * (m.unitCost ?? 0), 0);
+          const cost = o.total > 0 ? round2(full * Math.min(1, left / o.total)) : 0;
+          const bk = bkey(o.branchId), key = `${bk}|${o.waiterId}`;
+          const cur = byWaiter.get(key) ?? { bk, name: o.waiterName, orders: 0, amount: 0, cost: 0 };
+          cur.orders += 1; cur.amount = round2(cur.amount + left); cur.cost = round2(cur.cost + cost);
+          byWaiter.set(key, cur);
+        }
+      }
+    }
+    waiters.push(...[...byWaiter.values()].sort((x, y) => y.amount - x.amount));
+    // Customers' credit sales: the invoice is already booked as sales (and its cost), so cost stays 0 here; shown only as a debt list.
+    const invoices = await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("invoiceDate", a.from).lte("invoiceDate", a.to)).take(MAX_DEBT_ORDERS + 1);
+    if (invoices.length > MAX_DEBT_ORDERS) truncated = true;
+    const byClient = new Map<string, DebtRow>();
+    const names = new Map<string, string>();
+    for (const inv of invoices.slice(0, MAX_DEBT_ORDERS)) {
+      if (inv.status !== "posted" || inv.outstanding <= 0) continue;
+      const bk = bkey(inv.branchId);
+      if (sc.only && bk !== sc.only) continue;
+      const ck = String(inv.clientId);
+      if (!names.has(ck)) names.set(ck, (await ctx.db.get("clients", inv.clientId))?.name ?? "—");
+      const key = `${bk}|${ck}`;
+      const cur = byClient.get(key) ?? { bk, name: names.get(ck) ?? "—", orders: 0, amount: 0, cost: 0 };
+      cur.orders += 1; cur.amount = round2(cur.amount + inv.outstanding);
+      byClient.set(key, cur);
+    }
+    customers.push(...[...byClient.values()].sort((x, y) => y.amount - x.amount));
+    return { waiters, customers, truncated };
   },
 });
 
@@ -89,10 +163,13 @@ export const header = query({
   },
 });
 
-const sectionValidator = v.object({ bk: v.string(), name: v.string(), rows: v.array(v.object({ g: v.string(), k: v.string(), label: v.string(), a: v.number(), b: v.number(), c: v.number() })) });
+const itemValidator = v.object({ bk: v.string(), d: v.string(), t: v.string(), c: v.string(), a: v.number() });
+const debtValidator = v.object({ bk: v.string(), name: v.string(), orders: v.number(), amount: v.number(), cost: v.number() });
+const sectionValidator = v.object({ bk: v.string(), name: v.string(), rows: v.array(v.object({ g: v.string(), k: v.string(), label: v.string(), a: v.number(), b: v.number(), c: v.number() })), items: v.optional(v.array(itemValidator)) });
+const debtsValidator = v.object({ waiters: v.array(debtValidator), customers: v.array(debtValidator) });
 
 export const save = mutation({
-  args: { period: v.string(), startDate: v.string(), endDate: v.string(), scope: v.string(), scopeLabel: v.string(), title: v.string(), sections: v.array(sectionValidator) },
+  args: { period: v.string(), startDate: v.string(), endDate: v.string(), scope: v.string(), scopeLabel: v.string(), title: v.string(), sections: v.array(sectionValidator), debts: v.optional(debtsValidator) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
@@ -102,15 +179,19 @@ export const save = mutation({
     const sc = await reportScope(ctx, user, a.scope);
     if (sc.only ? a.scope !== sc.only : a.scope !== "all") throw new ConvexError("Idara ya ripoti hairuhusiwi kwa akaunti yako.");
     if (sc.only && a.sections.some((s) => s.bk !== sc.only)) throw new ConvexError("Ripoti ina data ya idara nyingine.");
-    const all = summarize(a.sections.flatMap((s) => s.rows));
-    // The snapshot must stay under the document limit: the per-day rows are the only large part, drop them if needed.
+    const sum = summarize(a.sections.flatMap((s) => s.rows));
+    const wd = a.debts?.waiters ?? [], cd = a.debts?.customers ?? [];
+    const all = statement(sum, round2(wd.reduce((n, d) => n + d.amount, 0)), round2(wd.reduce((n, d) => n + d.cost, 0)), round2(cd.reduce((n, d) => n + d.amount, 0)));
+    // The snapshot must stay under the document limit: drop the per-day rows first, then the itemised expense list (category totals stay).
     let sections = a.sections;
-    if (JSON.stringify(sections).length > MAX_SNAPSHOT) sections = sections.map((s) => ({ ...s, rows: s.rows.filter((r) => r.g !== "day") }));
-    const data = JSON.stringify({ sections });
+    const size = () => JSON.stringify({ sections, debts: a.debts }).length;
+    if (size() > MAX_SNAPSHOT) sections = sections.map((s) => ({ ...s, rows: s.rows.filter((r) => r.g !== "day") }));
+    if (size() > MAX_SNAPSHOT) sections = sections.map((s) => ({ ...s, items: [] }));
+    const data = JSON.stringify({ sections, debts: a.debts });
     if (data.length > MAX_SNAPSHOT) throw new ConvexError("Ripoti ni kubwa mno kuhifadhiwa; chagua kipindi kifupi au idara moja.");
     const id = await ctx.db.insert("reportRuns", {
       tenantId: user.tenantId, period: a.period, startDate: a.startDate, endDate: a.endDate, scope: a.scope, scopeLabel: a.scopeLabel.slice(0, 120), title: a.title.slice(0, 160),
-      netProfit: round2(all.netProfit), netSales: round2(all.netSales), totalExpenses: round2(all.totalExpenses), data,
+      netProfit: all.profitAfter, netSales: all.sales, totalExpenses: all.expenses, data,
       createdBy: user._id, createdByName: user.name ?? user.username ?? user.email ?? "user", createdAt: new Date().toISOString(),
     });
     await logAudit(ctx, user, { action: "generate_period_report", module: "accounts", referenceId: String(id), referenceType: "reportRun", details: `${a.period} ${a.startDate}..${a.endDate} ${a.scopeLabel}` });
@@ -139,7 +220,7 @@ export const getRun = query({
     if (!r || r.tenantId !== user.tenantId) return null;
     const sc = await reportScope(ctx, user, undefined);
     if (sc.only && r.scope !== sc.only) return null;
-    return { _id: r._id, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scope: r.scope, scopeLabel: r.scopeLabel, createdByName: r.createdByName, createdAt: r.createdAt, sections: (JSON.parse(r.data) as { sections: Array<{ bk: string; name: string; rows: Row[] }> }).sections };
+    return { _id: r._id, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scope: r.scope, scopeLabel: r.scopeLabel, createdByName: r.createdByName, createdAt: r.createdAt, ...(() => { const d = JSON.parse(r.data) as { sections: Array<{ bk: string; name: string; rows: Row[]; items?: ExpenseItem[] }>; debts?: { waiters: DebtRow[]; customers: DebtRow[] } }; return { sections: d.sections, debts: d.debts ?? null }; })() };
   },
 });
 

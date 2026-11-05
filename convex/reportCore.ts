@@ -12,7 +12,7 @@
  */
 
 export type Row = { g: string; k: string; label: string; a: number; b: number; c: number };
-export type JLine = { code: string; name: string; type: string; subtype?: string; debit: number; credit: number };
+export type JLine = { code: string; name: string; type: string; subtype?: string; debit: number; credit: number; channel?: string; note?: string };
 export type JEntry = { entryDate: string; sourceType?: string; lines: JLine[] };
 
 export const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -20,12 +20,16 @@ export const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 10
 /** Accounts that hold money: Cash 1000, Bank 1010, Mobile money 1020 and the account of each payment method. */
 export const isMoneyLine = (l: Pick<JLine, "type" | "code" | "subtype">) => l.type === "asset" && (["1000", "1010", "1020"].includes(l.code) || l.subtype === "payment_method");
 
+/** Which of the four report channels a money account belongs to (the server may set `channel` from the payment method kind). */
+export const channelOf = (l: Pick<JLine, "code" | "subtype">): "cash" | "lipa" | "bank" | "other" => l.code === "1000" ? "cash" : l.code === "1010" ? "bank" : l.code === "1020" ? "lipa" : "other";
+export const channelOfKind = (kind?: string): "cash" | "lipa" | "bank" | "other" => kind === "cash" ? "cash" : kind === "mobile" ? "lipa" : kind === "bank" ? "bank" : "other";
+
 const CAPITAL_SOURCES = new Set(["capital", "owner_capital", "director_capital", "shareholder", "bank_loan", "director_loan", "other_loan", "grant"]);
 /** Groups the many journal source types into the few cash-flow headings printed on the report. */
 export function cashSource(sourceType?: string): string {
   const s = sourceType ?? "manual";
   if (s === "sale" || s === "waiter_sale" || s === "payment") return "customer_receipts";
-  if (s === "sale_void" || s === "sale_return" || s === "sale_unpay") return "customer_refunds";
+  if (s === "sale_void" || s === "sale_return" || s === "sale_unpay" || s === "waiter_sale_void") return "customer_refunds";
   if (s === "purchase" || s === "supplier_payment" || s === "purchase_return") return "suppliers";
   if (s === "bill" || s === "bill_payment" || s === "bill_void") return "bills";
   if (s === "payroll") return "payroll";
@@ -68,6 +72,9 @@ export function entryRows(e: JEntry, acc: Acc = new Map()): Acc {
     if (isMoneyLine(l)) { row("money", l.code, l.name, debit, credit); moneyIn += debit; moneyOut += credit; }
   }
   if (moneyIn || moneyOut) row("src", cashSource(e.sourceType), "", moneyIn, moneyOut);
+  // Money received from customers (net of refunds) per channel: CASH / LIPA (mobile money) / BANK / OTHER.
+  const src = cashSource(e.sourceType);
+  if (src === "customer_receipts" || src === "customer_refunds") for (const l of e.lines) if (isMoneyLine(l)) row("chan", l.channel ?? channelOf(l), "", (l.debit || 0) - (l.credit || 0));
   if (daySales || dayOpex || dayCogs) row("day", e.entryDate, "", daySales, dayOpex, dayCogs);
   return acc;
 }
@@ -81,6 +88,7 @@ export type Summary = {
   receivableChange: number; supplierPayableChange: number; billsPayableChange: number; taxCollected: number;
   counts: { entries: number; invoices: number; voids: number; returns: number };
   daily: Array<{ date: string; sales: number; expenses: number; cogs: number; profit: number }>;
+  channels: { cash: number; lipa: number; bank: number; other: number; total: number };
 };
 
 const pct = (part: number, whole: number) => (whole > 0 ? round2((part / whole) * 100) : 0);
@@ -110,7 +118,40 @@ export function summarize(rows: Row[]): Summary {
     receivableChange: round2(get("bal", "ar")?.a ?? 0), supplierPayableChange: round2(get("bal", "ap")?.a ?? 0), billsPayableChange: round2(get("bal", "bills")?.a ?? 0), taxCollected: round2(get("bal", "tax")?.a ?? 0),
     counts: { entries: stat("entries"), invoices: stat("invoices"), voids: stat("voids"), returns: stat("returns") },
     daily,
+    channels: (() => { const c = (k: string) => round2(get("chan", k)?.a ?? 0); const cash = c("cash"), lipa = c("lipa"), bank = c("bank"), other = c("other"); return { cash, lipa, bank, other, total: round2(cash + lipa + bank + other) }; })(),
   };
+}
+
+/* ───────────────────────── the simple day / month / year statement (Mauzo, Matumizi, Madeni, Mtaji, Faida) ───────────────────────── */
+
+export type DebtRow = { bk: string; name: string; orders: number; amount: number; cost: number };
+export type ExpenseItem = { bk: string; d: string; t: string; c: string; a: number };
+
+export type Statement = {
+  sales: number;          // total sales = booked net sales + the waiters' unpaid orders (customer credit sales are already booked)
+  collected: number;      // booked net sales
+  debts: number;          // unpaid sales (waiters + customers)
+  capital: number;        // cost of the goods sold (mtaji)
+  grossProfit: number;    // sales - capital
+  otherIncome: number;    // other income booked in the period (usually 0)
+  expenses: number;
+  profitAfter: number;    // grossProfit - expenses (can be negative)
+  capitalEaten: number;   // part of the capital that expenses ate (0 when the profit covered them)
+  capitalLeft: number;    // capital - capitalEaten
+  profitLeft: number;     // profit left after expenses (0 when negative)
+};
+
+/** Expenses are always paid out of the profit first; only what the profit cannot cover is taken from the capital. */
+export function statement(s: Summary, waiterDebt: number, waiterDebtCost: number, customerDebt = 0): Statement {
+  const debts = round2(waiterDebt + customerDebt);
+  // customer credit sales are already inside the booked sales/cost; only the waiters' unpaid orders are added on top.
+  const sales = round2(s.netSales + waiterDebt);
+  const capital = round2(s.cogs + waiterDebtCost);
+  const grossProfit = round2(sales - capital);
+  const expenses = s.totalExpenses;
+  const profitAfter = round2(grossProfit + s.otherIncome - expenses);
+  const capitalEaten = profitAfter < 0 ? Math.min(capital, round2(-profitAfter)) : 0;
+  return { sales, collected: s.netSales, debts, capital, grossProfit, otherIncome: s.otherIncome, expenses, profitAfter, capitalEaten, capitalLeft: round2(capital - capitalEaten), profitLeft: profitAfter > 0 ? profitAfter : 0 };
 }
 
 /** Sums several summaries' source rows into one (used for the "All departments" total column). */

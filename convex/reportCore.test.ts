@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accRows, addDays, bucketDaily, chunkRange, daysBetween, entryRows, halve, isDate, mergeRows, periodRange, summarize, type JEntry, type Row } from "./reportCore";
+import { accRows, addDays, bucketDaily, chunkRange, daysBetween, entryRows, halve, isDate, mergeRows, periodRange, statement, summarize, type JEntry, type Row } from "./reportCore";
 
 const L = (code: string, name: string, type: string, debit: number, credit: number, subtype?: string) => ({ code, name, type, subtype, debit, credit });
 const cash = (d: number, c: number) => L("1000", "Cash", "asset", d, c);
@@ -32,5 +32,29 @@ describe("report core", () => {
     expect(halve("2026-01-01", "2026-01-01")).toBeNull();
     expect(isDate("2026-02-30")).toBe(false);
     expect(bucketDaily([{ date: "2026-01-02", sales: 1, expenses: 0, cogs: 0, profit: 1 }, { date: "2026-01-20", sales: 2, expenses: 0, cogs: 0, profit: 2 }], "month")[0].sales).toBe(3);
+  });
+  it("splits money received into CASH / LIPA / BANK (net of refunds)", () => {
+    const list: JEntry[] = [
+      { entryDate: "2026-11-05", sourceType: "sale", lines: [L("1000", "Cash", "asset", 2000, 0), L("4000", "Sales", "revenue", 0, 2000)] },
+      { entryDate: "2026-11-05", sourceType: "sale", lines: [L("1020", "Mobile", "asset", 1000, 0), L("4000", "Sales", "revenue", 0, 1000)] },
+      { entryDate: "2026-11-05", sourceType: "waiter_sale", lines: [L("1010", "Bank", "asset", 2000, 0), L("4000", "Sales", "revenue", 0, 2000)] },
+      { entryDate: "2026-11-05", sourceType: "sale_void", lines: [L("1000", "Cash", "asset", 0, 500), L("4000", "Sales", "revenue", 500, 0)] },
+      { entryDate: "2026-11-05", sourceType: "owner_capital", lines: [L("1000", "Cash", "asset", 9000, 0), L("3000", "Equity", "equity", 0, 9000)] },
+    ];
+    expect(summarize(build(list)).channels).toEqual({ cash: 1500, lipa: 1000, bank: 2000, other: 0, total: 4500 });
+    const custom = entryRows({ entryDate: "2026-11-05", sourceType: "sale", lines: [{ ...L("1300", "Tigo Lipa", "asset", 700, 0, "payment_method"), channel: "lipa" }, L("4000", "Sales", "revenue", 0, 700)] }, new Map());
+    expect(summarize(accRows(custom)).channels.lipa).toBe(700);
+  });
+  it("statement: expenses come out of the profit first, then eat the capital", () => {
+    const sale = (sales: number, cogs: number): JEntry => ({ entryDate: "2026-11-05", sourceType: "sale", lines: [cash(sales, 0), L("4000", "Sales", "revenue", 0, sales), L("5000", "COGS", "expense", cogs, 0), L("1200", "Inv", "asset", 0, cogs)] });
+    const exp = (n: number): JEntry => ({ entryDate: "2026-11-05", sourceType: "bill", lines: [L("6100", "Rent", "expense", n, 0), L("2100", "AP", "liability", 0, n)] });
+    // sales 8000 booked + 2000 owed by waiters = 10000; capital 6000 (5000 + 1000 of the unpaid goods); profit 4000
+    const ok = statement(summarize(build([sale(8000, 5000), exp(3000)])), 2000, 1000);
+    expect(ok).toMatchObject({ sales: 10000, debts: 2000, capital: 6000, grossProfit: 4000, expenses: 3000, profitAfter: 1000, capitalEaten: 0, capitalLeft: 6000, profitLeft: 1000 });
+    // expenses 5500 > profit 4000 -> 1500 of the capital is eaten
+    const bad = statement(summarize(build([sale(8000, 5000), exp(5500)])), 2000, 1000);
+    expect(bad).toMatchObject({ profitAfter: -1500, capitalEaten: 1500, capitalLeft: 4500, profitLeft: 0 });
+    // the capital eaten can never be more than the capital itself
+    expect(statement(summarize(build([sale(1000, 800), exp(9000)])), 0, 0).capitalEaten).toBe(800);
   });
 });
