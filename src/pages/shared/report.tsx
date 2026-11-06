@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { errorText, tr } from "@/lib/i18n.ts";
 import { printElement, readPaper, savePaper, type Paper } from "@/lib/print-area.ts";
 
-import { fmt, num, round2, today, type Row } from "./report-utils.ts";
+import { daysAgo, fmt, monthStart, num, round2, today, type Row } from "./report-utils.ts";
 
 function downloadCsv(name: string, rows: Row[]) {
   if (!rows.length) return;
@@ -21,12 +21,27 @@ function downloadCsv(name: string, rows: Row[]) {
   URL.revokeObjectURL(url);
 }
 
-export function DateRange({ startDate, endDate, onStart, onEnd, onApply, busy = false }: { startDate: string; endDate: string; onStart: (v: string) => void; onEnd: (v: string) => void; onApply?: () => void; busy?: boolean }) {
+type Range = { start: string; end: string };
+
+/**
+ * Same date bar for every report: one day or a period, quick buttons (today, yesterday, last 7 days, this month) and a View button.
+ * `onApply` receives the range to load, so a quick button loads at once without waiting for the parent state to update.
+ */
+export function DateRange({ startDate, endDate, onStart, onEnd, onApply, busy = false }: { startDate: string; endDate: string; onStart: (v: string) => void; onEnd: (v: string) => void; onApply?: (range?: Range) => void; busy?: boolean }) {
+  const [single, setSingle] = useState(startDate === endDate);
+  const valid = !!startDate && !!endDate && startDate <= endDate;
+  const pick = (start: string, end: string) => { setSingle(start === end); onStart(start); onEnd(end); onApply?.({ start, end }); };
+  const t = today();
+  const presets: Array<[string, string, string]> = [[tr("Leo"), t, t], [tr("Jana"), daysAgo(1), daysAgo(1)], [tr("Siku 7"), daysAgo(6), t], [tr("Mwezi huu"), monthStart(), t]];
   return (
-    <div className="flex flex-wrap items-end gap-2 print:hidden">
-      <label className="grid gap-1 text-xs">{tr("Kuanzia")}<Input type="date" value={startDate} onChange={(e) => onStart(e.target.value)} /></label>
-      <label className="grid gap-1 text-xs">{tr("Mpaka")}<Input type="date" value={endDate} onChange={(e) => onEnd(e.target.value)} /></label>
-      {onApply && <Button type="button" disabled={busy || !startDate || !endDate || startDate > endDate} onClick={onApply}>{busy ? tr("Inatafuta…") : tr("View Report")}</Button>}
+    <div className="flex flex-wrap items-end gap-2 rounded-xl border bg-card p-3 print:hidden">
+      <label className="grid gap-1 text-xs">{single ? tr("Tarehe") : tr("Kuanzia")}
+        <Input type="date" value={startDate} max={t} onChange={(e) => { onStart(e.target.value); if (single) onEnd(e.target.value); }} />
+      </label>
+      {!single && <label className="grid gap-1 text-xs">{tr("Mpaka")}<Input type="date" value={endDate} max={t} min={startDate} onChange={(e) => onEnd(e.target.value)} /></label>}
+      <label className="flex h-10 items-center gap-2 text-xs"><input type="checkbox" className="h-4 w-4 accent-primary" checked={single} onChange={(e) => { setSingle(e.target.checked); if (e.target.checked) onEnd(startDate); }} />{tr("Siku moja")}</label>
+      {onApply && <Button type="button" disabled={busy || !valid} onClick={() => onApply({ start: startDate, end: endDate })}>{busy ? tr("Inatafuta…") : tr("View Report")}</Button>}
+      <div className="flex flex-wrap gap-1">{presets.map(([label, a, b]) => <Button key={label} type="button" size="sm" variant="outline" onClick={() => pick(a, b)}>{label}</Button>)}</div>
     </div>
   );
 }

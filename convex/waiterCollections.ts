@@ -4,7 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { logAudit, normalizeRole, requirePermission, resolveWriteScope } from "./access";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
 import { bumpStats } from "./stats";
-import { assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal } from "./ledger";
+import { assertDate, assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal } from "./ledger";
 import { surfaceError } from "./surfaceError";
 import { deductStockOnce } from "./waiterOrders";
 import { waiterOrdersAllowedFor } from "./waiterSettings";
@@ -113,7 +113,7 @@ export const owing = query({
  * The amount can never be zero or more than what is due. Orders are never deleted.
  */
 export const collect = mutation({
-  args: { staffId: v.id("users"), orderIds: v.array(v.id("waiterOrders")), splits: v.array(splitValidator) },
+  args: { staffId: v.id("users"), orderIds: v.array(v.id("waiterOrders")), splits: v.array(splitValidator), paymentDate: v.optional(v.string()) }, // paymentDate = business day the money belongs to (default: today, East Africa Time)
   handler: async (ctx, args) => {
     try {
       const { user, tenantId, branchId } = await cashierScope(ctx);
@@ -144,7 +144,13 @@ export const collect = mutation({
       const staff = await ctx.db.get("users", args.staffId);
       const staffName = staff?.name ?? staff?.username ?? orders[0].waiterName;
       const now = new Date().toISOString();
-      const date = eatDay(now);
+      const today = eatDay(now);
+      // Sales made at night may be paid the next morning: the cashier can choose the day the money belongs to.
+      // It can never be in the future, and never before the day of the oldest order being paid. `createdAt` keeps the real moment it was recorded.
+      const date = args.paymentDate === undefined ? today : assertDate(args.paymentDate, "Tarehe ya malipo");
+      if (date > today) throw new ConvexError("Tarehe ya malipo haiwezi kuwa ya baadaye.");
+      const oldestDay = eatDay(orders[0].createdAt);
+      if (date < oldestDay) throw new ConvexError(`Tarehe ya malipo haiwezi kuwa kabla ya tarehe ya oda (${oldestDay}).`);
       const collectionId = await ctx.db.insert("waiterCollections", {
         tenantId, branchId, staffId: args.staffId, staffName,
         cashierId: user._id, cashierName: user.name ?? user.username ?? "cashier", date, total: paid, splits, orderIds: touched.map((o) => o._id), createdAt: now,
@@ -156,9 +162,9 @@ export const collect = mutation({
         await ctx.db.patch("waiterOrders", o._id, fullIds.has(String(o._id)) ? { paidAmount: paidNow, settledAt: now, collectionId, updatedAt: now } : { paidAmount: paidNow, updatedAt: now });
       }
       await postCollectionJournal(ctx, { collectionId, userId: user._id, date, staffName, orders: touched, splits, alloc });
-      // Dashboard: the cash is counted once, on the day the cashier receives it (see stats.rebuild "waiter" phase). Orders count as sales when fully paid.
+      // Dashboard: the cash is counted once, on the payment day (today, or the day the cashier chose; see stats.rebuild "waiter" phase). Orders count as sales when fully paid.
       await bumpStats(ctx, { tenantId, branchId }, { date, sales: paid, collected: paid, invoices: fullyPaid.length });
-      await logAudit(ctx, user, { action: "collect_waiter_money", module: "sales", referenceId: String(collectionId), referenceType: "waiterCollection", details: `${staffName}; oda ${touched.length}; zilizopokelewa ${paid}${shortfall > 0 ? `; deni lililobaki ${shortfall}` : ""}` });
+      await logAudit(ctx, user, { action: "collect_waiter_money", module: "sales", referenceId: String(collectionId), referenceType: "waiterCollection", details: `${staffName}; oda ${touched.length}; zilizopokelewa ${paid}${shortfall > 0 ? `; deni lililobaki ${shortfall}` : ""}${date !== today ? `; tarehe ya malipo ${date} (iliingizwa ${today})` : ""}` });
       return { collectionId, total: paid, orders: touched.length, due, debt: shortfall };
     } catch (e) { throw surfaceError(e); }
   },

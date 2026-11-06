@@ -1,6 +1,10 @@
+import { localDate } from "@/lib/format.ts";
 export type Row = Record<string, string | number>;
 
-export const today = () => new Date().toISOString().slice(0, 10);
+
+/** Business day in East Africa Time. (UTC would show yesterday's date between 00:00 and 03:00.) */
+export const today = () => localDate();
+export const daysAgo = (n: number) => localDate(-n);
 export const monthStart = () => `${today().slice(0, 8)}01`;
 export const fmt = (n: number, digits = 2) => n.toLocaleString("en-US", { maximumFractionDigits: digits });
 export const num = (v: string | number | undefined) => {

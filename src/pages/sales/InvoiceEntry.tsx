@@ -10,7 +10,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Stat } from "@/pages/shared/report.tsx";
-import { fmt, num, round2, today } from "@/pages/shared/report-utils.ts";
+import { daysAgo, fmt, num, round2, today } from "@/pages/shared/report-utils.ts";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
@@ -19,7 +19,6 @@ import { whatsappOrderText, whatsappPhone, whatsappUrl } from "@/lib/whatsapp.ts
 type Line = { productId: string; qty: string; price: string; discount: string };
 const emptyLine = (): Line => ({ productId: "", qty: "1", price: "0", discount: "0" });
 const selectClass = "h-10 rounded-md border bg-background px-3";
-const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
 
 export default function InvoiceEntry() {
   const navigate = useNavigate();

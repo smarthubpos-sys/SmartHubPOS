@@ -7,7 +7,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DateRange, ReportTable, Stat } from "@/pages/shared/report.tsx";
-import { fmt, groupRows, monthStart, num, round2, today, type Row } from "@/pages/shared/report-utils.ts";
+import { fmt, groupRows, num, round2, today, type Row } from "@/pages/shared/report-utils.ts";
 import { tr, errorText, trValue } from "@/lib/i18n.ts";
 import TransactionReceipt from "@/components/TransactionReceipt.tsx";
 import PaymentSplit from "@/components/PaymentSplit.tsx";
@@ -61,9 +61,10 @@ const TITLES: Record<string, string> = {
 export default function SalesRegister() {
   const navigate = useNavigate();
   const path = useLocation().pathname.split("/").filter(Boolean).slice(1).join("/");
-  const [start, setStart] = useState(monthStart());
+  // Every report opens on ONE day (today); pick another day or a period, then press View.
+  const [start, setStart] = useState(today());
   const [end, setEnd] = useState(today());
-  const [appliedStart, setAppliedStart] = useState(monthStart());
+  const [appliedStart, setAppliedStart] = useState(today());
   const [appliedEnd, setAppliedEnd] = useState(today());
   const [clientId, setClientId] = useState("");
   const [staffCode, setStaffCode] = useState("");
@@ -73,7 +74,7 @@ export default function SalesRegister() {
   // use the basic one (sales.view), which never carries cost, profit or supplier data.
   const isReport = path.startsWith("reports/");
   const reportData = useQuery(api.sales.salesRegisters, isReport ? { startDate: appliedStart, endDate: appliedEnd, withLines: needsLines } : "skip");
-  const basicData = useQuery(api.sales.salesRegisterBasic, isReport ? "skip" : { startDate: start, endDate: end });
+  const basicData = useQuery(api.sales.salesRegisterBasic, isReport ? "skip" : { startDate: appliedStart, endDate: appliedEnd });
   const data = isReport ? reportData : basicData;
   const recordPayment = useMutation(api.sales.recordPayment);
   const [pay, setPay] = useState({ invoiceId: "", date: today(), filterClient: "" });
@@ -83,11 +84,13 @@ export default function SalesRegister() {
   const [lastReceipt, setLastReceipt] = useState<null | { reference: string; date: string; party: string; amount: number; method: string }>(null);
   const title = TITLES[path] ?? tr("Sales Register");
 
+  const applied = appliedStart === start && appliedEnd === end;
   const header = (
-    <div className="flex flex-wrap items-end justify-between gap-3 print:hidden">
+    <div className="space-y-3 print:hidden">
       <div><Button variant="outline" onClick={() => navigate("/sales")}>{tr("← Sales")}</Button><h1 className="mt-3 text-2xl font-bold">{title}</h1></div>
       <DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd}
-        onApply={isReport ? () => { setAppliedStart(start); setAppliedEnd(end); } : undefined} />
+        onApply={(range) => { setAppliedStart(range?.start ?? start); setAppliedEnd(range?.end ?? end); }} />
+      {!applied && <p className="text-xs text-amber-700">{tr("Umebadilisha tarehe: bonyeza View Report kuona matokeo ya tarehe mpya.")}</p>}
     </div>
   );
   if (!data) return <div className="mx-auto max-w-7xl space-y-5 p-5">{header}<div className="p-6 text-sm text-muted-foreground">{tr("Inapakia taarifa za Sales…")}</div></div>;
@@ -212,7 +215,7 @@ export default function SalesRegister() {
       {paymentForm}
       {lastReceipt && <TransactionReceipt title={tr("RISITI YA MALIPO YA MAUZO")} reference={lastReceipt.reference} date={lastReceipt.date} partyLabel={tr("Mteja")} party={lastReceipt.party} amount={lastReceipt.amount} method={lastReceipt.method} note={tr("Malipo yamepokelewa. Hifadhi risiti hii kwa kumbukumbu.")} />}
       {statementPicker}
-      {INVOICE_LIST_HIDDEN(path, showItems) ? null : path === "reports/client-statement" && !clientId ? <p className="text-sm text-muted-foreground">{tr("Chagua mteja kuona statement yake.")}</p> : <ReportTable title={title === "Payment Received" ? tr("Malipo yaliyopokelewa") : title} subtitle={tr("Kipindi: {0} hadi {1}", isReport ? [appliedStart, appliedEnd] : [start, end])} rows={listRows} sumCols={path === "payments" ? ["Kiasi"] : sumCols} note={note} onPrintRow={path === "reports/sold-items" ? (row, copies, paper) => printSoldItem(row, copies, paper, data.company) : undefined} />}
+      {INVOICE_LIST_HIDDEN(path, showItems) ? null : path === "reports/client-statement" && !clientId ? <p className="text-sm text-muted-foreground">{tr("Chagua mteja kuona statement yake.")}</p> : <ReportTable title={title === "Payment Received" ? tr("Malipo yaliyopokelewa") : title} subtitle={appliedStart === appliedEnd ? tr("Siku: {0}", [appliedStart]) : tr("Kipindi: {0} hadi {1}", [appliedStart, appliedEnd])} rows={listRows} sumCols={path === "payments" ? ["Kiasi"] : sumCols} note={note} onPrintRow={path === "reports/sold-items" ? (row, copies, paper) => printSoldItem(row, copies, paper, data.company) : undefined} />}
     </div>
   );
 }
