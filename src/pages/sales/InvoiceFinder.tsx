@@ -139,6 +139,7 @@ function SellingPointBillActions({
     discount: String(line.discount ?? 0), productName: line.productName,
   })));
   const [busy, setBusy] = useState(false);
+  const products = useQuery(api.products.listActive, editing ? {} : "skip");
   const cancelled = bill.status === "cancelled";
   const showEdit = bill.canEdit; // a bill received by the cashier or already paid can still be changed: the money is given back first
   const showVoid = bill.canVoid;
@@ -191,7 +192,13 @@ function SellingPointBillActions({
           <label className="block text-xs">{tr("Maelezo")}<Input value={notes} onChange={e => setNotes(e.target.value)} /></label>
           {lines.map((line, i) => (
             <div key={`${line.productId}-${i}`} className="grid grid-cols-5 gap-1 text-xs">
-              <span className="col-span-5 font-medium">{line.productName}</span>
+              <select className={`${selectClass} col-span-5 h-9 text-xs font-medium`} value={String(line.productId)} onChange={e => {
+                const p = (products ?? []).find(x => String(x._id) === e.target.value);
+                if (p) setLines(prev => prev.map((x,j) => j === i ? { ...x, productId: p._id, productName: p.name, unitPrice: String(p.sellingPrice), discount: "0" } : x));
+              }}>
+                {!(products ?? []).some(p => String(p._id) === String(line.productId)) && <option value={String(line.productId)}>{line.productName}</option>}
+                {(products ?? []).filter(p => p.onMenu !== false || String(p._id) === String(line.productId)).map(p => <option key={p._id} value={String(p._id)}>{p.itemCode} — {p.name}</option>)}
+              </select>
               <label>{tr("Qty")}<Input type="number" min="0.001" step="any" value={line.qty} onChange={e => setLines(prev => prev.map((x,j) => j === i ? { ...x, qty: e.target.value } : x))} /></label>
               <label>{tr("Bei")}<Input type="number" min="0" step="any" value={line.unitPrice} onChange={e => setLines(prev => prev.map((x,j) => j === i ? { ...x, unitPrice: e.target.value } : x))} /></label>
               <label>{tr("Punguzo")}<Input type="number" min="0" step="any" value={line.discount} onChange={e => setLines(prev => prev.map((x,j) => j === i ? { ...x, discount: e.target.value } : x))} /></label>
@@ -199,6 +206,18 @@ function SellingPointBillActions({
               <Button type="button" size="sm" variant="ghost" className="self-end" disabled={busy || lines.length <= 1} title={lines.length <= 1 ? tr("Bili lazima ibaki na angalau bidhaa moja.") : undefined} onClick={() => setLines(prev => prev.filter((_, j) => j !== i))}><Trash2 className="mr-1 h-4 w-4" />{tr("Ondoa")}</Button>
             </div>
           ))}
+          <label className="block text-xs">{tr("Ongeza bidhaa")}
+            <select className={`${selectClass} w-full h-9 text-xs`} value="" onChange={e => {
+              const p = (products ?? []).find(x => String(x._id) === e.target.value);
+              if (!p) return;
+              setLines(prev => prev.some(x => String(x.productId) === String(p._id))
+                ? prev.map(x => String(x.productId) === String(p._id) ? { ...x, qty: String(Number(x.qty || 0) + 1) } : x)
+                : [...prev, { productId: p._id, qty: "1", unitPrice: String(p.sellingPrice), discount: "0", productName: p.name }]);
+            }}>
+              <option value="">{tr("-- Chagua bidhaa --")}</option>
+              {(products ?? []).filter(p => p.onMenu !== false).map(p => <option key={p._id} value={String(p._id)}>{p.itemCode} — {p.name}</option>)}
+            </select>
+          </label>
           <div className="flex gap-2">
             <Button size="sm" disabled={busy} onClick={() => void save()}><Save className="mr-1 h-4 w-4" />{tr("Hifadhi mabadiliko")}</Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => setEditing(false)}><X className="mr-1 h-4 w-4" />{tr("Ghairi")}</Button>
@@ -326,7 +345,13 @@ function EditForm({ d, onDone, onCancel }: { d: Full; onDone: () => void; onCanc
         <thead><tr className="border-b text-left">{[tr("Bidhaa"), tr("Qty"), tr("Bei"), tr("Discount"), tr("Jumla"), ""].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
         <tbody>{lines.map((l, i) => (
           <tr key={`${l.productId}-${i}`} className="border-b">
-            <td className="p-2 font-medium">{l.name}</td>
+            <td className="p-2 font-medium"><select className={`${selectClass} h-9 max-w-[16rem] text-sm`} value={l.productId} onChange={(e) => {
+              const p = (products ?? []).find((x) => String(x._id) === e.target.value);
+              if (p) set(i, { productId: String(p._id), name: p.name, price: String(p.sellingPrice), discount: "0" });
+            }}>
+              {!(products ?? []).some((p) => String(p._id) === l.productId) && <option value={l.productId}>{l.name}</option>}
+              {(products ?? []).filter((p) => p.onMenu !== false || String(p._id) === l.productId).map((p) => <option key={p._id} value={String(p._id)}>{p.itemCode} — {p.name}</option>)}
+            </select></td>
             <td className="p-2"><Input type="number" min={0} step="any" className="h-9 w-24" value={l.qty} onChange={(e) => set(i, { qty: e.target.value })} /></td>
             <td className="p-2"><Input type="number" min={0} step="any" className="h-9 w-28" value={l.price} onChange={(e) => set(i, { price: e.target.value })} /></td>
             <td className="p-2"><Input type="number" min={0} step="any" className="h-9 w-24" value={l.discount} onChange={(e) => set(i, { discount: e.target.value })} /></td>

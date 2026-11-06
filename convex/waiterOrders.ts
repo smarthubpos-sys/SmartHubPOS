@@ -595,6 +595,7 @@ export const editBillFromFinder = mutation({
         await assertPeriodOpen(ctx, orderScope, oldDay);
       }
       const newCreatedAt = dayChanged ? new Date(Date.parse(`${newDay}${new Date(Date.parse(order.createdAt) + 3 * 3600000).toISOString().slice(10)}`) - 3 * 3600000).toISOString() : order.createdAt;
+      const ensuredInvoiceNo = order.invoiceNo ?? await allocateSellingPointInvoiceNo(ctx, user, order.tenantId); // an old bill without a number gets one now
       const refund = await reverseOrderPayments(ctx, user, order, "bili imehaririwa"); // before the stock moves: the cost of goods is read from it
       if (order.stockDeducted) {
         const restore = new Map<string, number>();
@@ -626,7 +627,7 @@ export const editBillFromFinder = mutation({
       };
       await ctx.db.patch("waiterOrders", order._id, {
         customerName: updated.customerName, tableNumber: updated.tableNumber, notes: updated.notes,
-        lines: updated.lines, total: updated.total, stockDeducted: false, billPrintedAt: undefined, createdAt: newCreatedAt, updatedAt: now,
+        lines: updated.lines, total: updated.total, invoiceNo: ensuredInvoiceNo, stockDeducted: false, billPrintedAt: undefined, createdAt: newCreatedAt, updatedAt: now,
       });
       await deductStockOnce(ctx, updated as Doc<"waiterOrders">, user, orderScope);
       // The stock history of this bill follows its corrected day.
@@ -635,7 +636,7 @@ export const editBillFromFinder = mutation({
         action: "edit_selling_point_bill", module: "sales", referenceId: String(order._id),
         referenceType: "waiterOrder", details: `${order.invoiceNo ?? order._id}; ${order.total} -> ${updated.total}${dayChanged ? `; tarehe ${oldDay} -> ${newDay}` : ""}${refund.refunded > 0 ? `; malipo yaliyorudishwa ${refund.refunded}` : ""}`,
       });
-      return { orderId: order._id, invoiceNo: order.invoiceNo, total: updated.total, refunded: refund.refunded };
+      return { orderId: order._id, invoiceNo: ensuredInvoiceNo, total: updated.total, refunded: refund.refunded };
     } catch (e) { throw surfaceError(e); }
   },
 });
