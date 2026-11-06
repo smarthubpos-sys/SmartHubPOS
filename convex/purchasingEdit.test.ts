@@ -155,3 +155,53 @@ describe("purchase order and GRN: edit and cancel", () => {
     expect(await asClerk.query(api.tenants.current, {})).toMatchObject({ canEditPurchase: false, canDeletePurchase: true });
   });
 });
+
+describe("purchase / GRN tracked stock integration", () => {
+  it("captures batch, expiry and serials on direct purchase and restores provenance on supplier return void", async () => {
+    const { t, asMgr, supplierId, productId } = await setup();
+    await t.run(async (ctx) => { await ctx.db.patch("products", productId, { trackExpiry: true, trackBatchNumbers: true, trackSerialNumbers: true }); });
+    const r = await asMgr.mutation(api.purchasing.receivePurchase, { supplierId, purchaseDate: date, lines: [{ productId, qty: 2, unitCost: 1000, lotNumber: "LOT-PUR-1", expiryDate: "2099-12-31", serialNumbers: ["PUR-SN-1", "PUR-SN-2"] }] });
+    await t.run(async (ctx) => {
+      const lot = (await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-PUR-1");
+      expect(lot).toMatchObject({ quantityReceived: 2, quantityRemaining: 2, supplierId });
+      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.receivedReference === String(r.purchaseId))).toHaveLength(2);
+    });
+    const ret = await asMgr.mutation(api.purchasing.postPurchaseReturn, { purchaseId: r.purchaseId, returnDate: date, lines: [{ productId, qty: 1 }] });
+    await t.run(async (ctx) => {
+      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-PUR-1")?.quantityRemaining).toBe(1);
+      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "returned" && x.reference === `PURCHASE_RETURN:${String(ret.returnId)}`)).toHaveLength(1);
+    });
+    await asMgr.mutation(api.purchasingEdit.voidPurchaseReturn, { returnId: ret.returnId });
+    await t.run(async (ctx) => {
+      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-PUR-1")?.quantityRemaining).toBe(2);
+      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "in_stock" && x.receivedReference === String(r.purchaseId))).toHaveLength(2);
+    });
+    await asMgr.mutation(api.purchasingEdit.voidPurchase, { purchaseId: r.purchaseId });
+    await t.run(async (ctx) => {
+      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-PUR-1")?.quantityRemaining).toBe(0);
+      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "voided")).toHaveLength(2);
+    });
+  });
+
+  it("captures batch, expiry and serials when an approved PO is received through GRN", async () => {
+    const { t, asMgr, supplierId, productId } = await setup();
+    await t.run(async (ctx) => { await ctx.db.patch("products", productId, { trackExpiry: true, trackBatchNumbers: true, trackSerialNumbers: true }); });
+    const po = await asMgr.mutation(api.purchasing.createPurchaseOrder, { supplierId, orderDate: date, lines: [{ productId, qty: 2, unitCost: 750 }] });
+    await asMgr.mutation(api.purchasing.approvePurchaseOrder, { orderId: po.orderId });
+    const grn = await asMgr.mutation(api.purchasing.createGoodsReceivedNote, { purchaseOrderId: po.orderId, receiptDate: date, lines: [{ productId, qtyReceived: 2, qtyRejected: 0, lotNumber: "LOT-GRN-1", expiryDate: "2099-12-31", serialNumbers: ["GRN-SN-1", "GRN-SN-2"] }] });
+    // Editing a draft line must preserve its batch and serial metadata.
+    await asMgr.mutation(api.purchasingEdit.editGoodsReceivedNote, { grnId: grn.grnId, lines: [{ productId, qtyReceived: 2, qtyRejected: 0 }] });
+    await asMgr.mutation(api.purchasing.confirmGoodsReceivedNote, { grnId: grn.grnId });
+    await t.run(async (ctx) => {
+      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-GRN-1")).toMatchObject({ quantityReceived: 2, quantityRemaining: 2, reference: grn.grnRef });
+      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.receivedReference === grn.grnRef)).toHaveLength(2);
+      expect((await ctx.db.get("products", productId))?.currentQty).toBe(2);
+    });
+    await asMgr.mutation(api.purchasingEdit.cancelGoodsReceivedNote, { grnId: grn.grnId, reason: "Jaribio la kurudisha GRN" });
+    await t.run(async (ctx) => {
+      expect((await ctx.db.get("products", productId))?.currentQty).toBe(0);
+      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-GRN-1")?.quantityRemaining).toBe(0);
+      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.receivedReference === grn.grnRef && x.status === "voided")).toHaveLength(2);
+    });
+  });
+});

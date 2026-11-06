@@ -323,10 +323,11 @@ function QuantityScreen({ kind }: { kind: "item-quantity" | "quantity" | "prices
 
 function TransactionsScreen() {
   const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
+  const [appliedStart, setAppliedStart] = useState(monthStart()); const [appliedEnd, setAppliedEnd] = useState(today());
+  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Transaction Quantity")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
+      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Transaction Quantity")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} /></div>
       {!data ? loading : (
         <>
           <ReportTable title={tr("Muhtasari kwa bidhaa")} sumCols={[]} rows={data.products.filter((p) => p.qtyIn || p.qtyOut || p.qtyBefore).map((p) => ({ Code: p.itemCode, Bidhaa: p.name, "Mwanzo": p.qtyBefore, "Ingizo": p.qtyIn, "Matumizi": p.qtyOut, "Mwisho": p.qtyEnd }))} />
@@ -339,10 +340,11 @@ function TransactionsScreen() {
 
 function HistoryScreen() {
   const [start, setStart] = useState("2000-01-01"); const [end, setEnd] = useState(today()); const [productId, setProductId] = useState("");
-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
+  const [appliedStart, setAppliedStart] = useState("2000-01-01"); const [appliedEnd, setAppliedEnd] = useState(today());
+  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Item History")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
+      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Item History")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} /></div>
       {!data ? loading : (() => {
         const p = data.products.find((x) => x._id === productId);
         const rows: Row[] = p ? [{ Tarehe: "—", Aina: tr("Salio la kuanzia"), Reference: "", Ingizo: 0, Matumizi: 0, Balance: p.qtyBefore }, ...data.movements.filter((m) => m.productId === p._id).map((m) => ({ Tarehe: m.date, Aina: trValue(m.type), Reference: m.reference, Ingizo: m.qtyIn, Matumizi: m.qtyOut, Balance: m.balance }))] : [];
@@ -362,10 +364,11 @@ function HistoryScreen() {
 
 function EarningsScreen() {
   const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
+  const [appliedStart, setAppliedStart] = useState(monthStart()); const [appliedEnd, setAppliedEnd] = useState(today());
+  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Stock Earning Report")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
+      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Stock Earning Report")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} /></div>
       {!data ? loading : <ReportTable title={tr("Faida kwa bidhaa")} sumCols={["Invoices", "Mauzo (bila tax)", "Cost ya mauzo", "Faida"]} note="Mauzo huchukuliwa kutoka invoices zilizopostiwa (discount ya invoice imegawanywa kwenye mistari, tax haihesabiwi). Cost ni gharama iliyorekodiwa wakati wa kuuza."
         rows={data.earnings.map((e) => ({ Code: e.itemCode, Bidhaa: e.productName, "Qty iliyouzwa": e.qtySold, Invoices: e.invoices, "Mauzo (bila tax)": e.sales, "Cost ya mauzo": e.cost, Faida: e.profit, "Margin %": e.marginPct }))} />}
     </div>

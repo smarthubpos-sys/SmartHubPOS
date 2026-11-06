@@ -233,6 +233,139 @@ export const stockRegisters = query({
   },
 });
 
+
+/** Historical inventory valuation reconstructed from dated stock movements using FIFO layers. */
+export const historicalStockValue = query({
+  args: { asOfDate: v.string(), groupId: v.optional(v.id("productGroups")) },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "stock.view", "stock");
+    assertDate(a.asOfDate, "Tarehe ya valuation");
+    const products = filterScoped(user, await scopedRows(ctx, user, "products"))
+      .filter((p) => p.isActive && (!a.groupId || p.groupId === a.groupId));
+    const groups = filterScoped(user, await scopedRows(ctx, user, "productGroups"));
+    const groupNames = new Map(groups.map((g) => [String(g._id), g.name]));
+    const productIds = new Set(products.map((p) => String(p._id)));
+    const allMoves = filterScoped(user, await scopedRows(ctx, user, "stockMovements"))
+      .filter((m) => productIds.has(String(m.productId)) && m.movementDate <= a.asOfDate)
+      .sort((x, y) => x.movementDate.localeCompare(y.movementDate) || x._creationTime - y._creationTime);
+    const layers = new Map<string, Array<{ qty: number; cost: number }>>();
+    for (const p of products) layers.set(String(p._id), []);
+    for (const m of allMoves) {
+      const q = layers.get(String(m.productId)); if (!q) continue;
+      if (m.qtyIn > 0) q.push({ qty: m.qtyIn, cost: m.unitCost ?? 0 });
+      let out = m.qtyOut;
+      while (out > 1e-8 && q.length) {
+        const first = q[0]; const used = Math.min(first.qty, out);
+        first.qty = round8(first.qty - used); out = round8(out - used);
+        if (first.qty <= 1e-8) q.shift();
+      }
+      // If outbound history predates the first recorded receipt, retain an explicit zero-cost layer
+      // rather than fabricating a historical purchase cost.
+      if (out > 1e-8) q.unshift({ qty: out, cost: 0 });
+    }
+    const rows = products.map((p) => {
+      const remaining = layers.get(String(p._id)) ?? [];
+      const qty = round8(remaining.reduce((n, x) => n + x.qty, 0));
+      const value = round2(remaining.reduce((n, x) => n + x.qty * x.cost, 0));
+      const unknownQty = round8(remaining.filter((x) => x.cost <= 0).reduce((n, x) => n + x.qty, 0));
+      return { productId: p._id, code: p.itemCode, name: p.name, groupName: p.groupId ? groupNames.get(String(p.groupId)) ?? "—" : "—", quantity: qty, value, averageCost: qty > 0 ? round2(value / qty) : 0, unknownCostQty: unknownQty };
+    }).sort((x, y) => y.value - x.value);
+    return { asOfDate: a.asOfDate, method: "FIFO", rows, totals: {
+      quantity: round8(rows.reduce((n, x) => n + x.quantity, 0)),
+      value: round2(rows.reduce((n, x) => n + x.value, 0)),
+      unknownCostQty: round8(rows.reduce((n, x) => n + x.unknownCostQty, 0)),
+    }};
+  },
+});
+
+/** Lot/expiry register for goods already received. This is a traceability record; it does not change stock quantity. */
+export const listTrackedLots = query({
+  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()), productId: v.optional(v.id("products")) },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "stock.view", "stock");
+    const products = filterScoped(user, await scopedRows(ctx, user, "products"));
+    const names = new Map(products.map((p) => [String(p._id), { name: p.name, code: p.itemCode }]));
+    const rows = filterScoped(user, await scopedRows(ctx, user, "stockLots"))
+      .filter((x) => (!a.productId || x.productId === a.productId) && (!a.startDate || (x.expiryDate ?? "") >= a.startDate) && (!a.endDate || (x.expiryDate ?? "") <= a.endDate))
+      .map((x) => ({ ...x, productName: names.get(String(x.productId))?.name ?? "Bidhaa", itemCode: names.get(String(x.productId))?.code ?? "—" }))
+      .sort((x, y) => (x.expiryDate ?? "9999").localeCompare(y.expiryDate ?? "9999"));
+    return rows;
+  },
+});
+
+export const registerStockLot = mutation({
+  args: { productId: v.id("products"), lotNumber: v.string(), receivedDate: v.string(), expiryDate: v.optional(v.string()), quantity: v.number(), unitCost: v.number(), reference: v.optional(v.string()), notes: v.optional(v.string()) },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "stock.adjust", "stock");
+    const scope = await resolveWriteScope(ctx, user);
+    assertDate(a.receivedDate, "Tarehe ya kupokea");
+    if (a.expiryDate) { assertDate(a.expiryDate, "Tarehe ya mwisho wa matumizi"); if (a.expiryDate < a.receivedDate) throw new ConvexError("Expiry date haiwezi kuwa kabla ya tarehe ya kupokea."); }
+    if (!a.lotNumber.trim() || !(a.quantity > 0) || !(a.unitCost >= 0)) throw new ConvexError("Jaza lot number, quantity na unit cost sahihi.");
+    const product = await ctx.db.get("products", a.productId);
+    if (!product || !canAccessRecord(user, product) || !product.trackExpiry && !product.trackBatchNumbers) throw new ConvexError("Bidhaa hii haijawezeshwa Batch/Expiry tracking.");
+    const duplicate = await ctx.db.query("stockLots").withIndex("by_lot", q => q.eq("tenantId", scope.tenantId).eq("productId", a.productId).eq("lotNumber", a.lotNumber.trim())).first();
+    if (duplicate) throw new ConvexError("Lot number hii tayari imesajiliwa kwa bidhaa hii.");
+    const existing = filterScoped(user, await scopedRows(ctx, user, "stockLots")).filter((x) => x.productId === a.productId).reduce((n, x) => n + x.quantityRemaining, 0);
+    if (existing + a.quantity > product.currentQty + 1e-8) throw new ConvexError("Kiasi cha batch kinazidi stock iliyopo. Sajili kiasi kilichopokelewa tu.");
+    return await ctx.db.insert("stockLots", { ...scope, productId: a.productId, lotNumber: a.lotNumber.trim(), receivedDate: a.receivedDate, expiryDate: a.expiryDate, quantityReceived: a.quantity, quantityRemaining: a.quantity, unitCost: a.unitCost, reference: a.reference, notes: a.notes, createdBy: user._id });
+  },
+});
+
+export const listTrackedSerials = query({
+  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()), productId: v.optional(v.id("products")), status: v.optional(v.string()) },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "stock.view", "stock");
+    const products = filterScoped(user, await scopedRows(ctx, user, "products"));
+    const names = new Map(products.map((p) => [String(p._id), { name: p.name, code: p.itemCode }]));
+    return filterScoped(user, await scopedRows(ctx, user, "stockSerials"))
+      .filter((x) => (!a.productId || x.productId === a.productId) && (!a.status || x.status === a.status) && (!a.startDate || x.receivedDate >= a.startDate) && (!a.endDate || x.receivedDate <= a.endDate))
+      .map((x) => ({ ...x, productName: names.get(String(x.productId))?.name ?? "Bidhaa", itemCode: names.get(String(x.productId))?.code ?? "—" }))
+      .sort((x, y) => y.receivedDate.localeCompare(x.receivedDate));
+  },
+});
+
+export const registerStockSerials = mutation({
+  args: { productId: v.id("products"), serialNumbers: v.array(v.string()), receivedDate: v.string(), unitCost: v.number(), lotId: v.optional(v.id("stockLots")), reference: v.optional(v.string()), notes: v.optional(v.string()) },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "stock.adjust", "stock");
+    const scope = await resolveWriteScope(ctx, user);
+    assertDate(a.receivedDate, "Tarehe ya kupokea");
+    const serials = [...new Set(a.serialNumbers.map((x) => x.trim()).filter(Boolean))];
+    if (!serials.length || serials.length !== a.serialNumbers.length || serials.length > 200 || !(a.unitCost >= 0)) throw new ConvexError("Weka serial numbers za kipekee (zisizozidi 200) na unit cost sahihi.");
+    const product = await ctx.db.get("products", a.productId);
+    if (!product || !canAccessRecord(user, product) || !product.trackSerialNumbers) throw new ConvexError("Bidhaa hii haijawezeshwa Serial Number tracking.");
+    let linkedLot: Doc<"stockLots"> | null = null;
+    if (product.trackExpiry || product.trackBatchNumbers) {
+      if (!a.lotId) throw new ConvexError("Chagua batch/lot inayohusiana na serial numbers hizi.");
+      linkedLot = await ctx.db.get("stockLots", a.lotId);
+      if (!linkedLot || linkedLot.productId !== a.productId || linkedLot.tenantId !== scope.tenantId || linkedLot.branchId !== scope.branchId) throw new ConvexError("Batch/lot haipatikani kwenye biashara au tawi hili.");
+      if (a.receivedDate < linkedLot.receivedDate) throw new ConvexError("Tarehe ya serial haiwezi kuwa kabla ya tarehe ya batch.");
+      const inStockForLot = (await ctx.db.query("stockSerials").withIndex("by_product", q => q.eq("productId", a.productId)).collect()).filter(x => x.lotId === linkedLot!._id && x.status === "in_stock").length;
+      if (inStockForLot + serials.length > linkedLot.quantityRemaining + 1e-8) throw new ConvexError("Serial numbers zinazidi vipande vilivyobaki kwenye batch hii.");
+    }
+    const existing = filterScoped(user, await scopedRows(ctx, user, "stockSerials")).filter((x) => x.productId === a.productId && x.status === "in_stock");
+    if (existing.length + serials.length > Math.floor(product.currentQty)) throw new ConvexError("Serial numbers zinazidi vipande vya stock vilivyopo.");
+    for (const serialNumber of serials) {
+      const found = await ctx.db.query("stockSerials").withIndex("by_serial", q => q.eq("tenantId", scope.tenantId).eq("serialNumber", serialNumber)).first();
+      if (found) throw new ConvexError(`Serial number ${serialNumber} tayari imesajiliwa.`);
+    }
+    for (const serialNumber of serials) await ctx.db.insert("stockSerials", { ...scope, productId: a.productId, serialNumber, receivedDate: a.receivedDate, status: "in_stock", unitCost: a.unitCost, lotId: linkedLot?._id, supplierId: linkedLot?.supplierId, reference: a.reference ?? linkedLot?.reference, receivedReference: a.reference ?? linkedLot?.reference, notes: a.notes, createdBy: user._id });
+    return { created: serials.length };
+  },
+});
+
+export const updateStockSerialStatus = mutation({
+  args: { serialId: v.id("stockSerials"), status: v.string(), soldDate: v.optional(v.string()) },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "stock.adjust", "stock");
+    if (!["in_stock", "sold", "returned", "scrapped"].includes(a.status)) throw new ConvexError("Hali ya serial si sahihi.");
+    const row = await ctx.db.get("stockSerials", a.serialId);
+    if (!row || !canAccessRecord(user, row)) throw new ConvexError("Serial number haipatikani.");
+    if (a.soldDate) assertDate(a.soldDate, "Tarehe ya mauzo");
+    await ctx.db.patch("stockSerials", a.serialId, { status: a.status, soldDate: a.status === "sold" ? (a.soldDate ?? new Date().toISOString().slice(0, 10)) : undefined });
+  },
+});
+
 /** Repairs old products whose movement history does not add up to the current quantity (e.g. opening stock saved before movements existed). */
 export const reconcileMovements = mutation({
   args: {},

@@ -25,7 +25,9 @@ const loading = <div className="p-6 text-sm text-muted-foreground">{tr("Inapakia
 export function StockTakeScreen() {
   const [start, setStart] = useState(monthStart());
   const [end, setEnd] = useState(today());
-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
+  const [appliedStart, setAppliedStart] = useState(monthStart());
+  const [appliedEnd, setAppliedEnd] = useState(today());
+  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
   const rights = useStockRights();
   const stockTake = useMutation(api.inventory.stockTake);
   const [counted, setCounted] = useState<Record<string, string>>({});
@@ -129,7 +131,7 @@ export function StockTakeScreen() {
         <p className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm">{tr("Huna ruhusa ya kubadili stock, kwa hiyo unaona historia ya stock take tu. Muombe Super Admin akupe ruhusa hii ili uweze kuhesabu.")}</p>
       )}
 
-      <div className="flex flex-wrap items-end justify-between gap-3"><h2 className="text-lg font-semibold">{tr("Historia ya stock take")}</h2><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
+      <div className="flex flex-wrap items-end justify-between gap-3"><h2 className="text-lg font-semibold">{tr("Historia ya stock take")}</h2><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} /></div>
       <ReportTable title={tr("Hesabu (count) dhidi ya mfumo")} sumCols={[tr("Tofauti"), tr("Thamani ya tofauti")]} note={tr("Kila stock take na kila Quantity Adjustment inaonekana hapa: 'Mfumo' ni idadi kabla ya kurekebisha na 'Iliyohesabiwa' ni idadi mpya. Stock take moja ina namba moja (ST-…).")}
         rows={data.adjustments.map((x) => ({ Tarehe: x.date, "Stock take": x.reference || "—", Code: x.itemCode, Bidhaa: x.productName, Mfumo: x.qtyBefore, Iliyohesabiwa: x.counted, Tofauti: x.difference, "Thamani ya tofauti": round2(x.difference * x.cost), Sababu: x.reason }))} />
     </div>

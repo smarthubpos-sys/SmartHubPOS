@@ -1032,7 +1032,7 @@ export const BACKUP_TABLES = [
   "productGroups", "unitsOfMeasure", "products", "purchasePriceHistory", "suppliers", "purchaseSequences",
   "purchases", "purchaseLines", "purchaseOrders", "purchaseOrderLines", "goodsReceivedNotes", "grnLines",
   "supplierPayments", "purchaseReturns", "purchaseReturnLines", "clients", "invoices", "invoiceLines",
-  "customerPayments", "salesReturns", "stockMovements", "stockAdjustments", "employees", "attendance",
+  "customerPayments", "salesReturns", "stockMovements", "stockAdjustments", "stockLots", "stockSerials", "stockLotAllocations", "employees", "attendance",
   "workSchedules", "offDays", "attendanceRules", "payrollPeriods", "payrollRecords", "accounts", "journalEntries", "journalLines", "expenses", "auditLogs",
 ] as const;
 

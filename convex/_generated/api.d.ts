@@ -57,6 +57,7 @@ import type * as users from "../users.js";
 import type * as waiterCollections from "../waiterCollections.js";
 import type * as waiterDirectory from "../waiterDirectory.js";
 import type * as waiterOrders from "../waiterOrders.js";
+import type * as waiterRefund from "../waiterRefund.js";
 import type * as waiterSettings from "../waiterSettings.js";
 import type * as warehouses from "../warehouses.js";
 
@@ -116,6 +117,7 @@ declare const fullApi: ApiFromModules<{
   waiterCollections: typeof waiterCollections;
   waiterDirectory: typeof waiterDirectory;
   waiterOrders: typeof waiterOrders;
+  waiterRefund: typeof waiterRefund;
   waiterSettings: typeof waiterSettings;
   warehouses: typeof warehouses;
 }>;

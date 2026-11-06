@@ -79,6 +79,27 @@ export const editPurchase = mutation({
     }
     if (a.notes !== undefined) patch.notes = a.notes.trim() || undefined;
     const newDate = a.purchaseDate ?? purchase.purchaseDate;
+    let trackedLots: Doc<"stockLots">[] = [];
+    let trackedSerials: Doc<"stockSerials">[] = [];
+    let trackedProductIds: Array<Id<"products">> = [];
+    if (a.lines || (a.purchaseDate !== undefined && newDate !== purchase.purchaseDate)) {
+      const oldLinesForTracking = await ctx.db.query("purchaseLines").withIndex("by_purchase", (q) => q.eq("purchaseId", a.purchaseId)).collect();
+      trackedProductIds = [...new Set(oldLinesForTracking.map(l => l.productId))];
+      trackedLots = (await Promise.all(trackedProductIds.map(id => ctx.db.query("stockLots").withIndex("by_product", q => q.eq("productId", id)).collect()))).flat().filter(x => x.reference === String(a.purchaseId));
+      trackedSerials = (await Promise.all(trackedProductIds.map(id => ctx.db.query("stockSerials").withIndex("by_product", q => q.eq("productId", id)).collect()))).flat().filter(x => x.receivedReference === String(a.purchaseId));
+    }
+    if (a.lines && (trackedLots.length || trackedSerials.length)) throw new ConvexError("Purchase hii ina batch/serial tracking. Ili kulinda ufuatiliaji, usibadilishe mistari yake moja kwa moja; futa purchase (ikiwa stock bado haijatumika) kisha iingize upya kwa batch/serial sahihi.");
+    if (a.purchaseDate !== undefined && newDate !== purchase.purchaseDate) {
+      if (trackedLots.some(x => x.expiryDate && x.expiryDate < newDate)) throw new ConvexError("Tarehe mpya ya purchase iko baada ya expiry date ya batch. Rekebisha tarehe au batch kwanza.");
+      for (const lot of trackedLots) await ctx.db.patch("stockLots", lot._id, { receivedDate: newDate });
+      for (const serial of trackedSerials) await ctx.db.patch("stockSerials", serial._id, { receivedDate: newDate });
+      const purchaseMoves = await ctx.db.query("stockMovements").withIndex("by_reference", q => q.eq("referenceType", "purchase").eq("referenceId", String(a.purchaseId))).collect();
+      for (const move of purchaseMoves) await ctx.db.patch("stockMovements", move._id, { movementDate: newDate });
+      for (const productId of trackedProductIds) {
+        const prices = await ctx.db.query("purchasePriceHistory").withIndex("by_product", q => q.eq("productId", productId)).collect();
+        for (const price of prices.filter(x => x.purchaseId === a.purchaseId)) await ctx.db.patch("purchasePriceHistory", price._id, { date: newDate });
+      }
+    }
     let newTotal = purchase.total;
     let newOutstanding = purchase.outstanding;
 
@@ -166,6 +187,18 @@ export const voidPurchase = mutation({
     for (const l of lines) {
       const p = await ctx.db.get("products", l.productId);
       if (!p) continue;
+      if (p.trackExpiry || p.trackBatchNumbers) {
+        const sourceLots=(await ctx.db.query("stockLots").withIndex("by_product",q=>q.eq("productId",l.productId)).collect()).filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.reference===String(a.purchaseId));
+        const lots=sourceLots.filter(x=>x.quantityRemaining>1e-8);
+        const available=lots.reduce((n,x)=>n+x.quantityRemaining,0); if(sourceLots.length&&available+EPS<l.qty)throw new ConvexError(`Huwezi kufuta purchase: batch ya ${p.name} imeshatumika au kuuzwa.`);
+        let leftToVoid=l.qty; for(const lot of lots){if(leftToVoid<=EPS)break;const used=Math.min(leftToVoid,lot.quantityRemaining);await ctx.db.patch("stockLots",lot._id,{quantityRemaining:Math.max(0,lot.quantityRemaining-used),notes:[lot.notes,"Purchase voided"].filter(Boolean).join(" | ")});leftToVoid-=used;}
+      }
+      if (p.trackSerialNumbers) {
+        const sourceSerials=(await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",l.productId)).collect()).filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.receivedReference===String(a.purchaseId));
+        const serials=sourceSerials.filter(x=>x.status==="in_stock");
+        if(sourceSerials.length&&serials.length<l.qty)throw new ConvexError(`Huwezi kufuta purchase: serial za ${p.name} zimeshauzwa au kutumika.`);
+        for(const serial of serials.slice(0,l.qty))await ctx.db.patch("stockSerials",serial._id,{status:"voided",reference:`PURCHASE_VOID:${String(a.purchaseId)}`});
+      }
       const left = p.currentQty - l.qty;
       const patch: Partial<Doc<"products">> = { currentQty: left };
       if (p.weightedAvgCost !== undefined) patch.weightedAvgCost = avgAfterRemoving(p.currentQty, p.weightedAvgCost, l.qty, l.unitCost);
@@ -262,7 +295,7 @@ export const grnForEdit = query({
     const grn = await ctx.db.get("goodsReceivedNotes", a.grnId);
     if (!grn || !canAccessRecord(u, grn)) return null;
     const lines = await ctx.db.query("grnLines").withIndex("by_grn", (q) => q.eq("grnId", a.grnId)).collect();
-    return { grn, lines: lines.map((l) => ({ productId: l.productId, qtyReceived: l.qtyReceived, qtyRejected: l.qtyRejected })) };
+    return { grn, lines: lines.map((l) => ({ productId: l.productId, qtyReceived: l.qtyReceived, qtyRejected: l.qtyRejected, lotNumber: l.lotNumber, expiryDate: l.expiryDate, serialNumbers: l.serialNumbers })) };
   },
 });
 
@@ -279,14 +312,26 @@ export const editGoodsReceivedNote = mutation({
     if (a.lines) {
       if (!a.lines.length) throw new ConvexError("Ongeza bidhaa za kupokea.");
       const poLines = grn.purchaseOrderId ? await ctx.db.query("purchaseOrderLines").withIndex("by_order", (q) => q.eq("orderId", grn.purchaseOrderId!)).collect() : [];
-      const clean: Array<{ productId: Id<"products">; qtyOrdered: number; qtyReceived: number; qtyRejected: number; unitCost: number }> = [];
+      const oldGrnLines = await ctx.db.query("grnLines").withIndex("by_grn", (q) => q.eq("grnId", a.grnId)).collect();
+      const clean: Array<{ productId: Id<"products">; qtyOrdered: number; qtyReceived: number; qtyRejected: number; unitCost: number; lotNumber?: string; expiryDate?: string; serialNumbers?: string[] }> = [];
+      const nextReceiptDate = a.receiptDate ?? grn.receiptDate;
       for (const l of a.lines) {
         const po = poLines.find((x) => x.productId === l.productId);
         if (!po) throw new ConvexError("Bidhaa haipo kwenye Purchase Order.");
         const rejected = l.qtyRejected ?? 0;
         if (!Number.isFinite(l.qtyReceived) || l.qtyReceived < 0 || !Number.isFinite(rejected) || rejected < 0 || l.qtyReceived + rejected <= 0) throw new ConvexError("Kiasi kilichopokelewa/kukataliwa si sahihi.");
         if (l.qtyReceived + rejected > po.qtyOrdered - po.qtyReceived + EPS) throw new ConvexError("Kiasi kinazidi salio la Purchase Order.");
-        clean.push({ productId: l.productId, qtyOrdered: po.qtyOrdered, qtyReceived: l.qtyReceived, qtyRejected: rejected, unitCost: po.unitCost });
+        const product = await ctx.db.get("products", l.productId);
+        const old = oldGrnLines.find(x => x.productId === l.productId);
+        const lotNumber = old?.lotNumber;
+        const expiryDate = old?.expiryDate;
+        const serialNumbers = old?.serialNumbers;
+        if (product && (product.trackExpiry || product.trackBatchNumbers)) {
+          if (l.qtyReceived > 0 && (!lotNumber || (product.trackExpiry && !expiryDate))) throw new ConvexError(`GRN hii haina batch/expiry data ya ${product.name}. Futa rasimu na uunde GRN upya yenye tracking data.`);
+          if (expiryDate && expiryDate < nextReceiptDate) throw new ConvexError(`Expiry date ya ${product.name} iko kabla ya tarehe mpya ya kupokea.`);
+        }
+        if (product?.trackSerialNumbers && l.qtyReceived > 0 && (serialNumbers?.length ?? 0) !== l.qtyReceived) throw new ConvexError(`Idadi ya serial numbers za ${product.name} lazima ilingane na quantity. Futa rasimu na uunde GRN upya ikiwa unabadilisha quantity.`);
+        clean.push({ productId: l.productId, qtyOrdered: po.qtyOrdered, qtyReceived: l.qtyReceived, qtyRejected: rejected, unitCost: po.unitCost, lotNumber, expiryDate, serialNumbers });
       }
       for (const old of await ctx.db.query("grnLines").withIndex("by_grn", (q) => q.eq("grnId", a.grnId)).collect()) await ctx.db.delete("grnLines", old._id);
       for (const l of clean) await ctx.db.insert("grnLines", { grnId: a.grnId, ...l });
@@ -320,6 +365,17 @@ export const cancelGoodsReceivedNote = mutation({
         if (p.weightedAvgCost !== undefined) patch.weightedAvgCost = avgAfterRemoving(p.currentQty, p.weightedAvgCost, l.qtyReceived, l.unitCost);
         await ctx.db.patch("products", l.productId, patch);
         await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId: l.productId, movementType: "grn_void", referenceId: String(a.grnId), referenceType: "goodsReceivedNote", qtyIn: 0, qtyOut: l.qtyReceived, runningBalance: left, unitCost: l.unitCost, supplierId: grn.supplierId, notes: `Cancelled ${grn.grnRef}`, createdBy: u._id });
+        if (l.lotNumber) {
+          const lot=(await ctx.db.query("stockLots").withIndex("by_product",q=>q.eq("productId",l.productId)).collect()).find(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.reference===grn.grnRef&&x.lotNumber===l.lotNumber);
+          if(!lot)throw new ConvexError(`Batch ${l.lotNumber} ya GRN haipatikani; haiwezekani kurekebisha traceability kwa usalama.`);
+          if(lot.quantityRemaining+EPS<l.qtyReceived)throw new ConvexError(`Huwezi kufuta GRN: batch ${l.lotNumber} imeshatumika.`);
+          await ctx.db.patch("stockLots",lot._id,{quantityRemaining:0,notes:[lot.notes,`GRN ${grn.grnRef} cancelled`].filter(Boolean).join(" | ")});
+        }
+        if (l.serialNumbers?.length) {
+          const serialRows=(await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",l.productId)).collect()).filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.receivedReference===grn.grnRef&&x.status==="in_stock");
+          if(serialRows.length<l.serialNumbers.length)throw new ConvexError(`Huwezi kufuta GRN: baadhi ya serial za ${p.name} zimeshauzwa au kutumika.`);
+          for(const serial of serialRows)await ctx.db.patch("stockSerials",serial._id,{status:"voided",reference:`GRN_VOID:${String(a.grnId)}`});
+        }
       }
       const value = round(lines.reduce((n, l) => n + round(l.qtyReceived * l.unitCost), 0));
       if (value > 0) {
@@ -355,6 +411,10 @@ export const voidPurchaseReturn = mutation({
     const today = new Date().toISOString().slice(0, 10);
     const lines = await ctx.db.query("purchaseReturnLines").withIndex("by_return", (q) => q.eq("returnId", a.returnId)).collect();
 
+    // Restore the exact batch allocations and serials that were sent back to the supplier.
+    const lotAllocations=await ctx.db.query("stockLotAllocations").withIndex("by_purchase_return",q=>q.eq("purchaseReturnId",a.returnId)).collect();
+    for(const allocation of lotAllocations){const back=Math.max(0,allocation.quantity-allocation.returnedQuantity);if(back>0){const lot=await ctx.db.get("stockLots",allocation.lotId);if(lot)await ctx.db.patch("stockLots",lot._id,{quantityRemaining:lot.quantityRemaining+back});await ctx.db.patch("stockLotAllocations",allocation._id,{returnedQuantity:allocation.quantity});}}
+    for(const l of lines){const serials=await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",l.productId)).collect();for(const serial of serials.filter(x=>x.status==="returned"&&x.reference===`PURCHASE_RETURN:${String(a.returnId)}`))await ctx.db.patch("stockSerials",serial._id,{status:"in_stock",reference:serial.receivedReference,returnOriginReference:undefined});}
     // Goods go back on the shelf.
     for (const l of lines) {
       const p = await ctx.db.get("products", l.productId);

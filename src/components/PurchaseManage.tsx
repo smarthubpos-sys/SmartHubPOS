@@ -183,7 +183,7 @@ function GrnEditDialog({ id, onClose }: { id: Id<"goodsReceivedNotes">; onClose:
   );
 }
 
-function GrnEditForm({ id, data, products, onClose }: { id: Id<"goodsReceivedNotes">; data: { grn: { receiptDate: string; notes?: string }; lines: Array<{ productId: Id<"products">; qtyReceived: number; qtyRejected: number }> }; products: Products; onClose: () => void }) {
+function GrnEditForm({ id, data, products, onClose }: { id: Id<"goodsReceivedNotes">; data: { grn: { receiptDate: string; notes?: string }; lines: Array<{ productId: Id<"products">; qtyReceived: number; qtyRejected: number; lotNumber?: string; expiryDate?: string; serialNumbers?: string[] }> }; products: Products; onClose: () => void }) {
   const edit = useMutation(api.purchasingEdit.editGoodsReceivedNote);
   const { busy, run } = useSave(onClose);
   const [f, setF] = useState({ date: data.grn.receiptDate, notes: data.grn.notes ?? "", lines: data.lines.map((l) => ({ productId: String(l.productId), received: String(l.qtyReceived), rejected: String(l.qtyRejected) })) });
@@ -201,7 +201,7 @@ function GrnEditForm({ id, data, products, onClose }: { id: Id<"goodsReceivedNot
           <tbody>
             {f.lines.map((l, i) => (
               <tr key={l.productId} className="border-b">
-                <td className="p-2">{nameOf(l.productId)}</td>
+                <td className="p-2">{nameOf(l.productId)}{(data.lines[i].lotNumber || data.lines[i].expiryDate || data.lines[i].serialNumbers?.length) && <div className="mt-1 text-xs text-muted-foreground">{[data.lines[i].lotNumber ? `Lot: ${data.lines[i].lotNumber}` : "", data.lines[i].expiryDate ? `Expiry: ${data.lines[i].expiryDate}` : "", data.lines[i].serialNumbers?.length ? `Serials: ${data.lines[i].serialNumbers.length}` : ""].filter(Boolean).join(" · ")}</div>}</td>
                 <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.received} onChange={(e) => setLine(i, { received: e.target.value })} /></td>
                 <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.rejected} onChange={(e) => setLine(i, { rejected: e.target.value })} /></td>
               </tr>

@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import ExcelJS from "exceljs";
 import { useAction } from "convex/react";
 import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
@@ -20,11 +21,12 @@ function downloadCsv(name: string, rows: Row[]) {
   URL.revokeObjectURL(url);
 }
 
-export function DateRange({ startDate, endDate, onStart, onEnd }: { startDate: string; endDate: string; onStart: (v: string) => void; onEnd: (v: string) => void }) {
+export function DateRange({ startDate, endDate, onStart, onEnd, onApply, busy = false }: { startDate: string; endDate: string; onStart: (v: string) => void; onEnd: (v: string) => void; onApply?: () => void; busy?: boolean }) {
   return (
     <div className="flex flex-wrap items-end gap-2 print:hidden">
       <label className="grid gap-1 text-xs">{tr("Kuanzia")}<Input type="date" value={startDate} onChange={(e) => onStart(e.target.value)} /></label>
       <label className="grid gap-1 text-xs">{tr("Mpaka")}<Input type="date" value={endDate} onChange={(e) => onEnd(e.target.value)} /></label>
+      {onApply && <Button type="button" disabled={busy || !startDate || !endDate || startDate > endDate} onClick={onApply}>{busy ? tr("Inatafuta…") : tr("View Report")}</Button>}
     </div>
   );
 }
@@ -38,8 +40,37 @@ export function Stat({ label, value }: { label: string; value: string | number }
   );
 }
 
+async function downloadExcel(name: string, rows: Row[], sumCols: string[]) {
+  if (!rows.length) return;
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "SmartHubPOS";
+  const sheet = workbook.addWorksheet(tr(name).replace(/[:\\/?*[\]]/g, " ").trim().slice(0, 31) || "Report");
+  const cols = Object.keys(rows[0]);
+  sheet.addRow(cols.map((c) => tr(c)));
+  for (const row of rows) sheet.addRow(cols.map((c) => row[c] ?? ""));
+  if (sumCols.length) {
+    const total = sheet.addRow(cols.map((c, i) => sumCols.includes(c) || sumCols.includes(tr(c))
+      ? rows.reduce((n, r) => n + num(r[c]), 0) : i === 0 ? tr("JUMLA") : ""));
+    total.font = { bold: true };
+  }
+  sheet.views = [{ state: "frozen", ySplit: 1 }];
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: Math.max(1, rows.length + 1), column: cols.length } };
+  sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+  sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E3A5F" } };
+  cols.forEach((key, index) => {
+    const lengths = [tr(key).length, ...rows.map((row) => String(row[key] ?? "").length)];
+    sheet.getColumn(index + 1).width = Math.min(32, Math.max(12, ...lengths.map((n) => n + 2)));
+  });
+  const buffer = await workbook.xlsx.writeBuffer();
+  const bytes = new Uint8Array(buffer);
+  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = `${name.replace(/\s+/g, "-").toLowerCase()}-${today()}.xlsx`; a.click();
+  URL.revokeObjectURL(url);
+}
+
 /** Report table with automatic number formatting, optional totals row, CSV export and print. */
-export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { title: string; rows: Row[]; sumCols?: string[]; note?: string; onPrintRow?: (row: Row, copies: number, paper: Paper) => void }) {
+export function ReportTable({ title, rows, sumCols = [], note, subtitle, onPrintRow }: { title: string; rows: Row[]; sumCols?: string[]; note?: string; subtitle?: string; onPrintRow?: (row: Row, copies: number, paper: Paper) => void }) {
   const cols = Object.keys(rows[0] ?? {});
   const sendReport = useAction(api.reportEmails.sendReport);
   const [sending, setSending] = useState(false);
@@ -47,6 +78,7 @@ export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { t
   const [picked, setPicked] = useState<number | null>(null);
   const [copies, setCopies] = useState(1);
   const [paper, setPaper] = useState<Paper>(readPaper());
+  const [viewOpen, setViewOpen] = useState(true); // the report is shown as soon as it is loaded; "Hide Report" only folds it away
   const emailReport = async () => {
     setSending(true);
     try {
@@ -64,7 +96,7 @@ export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { t
     <section ref={sectionRef} className="overflow-hidden rounded-xl border">
       <div className="hidden border-b p-3 text-xs text-slate-600 print:block">{tr("Imechapishwa")}: {new Date().toLocaleString()}</div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b p-3">
-        <div className="font-semibold">{title} <span className="text-sm font-normal text-muted-foreground">({rows.length})</span></div>
+        <div><div className="font-semibold">{title} <span className="text-sm font-normal text-muted-foreground">({rows.length})</span></div>{subtitle && <div className="text-xs text-muted-foreground">{subtitle}</div>}</div>
         <div className="flex flex-wrap items-center gap-2 print:hidden">
           {onPrintRow && (
             <>
@@ -77,11 +109,16 @@ export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { t
               <Button size="sm" disabled={picked === null || !rows[picked]} onClick={() => { if (picked !== null && rows[picked]) onPrintRow(rows[picked], copies, paper); }}>{tr("Chapisha item iliyochaguliwa")}</Button>
             </>
           )}
-          <Button size="sm" variant="outline" disabled={!rows.length} onClick={() => downloadCsv(title, rows)}>{tr("Export CSV")}</Button>
-          <Button size="sm" variant="outline" disabled={!rows.length || sending} onClick={() => void emailReport()}>{sending ? tr("Inatuma…") : tr("Tuma kwa Email")}</Button>
-          <Button size="sm" variant="outline" onClick={() => printElement(sectionRef.current, "A4", { landscape: cols.length > 6 })}>{tr("Print")}</Button>
+          <Button size="sm" variant="outline" onClick={() => setViewOpen((v) => !v)}>{viewOpen ? tr("Hide Report") : tr("Show Report")}</Button>
+          {viewOpen && <>
+            <Button size="sm" variant="outline" disabled={!rows.length} onClick={() => downloadCsv(title, rows)}>{tr("Export CSV")}</Button>
+            <Button size="sm" variant="outline" disabled={!rows.length} onClick={() => void downloadExcel(title, rows, sumCols)}>{tr("Export Excel")}</Button>
+            <Button size="sm" variant="outline" disabled={!rows.length || sending} onClick={() => void emailReport()}>{sending ? tr("Inatuma…") : tr("Tuma kwa Email")}</Button>
+            <Button size="sm" variant="outline" disabled={!rows.length} onClick={() => printElement(sectionRef.current, "A4", { landscape: cols.length > 6 })}>{tr("Print / PDF")}</Button>
+          </>}
         </div>
       </div>
+      {viewOpen && <>
       {note && <p className="border-b bg-muted/30 p-3 text-xs text-muted-foreground">{note}</p>}
       <div className="max-w-full overflow-x-auto">
         <table className="w-full min-w-full table-auto text-left text-sm">
@@ -95,6 +132,7 @@ export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { t
         </table>
         {!rows.length && <p className="p-5 text-sm text-muted-foreground">{tr("Hakuna taarifa kwa kipindi/chaguo hili.")}</p>}
       </div>
+      </>}
     </section>
   );
 }

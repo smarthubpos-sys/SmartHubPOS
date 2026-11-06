@@ -349,6 +349,9 @@ export default defineSchema({
     qtyReceived: v.number(),
     qtyRejected: v.number(),
     unitCost: v.number(),
+    lotNumber: v.optional(v.string()),
+    expiryDate: v.optional(v.string()),
+    serialNumbers: v.optional(v.array(v.string())),
   }).index("by_grn", ["grnId"]),
 
   // ── SUPPLIER PAYMENTS ────────────────────────────────────────
@@ -587,6 +590,29 @@ export default defineSchema({
     .index("by_reference", ["referenceType", "referenceId"]),
 
   // ── STOCK ADJUSTMENTS ────────────────────────────────────────
+  // ── TRACKED STOCK LOTS / EXPIRY ────────────────────────────────
+  stockLots: defineTable({
+    tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
+    productId: v.id("products"), lotNumber: v.string(), receivedDate: v.string(),
+    expiryDate: v.optional(v.string()), quantityReceived: v.number(), quantityRemaining: v.number(),
+    unitCost: v.number(), supplierId: v.optional(v.id("suppliers")),
+    reference: v.optional(v.string()), notes: v.optional(v.string()), createdBy: v.id("users"),
+  }).index("by_scope", ["tenantId", "branchId"])
+    .index("by_product", ["productId"])
+    .index("by_expiry", ["tenantId", "expiryDate"])
+    .index("by_lot", ["tenantId", "productId", "lotNumber"]),
+
+  stockSerials: defineTable({
+    tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
+    productId: v.id("products"), serialNumber: v.string(), receivedDate: v.string(),
+    status: v.string(), unitCost: v.number(), lotId: v.optional(v.id("stockLots")), supplierId: v.optional(v.id("suppliers")),
+    reference: v.optional(v.string()), receivedReference: v.optional(v.string()), returnOriginReference: v.optional(v.string()), soldDate: v.optional(v.string()),
+    notes: v.optional(v.string()), createdBy: v.id("users"),
+  }).index("by_scope", ["tenantId", "branchId"])
+    .index("by_product", ["productId"])
+    .index("by_serial", ["tenantId", "serialNumber"])
+    .index("by_status_date", ["tenantId", "status", "receivedDate"]),
+
   stockAdjustments: defineTable({
     tenantId: v.optional(v.id("tenants")),
     branchId: v.optional(v.id("branches")),
@@ -1037,4 +1063,10 @@ export default defineSchema({
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_user", ["createdBy"])
     .index("by_status", ["status"]),
+
+  stockLotAllocations: defineTable({
+    tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
+    invoiceId: v.optional(v.id("invoices")), waiterOrderId: v.optional(v.id("waiterOrders")), purchaseReturnId: v.optional(v.id("purchaseReturns")),
+    productId: v.id("products"), lotId: v.id("stockLots"), quantity: v.number(), returnedQuantity: v.number(),
+  }).index("by_invoice", ["invoiceId"]).index("by_waiter_order", ["waiterOrderId"]).index("by_purchase_return", ["purchaseReturnId"]).index("by_product", ["productId"]),
 });
