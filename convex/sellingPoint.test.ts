@@ -317,6 +317,39 @@ describe("Selling Point: Invoice Finder actions", () => {
     expect(history[0].status).toBe("cancelled");
   });
 
+  it("a product can be removed from a bill (its stock returns) and the bill date can be corrected", async () => {
+    const { asEditor, bia, soda, qty, t } = await setup();
+    const created = await asEditor.mutation(api.waiterOrders.submit, {
+      clientKey: "finder-remove-date-1", mode: "send", customerName: "Mteja wa usiku",
+      lines: [{ productId: bia, qty: 2 }, { productId: soda, qty: 1 }],
+    });
+    expect(await qty(bia)).toBe(8);
+    expect(await qty(soda)).toBe(2);
+    const before = await t.run(async (ctx) => ctx.db.get("waiterOrders", created.orderId));
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    await asEditor.mutation(api.waiterOrders.editBillFromFinder, {
+      orderId: created.orderId, customerName: "Mteja wa usiku", billDate: yesterday,
+      lines: [{ productId: bia, qty: 2, unitPrice: 2000 }], // the soda line is removed
+    });
+    const edited = await t.run(async (ctx) => ctx.db.get("waiterOrders", created.orderId));
+    expect(edited?.lines.map((l) => l.productId)).toEqual([bia]);
+    expect(edited?.total).toBe(4000);
+    expect(await qty(soda)).toBe(3); // back on the shelf
+    expect(await qty(bia)).toBe(8);
+    expect(edited?.invoiceNo).toBe(before?.invoiceNo);
+    // The business day changes, the time of day stays.
+    const eat = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString();
+    expect(eat(edited!.createdAt).slice(0, 10)).toBe(yesterday);
+    expect(eat(edited!.createdAt).slice(10)).toBe(eat(before!.createdAt).slice(10));
+    const found = await asEditor.query(api.waiterOrders.searchBillsForFinder, { search: before!.invoiceNo! });
+    expect(found[0].invoiceDate).toBe(yesterday);
+    // Not into the future, not an invalid date, and never an empty bill.
+    const future = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+    await expect(asEditor.mutation(api.waiterOrders.editBillFromFinder, { orderId: created.orderId, customerName: "x", billDate: future, lines: [{ productId: bia, qty: 1, unitPrice: 2000 }] })).rejects.toThrow(/baadaye/);
+    await expect(asEditor.mutation(api.waiterOrders.editBillFromFinder, { orderId: created.orderId, customerName: "x", billDate: "2026-02-31", lines: [{ productId: bia, qty: 1, unitPrice: 2000 }] })).rejects.toThrow(/si sahihi/);
+    await expect(asEditor.mutation(api.waiterOrders.editBillFromFinder, { orderId: created.orderId, customerName: "x", lines: [] })).rejects.toThrow(/angalau bidhaa moja/);
+  });
+
   it("lets Super Admin find and administer another waiter's bill inside the selected business", async () => {
     const { t, asBoss, asWaiter, boss, tenantId, bia } = await setup();
     await t.run(async (ctx) => ctx.db.patch("users", boss, { tenantId }));
@@ -352,5 +385,30 @@ describe("Selling Point: Invoice Finder actions", () => {
     await expect(asEditor.mutation(api.waiterOrders.cancelBillFromFinder, {
       orderId: created.orderId, reason: "Test",
     })).rejects.toThrow(/malipo/i);
+  });
+});
+
+describe("Selling Point: tracked batches and serial numbers", () => {
+  it("deducts FEFO batch quantity and assigns serials, then restores both when the waiter cancels", async () => {
+    const { t, asEditor, tenantId, bia } = await setup();
+    await t.run(async (ctx) => {
+      await ctx.db.patch("products", bia, { trackExpiry: true, trackBatchNumbers: true, trackSerialNumbers: true });
+      const lotId = await ctx.db.insert("stockLots", { tenantId, productId: bia, lotNumber: "LOT-W1", receivedDate: day, expiryDate: "2099-12-31", quantityReceived: 10, quantityRemaining: 10, unitCost: 500, reference: "OPENING-W1", createdBy: (await ctx.db.query("users").collect()).find(u => u.username === "boss")!._id });
+      const waiter = (await ctx.db.query("users").collect()).find(u => u.username === "editor")!;
+      for (let i = 1; i <= 10; i++) await ctx.db.insert("stockSerials", { tenantId, productId: bia, lotId, serialNumber: `W-SN-${i}`, receivedDate: day, status: "in_stock", unitCost: 500, reference: "OPENING-W1", receivedReference: "OPENING-W1", createdBy: waiter._id });
+    });
+    const placed = await asEditor.mutation(api.waiterOrders.submit, { clientKey: "track-waiter-001", mode: "send", lines: [{ productId: bia, qty: 2 }] });
+    await t.run(async (ctx) => {
+      const lot = (await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-W1");
+      expect(lot?.quantityRemaining).toBe(8);
+      expect((await ctx.db.query("stockLotAllocations").withIndex("by_waiter_order", q => q.eq("waiterOrderId", placed.orderId)).collect()).reduce((n, x) => n + x.quantity, 0)).toBe(2);
+      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "sold" && x.reference === String(placed.orderId))).toHaveLength(2);
+    });
+    await asEditor.mutation(api.waiterOrders.cancel, { orderId: placed.orderId });
+    await t.run(async (ctx) => {
+      const lot = (await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-W1");
+      expect(lot?.quantityRemaining).toBe(10);
+      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "in_stock")).toHaveLength(10);
+    });
   });
 });

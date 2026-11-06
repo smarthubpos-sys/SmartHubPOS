@@ -6,6 +6,10 @@ import { assertAutoProducible, autoProduceForSale } from "./autoProduce";
 import type { Doc, Id } from "./_generated/dataModel";
 import { getCompanySettings, isManagerRole, logAudit, normalizeRole, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
 import { resolveWaiterSettings, waiterOrdersAllowedFor } from "./waiterSettings";
+import { assertDate, assertPeriodOpen } from "./ledger";
+
+/** East Africa Time business day of a timestamp (a bill made at 01:00 EAT belongs to that EAT day, like in the reports). */
+const eatDay = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10);
 
 
 // Normalised like everywhere else (case / spaces / hyphens): a role label such as "Waitress " must still be limited to its OWN orders.
@@ -64,9 +68,39 @@ export async function deductStockOnce(
       unitCost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0,
       createdBy: user._id,
     });
+    if (product.trackExpiry || product.trackBatchNumbers) {
+      const lots=(await ctx.db.query("stockLots").withIndex("by_product",q=>q.eq("productId",product._id)).collect())
+        .filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.quantityRemaining>0)
+        .sort((a,b)=>(a.expiryDate??"9999-12-31").localeCompare(b.expiryDate??"9999-12-31")||a.receivedDate.localeCompare(b.receivedDate));
+      const lotQty=lots.reduce((n,x)=>n+x.quantityRemaining,0);
+      if(lotQty+1e-8<qty) throw new ConvexError(`Batch stock haitoshi kwa ${product.name}.`);
+      let left=qty;
+      for(const lot of lots){if(left<=1e-8)break;const used=Math.min(left,lot.quantityRemaining);await ctx.db.patch("stockLots",lot._id,{quantityRemaining:lot.quantityRemaining-used});await ctx.db.insert("stockLotAllocations",{...scope,waiterOrderId:fresh._id,productId:product._id,lotId:lot._id,quantity:used,returnedQuantity:0});left-=used;}
+    }
+    if(product.trackSerialNumbers && !Number.isInteger(qty)) throw new ConvexError(`Bidhaa ${product.name} inafuatilia serial number; oda lazima iwe na idadi kamili.`);
+    if(product.trackSerialNumbers){
+      const serials=(await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",product._id)).collect())
+        .filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.status==="in_stock")
+        .sort((a,b)=>a.receivedDate.localeCompare(b.receivedDate)||a._creationTime-b._creationTime);
+      if(serials.length<qty) throw new ConvexError(`Serial stock haitoshi kwa ${product.name}.`);
+      for(const serial of serials.slice(0,qty)) await ctx.db.patch("stockSerials",serial._id,{status:"sold",soldDate:now.slice(0,10),reference:String(fresh._id)});
+    }
   }
   await ctx.db.patch("waiterOrders", fresh._id, { stockDeducted: true, stockDeductedAt: now, updatedAt: now });
   return true;
+}
+
+async function restoreWaiterLotAllocations(ctx: MutationCtx, orderId: Id<"waiterOrders">) {
+  const allocations=await ctx.db.query("stockLotAllocations").withIndex("by_waiter_order",q=>q.eq("waiterOrderId",orderId)).collect();
+  for(const allocation of allocations){
+    const back=Math.max(0,allocation.quantity-allocation.returnedQuantity);
+    if(back>0){const lot=await ctx.db.get("stockLots",allocation.lotId);if(lot)await ctx.db.patch("stockLots",lot._id,{quantityRemaining:lot.quantityRemaining+back});await ctx.db.patch("stockLotAllocations",allocation._id,{returnedQuantity:allocation.quantity});}
+  }
+  const order=await ctx.db.get("waiterOrders",orderId);
+  for(const productId of [...new Set((order?.lines??[]).map(x=>String(x.productId)))]) {
+    const serials=await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",productId as Id<"products">)).collect();
+    for(const serial of serials.filter(x=>x.reference===String(orderId)&&x.status==="sold")) await ctx.db.patch("stockSerials",serial._id,{status:"in_stock",soldDate:undefined,reference:serial.receivedReference});
+  }
 }
 
 /**
@@ -362,6 +396,7 @@ export const cancel = mutation({
         });
       }
     }
+    if (order.stockDeducted) await restoreWaiterLotAllocations(ctx, order._id);
     await ctx.db.patch("waiterOrders", order._id, { status: "cancelled", stockDeducted: false, cancelledAt: now, cancelledBy: user._id, updatedAt: now });
     await logAudit(ctx, user, { action: "cancel_waiter_order", module: "sales", referenceId: String(order._id), referenceType: "waiterOrder", details: `${order.customerName}; total ${order.total}` });
     return order._id;
@@ -480,7 +515,7 @@ export const searchBillsForFinder = query({
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, 50)
       .map(o => ({
-        _id: o._id, invoiceNo: o.invoiceNo ?? "—", invoiceDate: o.createdAt.slice(0, 10),
+        _id: o._id, invoiceNo: o.invoiceNo ?? "—", invoiceDate: eatDay(o.createdAt),
         customerName: o.customerName, waiterName: o.waiterName, tableNumber: o.tableNumber, notes: o.notes,
         total: o.total, status: o.status, billSentAt: o.billSentAt, billPrintedAt: o.billPrintedAt,
         canPrint: rights.canPrint,
@@ -497,6 +532,7 @@ export const searchBillsForFinder = query({
 export const editBillFromFinder = mutation({
   args: {
     orderId: v.id("waiterOrders"),
+    billDate: v.optional(v.string()), // YYYY-MM-DD: corrects the business day of the bill (bills made after midnight); the time of day is kept
     customerName: v.string(),
     tableNumber: v.optional(v.string()),
     notes: v.optional(v.string()),
@@ -549,6 +585,16 @@ export const editBillFromFinder = mutation({
 
       const now = new Date().toISOString();
       const orderScope = { tenantId: order.tenantId, branchId: order.branchId };
+      // Business day of the bill: may be corrected, but not into the future or into / out of a closed accounting period.
+      const oldDay = eatDay(order.createdAt);
+      const newDay = args.billDate !== undefined && args.billDate !== oldDay ? assertDate(args.billDate, "Tarehe ya bili") : oldDay;
+      const dayChanged = newDay !== oldDay;
+      if (dayChanged) {
+        if (newDay > eatDay(new Date(Date.now() + 24 * 3600000).toISOString())) throw new ConvexError("Tarehe ya bili haiwezi kuwa ya baadaye.");
+        await assertPeriodOpen(ctx, orderScope, newDay);
+        await assertPeriodOpen(ctx, orderScope, oldDay);
+      }
+      const newCreatedAt = dayChanged ? new Date(Date.parse(`${newDay}${new Date(Date.parse(order.createdAt) + 3 * 3600000).toISOString().slice(10)}`) - 3 * 3600000).toISOString() : order.createdAt;
       const refund = await reverseOrderPayments(ctx, user, order, "bili imehaririwa"); // before the stock moves: the cost of goods is read from it
       if (order.stockDeducted) {
         const restore = new Map<string, number>();
@@ -566,6 +612,7 @@ export const editBillFromFinder = mutation({
           });
         }
       }
+      if (order.stockDeducted) await restoreWaiterLotAllocations(ctx, order._id);
       const updated = {
         ...order,
         customerName,
@@ -574,16 +621,19 @@ export const editBillFromFinder = mutation({
         lines,
         total: Math.round(lines.reduce((sum, line) => sum + line.lineTotal, 0) * 100) / 100,
         stockDeducted: false,
+        createdAt: newCreatedAt,
         updatedAt: now,
       };
       await ctx.db.patch("waiterOrders", order._id, {
         customerName: updated.customerName, tableNumber: updated.tableNumber, notes: updated.notes,
-        lines: updated.lines, total: updated.total, stockDeducted: false, billPrintedAt: undefined, updatedAt: now,
+        lines: updated.lines, total: updated.total, stockDeducted: false, billPrintedAt: undefined, createdAt: newCreatedAt, updatedAt: now,
       });
       await deductStockOnce(ctx, updated as Doc<"waiterOrders">, user, orderScope);
+      // The stock history of this bill follows its corrected day.
+      if (dayChanged) for (const m of await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(order._id))).collect()) await ctx.db.patch("stockMovements", m._id, { movementDate: newDay });
       await logAudit(ctx, user, {
         action: "edit_selling_point_bill", module: "sales", referenceId: String(order._id),
-        referenceType: "waiterOrder", details: `${order.invoiceNo ?? order._id}; ${order.total} -> ${updated.total}${refund.refunded > 0 ? `; malipo yaliyorudishwa ${refund.refunded}` : ""}`,
+        referenceType: "waiterOrder", details: `${order.invoiceNo ?? order._id}; ${order.total} -> ${updated.total}${dayChanged ? `; tarehe ${oldDay} -> ${newDay}` : ""}${refund.refunded > 0 ? `; malipo yaliyorudishwa ${refund.refunded}` : ""}`,
       });
       return { orderId: order._id, invoiceNo: order.invoiceNo, total: updated.total, refunded: refund.refunded };
     } catch (e) { throw surfaceError(e); }
@@ -627,6 +677,7 @@ export const cancelBillFromFinder = mutation({
           });
         }
       }
+      if (order.stockDeducted) await restoreWaiterLotAllocations(ctx, order._id);
       await ctx.db.patch("waiterOrders", order._id, {
         status: "cancelled", stockDeducted: false, cancelledAt: now, cancelledBy: user._id, updatedAt: now,
       });

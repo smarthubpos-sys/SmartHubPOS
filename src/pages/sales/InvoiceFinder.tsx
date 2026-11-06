@@ -133,6 +133,7 @@ function SellingPointBillActions({
   const [tableNumber, setTableNumber] = useState(bill.tableNumber ?? "");
   const [notes, setNotes] = useState(bill.notes ?? "");
   const [reason, setReason] = useState("");
+  const [billDate, setBillDate] = useState(bill.invoiceDate);
   const [lines, setLines] = useState(bill.lines.map(line => ({
     productId: line.productId, qty: String(line.qty), unitPrice: String(line.unitPrice),
     discount: String(line.discount ?? 0), productName: line.productName,
@@ -144,11 +145,15 @@ function SellingPointBillActions({
   const locked = false;
   const paidText = tr("Bili hii ina malipo ya {0}. Ukihariri au kufuta, malipo yatarudishwa kwa njia zile zile (cash / bank / simu), mapato na makusanyo ya siku yatarekebishwa. Mrudishie mhudumu pesa yake.", [fmt(bill.paidAmount)]);
   const save = async () => {
+    if (!lines.length) { toast.error(tr("Bili lazima iwe na angalau bidhaa moja. Kama unataka kuiondoa kabisa, tumia Delete / Cancel.")); return; }
+    if (lines.some(line => !(Number(line.qty) > 0))) { toast.error(tr("Quantity lazima iwe zaidi ya sifuri.")); return; }
+    if (!billDate) { toast.error(tr("Chagua tarehe ya bili.")); return; }
     setBusy(true);
     try {
       if (bill.hasPayment && !window.confirm(paidText)) { setBusy(false); return; }
       await editBill({
         undoPayment: bill.hasPayment || undefined,
+        ...(billDate !== bill.invoiceDate ? { billDate } : {}),
         orderId: bill._id, customerName, tableNumber: tableNumber || undefined, notes: notes || undefined,
         lines: lines.map(line => ({
           productId: line.productId, qty: Number(line.qty), unitPrice: Number(line.unitPrice), discount: Number(line.discount || 0),
@@ -180,15 +185,18 @@ function SellingPointBillActions({
           <div className="grid grid-cols-2 gap-2">
             <label className="text-xs">{tr("Mteja")}<Input value={customerName} onChange={e => setCustomerName(e.target.value)} /></label>
             <label className="text-xs">{tr("Meza")}<Input value={tableNumber} onChange={e => setTableNumber(e.target.value)} /></label>
+            <label className="text-xs">{tr("Tarehe ya bili")}<Input type="date" value={billDate} onChange={e => setBillDate(e.target.value)} /></label>
           </div>
+          {billDate !== bill.invoiceDate && <p className="text-xs text-amber-700">{tr("Tarehe ya bili itabadilika kutoka {0} kwenda {1}; mauzo yataonekana kwenye ripoti za tarehe mpya.", [bill.invoiceDate, billDate])}</p>}
           <label className="block text-xs">{tr("Maelezo")}<Input value={notes} onChange={e => setNotes(e.target.value)} /></label>
           {lines.map((line, i) => (
-            <div key={`${line.productId}-${i}`} className="grid grid-cols-4 gap-1 text-xs">
-              <span className="col-span-4 font-medium">{line.productName}</span>
+            <div key={`${line.productId}-${i}`} className="grid grid-cols-5 gap-1 text-xs">
+              <span className="col-span-5 font-medium">{line.productName}</span>
               <label>{tr("Qty")}<Input type="number" min="0.001" step="any" value={line.qty} onChange={e => setLines(prev => prev.map((x,j) => j === i ? { ...x, qty: e.target.value } : x))} /></label>
               <label>{tr("Bei")}<Input type="number" min="0" step="any" value={line.unitPrice} onChange={e => setLines(prev => prev.map((x,j) => j === i ? { ...x, unitPrice: e.target.value } : x))} /></label>
               <label>{tr("Punguzo")}<Input type="number" min="0" step="any" value={line.discount} onChange={e => setLines(prev => prev.map((x,j) => j === i ? { ...x, discount: e.target.value } : x))} /></label>
               <span className="self-center text-right">{fmt(Math.max(0, Number(line.qty) * Number(line.unitPrice) - Number(line.discount)))}</span>
+              <Button type="button" size="sm" variant="ghost" className="self-end" disabled={busy || lines.length <= 1} title={lines.length <= 1 ? tr("Bili lazima ibaki na angalau bidhaa moja.") : undefined} onClick={() => setLines(prev => prev.filter((_, j) => j !== i))}><Trash2 className="mr-1 h-4 w-4" />{tr("Ondoa")}</Button>
             </div>
           ))}
           <div className="flex gap-2">
@@ -277,6 +285,7 @@ function EditForm({ d, onDone, onCancel }: { d: Full; onDone: () => void; onCanc
   const inv = d.invoice;
   const [lines, setLines] = useState<EditLine[]>(() => d.lines.map((l) => ({ productId: String(l.productId), name: l.productName, qty: String(l.qty), price: String(l.unitPrice), discount: String(l.discount) })));
   const [invDiscount, setInvDiscount] = useState(String(inv.discount));
+  const [invoiceDate, setInvoiceDate] = useState(inv.invoiceDate);
   const [taxRate, setTaxRate] = useState(String(d.taxRate));
   const [notes, setNotes] = useState(inv.notes ?? "");
   const [reason, setReason] = useState("");
@@ -293,12 +302,14 @@ function EditForm({ d, onDone, onCancel }: { d: Full; onDone: () => void; onCanc
     if (busy) return;
     if (!lines.length) { toast.error(tr("Invoice lazima iwe na angalau bidhaa moja. Kama unataka kuiondoa kabisa, ifute (Cancel).")); return; }
     if (lines.some((l) => !(num(l.qty) > 0))) { toast.error(tr("Quantity lazima iwe zaidi ya sifuri.")); return; }
+    if (!invoiceDate) { toast.error(tr("Chagua tarehe ya invoice.")); return; }
     if (!reason.trim()) { toast.error(tr("Andika sababu ya kuhariri invoice.")); return; }
     setBusy(true);
     try {
       const m = methodArgs(methods, pickMethodKey(methods, method));
       const r = await editInvoice({
         invoiceId: inv._id, reason: reason.trim(), notes: notes.trim(), discount: num(invDiscount), taxRate: num(taxRate),
+        ...(invoiceDate !== inv.invoiceDate ? { invoiceDate } : {}),
         lines: lines.map((l) => ({ productId: l.productId as Id<"products">, qty: num(l.qty), unitPrice: num(l.price), discount: num(l.discount) })),
         ...(refund > 0 ? { refundMethod: m.method, refundMethodId: m.methodId } : {}),
       });
@@ -320,7 +331,7 @@ function EditForm({ d, onDone, onCancel }: { d: Full; onDone: () => void; onCanc
             <td className="p-2"><Input type="number" min={0} step="any" className="h-9 w-28" value={l.price} onChange={(e) => set(i, { price: e.target.value })} /></td>
             <td className="p-2"><Input type="number" min={0} step="any" className="h-9 w-24" value={l.discount} onChange={(e) => set(i, { discount: e.target.value })} /></td>
             <td className="p-2 tabular-nums">{fmt(Math.max(0, round2(num(l.qty) * num(l.price) - num(l.discount))))}</td>
-            <td className="p-2"><Button type="button" size="sm" variant="ghost" onClick={() => setLines((old) => old.filter((_, idx) => idx !== i))}>{tr("Ondoa")}</Button></td>
+            <td className="p-2"><Button type="button" size="sm" variant="ghost" disabled={lines.length <= 1} title={lines.length <= 1 ? tr("Invoice lazima ibaki na angalau bidhaa moja. Kama unataka kuiondoa kabisa, ifute (Cancel).") : undefined} onClick={() => setLines((old) => old.filter((_, idx) => idx !== i))}>{tr("Ondoa")}</Button></td>
           </tr>
         ))}</tbody>
       </table></div>
@@ -337,7 +348,9 @@ function EditForm({ d, onDone, onCancel }: { d: Full; onDone: () => void; onCanc
         </label>
         <label className="grid gap-1 text-sm">{tr("Discount ya invoice")}<Input type="number" min={0} step="any" className="w-32" value={invDiscount} onChange={(e) => setInvDiscount(e.target.value)} /></label>
         <label className="grid gap-1 text-sm">{tr("Tax %")}<Input type="number" min={0} max={100} step="any" className="w-24" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} /></label>
+        <label className="grid gap-1 text-sm">{tr("Tarehe ya invoice")}<Input type="date" className="w-40" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} /></label>
       </div>
+      {invoiceDate !== inv.invoiceDate && <p className="text-xs text-amber-700">{tr("Tarehe ya invoice itabadilika kutoka {0} kwenda {1}; mauzo, stock na hesabu vitahamia tarehe mpya.", [inv.invoiceDate, invoiceDate])}</p>}
       <label className="grid gap-1 text-sm">{tr("Sababu ya kuhariri")}<Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder={tr("Mfano: mteja alibadilisha idadi")} /></label>
       <label className="grid gap-1 text-sm">{tr("Maelezo")}<Input value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
       <div className="grid gap-1 text-sm sm:max-w-sm">

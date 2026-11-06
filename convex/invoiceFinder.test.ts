@@ -293,6 +293,64 @@ describe("correcting an invoice (edit)", () => {
     expect(await qtyOf(t, product2)).toBe(8);
   });
 
+  it("one of several products can be removed: its stock returns and the others stay", async () => {
+    const { t, as, owner, client, product, product2 } = await setup();
+    const inv = await as(owner).mutation(api.sales.createInvoice, { clientId: client, invoiceDate: DAY, lines: [{ productId: product, qty: 3, unitPrice: 100 }, { productId: product2, qty: 2, unitPrice: 100 }] });
+    expect(await qtyOf(t, product2)).toBe(8);
+    const r = await as(owner).mutation(api.sales.editInvoice, { invoiceId: inv.invoiceId, reason: "Mteja ameacha soda", lines: [{ productId: product, qty: 3, unitPrice: 100 }] });
+    expect(r).toMatchObject({ total: 300, outstanding: 300 });
+    expect(await qtyOf(t, product2)).toBe(10); // the removed product is back on the shelf
+    expect(await qtyOf(t, product)).toBe(7); // the kept one is untouched
+    const lines = await t.run(async (ctx) => await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", inv.invoiceId)).collect());
+    expect(lines.map((l) => l.productId)).toEqual([product]);
+  });
+
+  it("removing a batch-tracked product gives its batch quantity back", async () => {
+    const { t, as, owner, client, tenantA, product, product2 } = await setup();
+    const lotId = await t.run(async (ctx) => {
+      await ctx.db.patch("products", product2, { trackBatchNumbers: true });
+      return await ctx.db.insert("stockLots", { tenantId: tenantA, productId: product2, lotNumber: "L1", receivedDate: DAY, quantityReceived: 10, quantityRemaining: 10, unitCost: 50, createdBy: owner });
+    });
+    const inv = await as(owner).mutation(api.sales.createInvoice, { clientId: client, invoiceDate: DAY, lines: [{ productId: product, qty: 1, unitPrice: 100 }, { productId: product2, qty: 4, unitPrice: 100 }] });
+    expect((await t.run(async (ctx) => await ctx.db.get("stockLots", lotId)))?.quantityRemaining).toBe(6);
+    await as(owner).mutation(api.sales.editInvoice, { invoiceId: inv.invoiceId, reason: "Imeondolewa", lines: [{ productId: product, qty: 1, unitPrice: 100 }] });
+    expect((await t.run(async (ctx) => await ctx.db.get("stockLots", lotId)))?.quantityRemaining).toBe(10);
+  });
+
+  describe("the invoice date can be corrected", () => {
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+    it("moves the sale, its stock movement and its journal to the new day; reports follow", async () => {
+      const { t, as, owner, product, inv } = await sold();
+      const r = await as(owner).mutation(api.sales.editInvoice, { invoiceId: inv.invoiceId, reason: "Mauzo ya usiku wa manane", invoiceDate: yesterday, lines: [{ productId: product, qty: 4, unitPrice: 100 }] });
+      expect(r).toMatchObject({ invoiceNo: "INV-00001", revision: 1, total: 400 });
+      const after = await t.run(async (ctx) => ({
+        inv: await ctx.db.get("invoices", inv.invoiceId),
+        sale: (await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "invoice").eq("referenceId", String(inv.invoiceId))).collect()),
+        journal: (await ctx.db.query("journalEntries").collect()).find((e) => e.reference === "SALE-INV-00001"),
+        firstPayment: (await ctx.db.query("customerPayments").collect()).find((p) => p.notes === "Malipo ya awali ya invoice"),
+      }));
+      expect(after.inv?.invoiceDate).toBe(yesterday);
+      expect(after.sale.every((m) => m.movementDate === yesterday)).toBe(true);
+      expect(after.journal?.entryDate).toBe(yesterday);
+      expect(after.firstPayment?.paymentDate).toBe(yesterday);
+      const old = await as(owner).query(api.sales.salesRegisters, { startDate: yesterday, endDate: yesterday });
+      expect(old.invoices.map((i) => i.invoiceNo)).toContain("INV-00001");
+      const today = await as(owner).query(api.sales.salesRegisters, { startDate: DAY, endDate: DAY });
+      expect(today.invoices.map((i) => i.invoiceNo)).not.toContain("INV-00001");
+    });
+
+    it("keeps the date when it is not changed, and refuses a future or invalid date", async () => {
+      const { as, owner, product, inv } = await sold();
+      const future = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+      await expect(as(owner).mutation(api.sales.editInvoice, { invoiceId: inv.invoiceId, reason: "x", invoiceDate: future, lines: [{ productId: product, qty: 4, unitPrice: 100 }] })).rejects.toThrow(/baadaye/);
+      await expect(as(owner).mutation(api.sales.editInvoice, { invoiceId: inv.invoiceId, reason: "x", invoiceDate: "2026-13-45", lines: [{ productId: product, qty: 4, unitPrice: 100 }] })).rejects.toThrow(/si sahihi/);
+      await as(owner).mutation(api.sales.editInvoice, { invoiceId: inv.invoiceId, reason: "bei tu", invoiceDate: DAY, lines: [{ productId: product, qty: 4, unitPrice: 110 }] });
+      const reg = await as(owner).query(api.sales.salesRegisters, { startDate: DAY, endDate: DAY });
+      expect(reg.invoices.find((i) => i.invoiceNo === "INV-00001")?.total).toBe(440);
+    });
+  });
+
   it("reports show the corrected invoice", async () => {
     const { as, owner, product, inv } = await sold();
     await as(owner).mutation(api.sales.editInvoice, { invoiceId: inv.invoiceId, reason: "Marekebisho", lines: [{ productId: product, qty: 2, unitPrice: 100 }] });

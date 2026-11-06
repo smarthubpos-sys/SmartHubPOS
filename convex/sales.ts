@@ -8,7 +8,7 @@ import { canAccessRecord, isSuperAdmin, filterScoped, isOwnDataOnly, isManagerRo
 import { bumpStats } from "./stats";
 import { autoProduceForSale } from "./autoProduce";
 import { visibleClients } from "./clients";
-import { assertDate, assertFinite, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
+import { assertDate, assertFinite, assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
 import { tzToday } from "./plans";
 
@@ -188,6 +188,33 @@ export const createInvoice = mutation({
       const product = await ctx.db.get("products", line.productId); if (!product) throw new ConvexError("Bidhaa haipatikani."); const balance = product.currentQty - line.qty;
       await ctx.db.patch("products", line.productId, { currentQty: balance });
       await ctx.db.insert("stockMovements", { ...scope, movementDate: args.invoiceDate, productId: line.productId, movementType: "sale", referenceId: String(invoiceId), referenceType: "invoice", qtyIn: 0, qtyOut: line.qty, runningBalance: balance, unitCost: line.cost, clientId: args.clientId, createdBy: user._id });
+      // Keep tracked lot balances in sync with ordinary invoice stock-out (FEFO).
+      const allocatedLotIds = new Set<string>();
+      if (product.trackExpiry || product.trackBatchNumbers) {
+        const lots = (await ctx.db.query("stockLots").withIndex("by_product", (q) => q.eq("productId", line.productId)).collect())
+          .filter((x) => x.tenantId === scope.tenantId && x.branchId === scope.branchId && x.quantityRemaining > 0)
+          .sort((a, b) => (a.expiryDate ?? "9999-12-31").localeCompare(b.expiryDate ?? "9999-12-31") || a.receivedDate.localeCompare(b.receivedDate));
+        const trackedQty = lots.reduce((n, x) => n + x.quantityRemaining, 0);
+        if (trackedQty + 1e-8 < line.qty) throw new ConvexError(`Batch stock haitoshi kwa ${product.name}. Batch zilizorekodiwa: ${trackedQty}, unayouza: ${line.qty}.`);
+        let remaining = line.qty;
+        for (const lot of lots) {
+          if (remaining <= 1e-8) break;
+          const used = Math.min(remaining, lot.quantityRemaining);
+          await ctx.db.patch("stockLots", lot._id, { quantityRemaining: Math.max(0, lot.quantityRemaining - used) });
+          allocatedLotIds.add(String(lot._id));
+          await ctx.db.insert("stockLotAllocations", { ...scope, invoiceId, productId: line.productId, lotId: lot._id, quantity: used, returnedQuantity: 0 });
+          remaining -= used;
+        }
+      }
+      // Serial-tracked items are assigned oldest in-stock serials automatically at invoice posting.
+      if (product.trackSerialNumbers && !Number.isInteger(line.qty)) throw new ConvexError(`Bidhaa ${product.name} inafuatilia serial number; idadi ya mauzo lazima iwe namba kamili.`);
+      if (product.trackSerialNumbers && Number.isInteger(line.qty)) {
+        const serialRows = (await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", line.productId)).collect())
+          .filter((x) => x.tenantId === scope.tenantId && x.branchId === scope.branchId && x.status === "in_stock" && (!(product.trackExpiry || product.trackBatchNumbers) || !allocatedLotIds.size || (!!x.lotId && allocatedLotIds.has(String(x.lotId)))))
+          .sort((a, b) => a.receivedDate.localeCompare(b.receivedDate) || a._creationTime - b._creationTime);
+        if (serialRows.length < line.qty) throw new ConvexError(`Serial stock haitoshi kwa ${product.name}. Serial zilizopo: ${serialRows.length}, unayouza: ${line.qty}.`);
+        for (const serial of serialRows.slice(0, line.qty)) await ctx.db.patch("stockSerials", serial._id, { status: "sold", soldDate: args.invoiceDate, reference: String(invoiceId) });
+      }
     }
     if (paid > 0) await ctx.db.insert("customerPayments", { ...scope, paymentDate: args.invoiceDate, clientId: args.clientId, invoiceId, amount: paid, paymentMethod: initialPay?.method ?? "cash", paymentMethodId: initialPay?.methodId, createdBy: user._id, notes: "Malipo ya awali ya invoice" });
     // Post revenue, receivable/cash, tax and cost of goods sold atomically with invoice and stock.
@@ -334,6 +361,20 @@ export const voidInvoice = mutation({
       const balance = product.currentQty + qty;
       await ctx.db.patch("products", l.productId, { currentQty: balance });
       await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId: l.productId, movementType: "sale_return", referenceId: String(a.invoiceId), referenceType: "invoice_void", qtyIn: qty, qtyOut: 0, runningBalance: balance, unitCost: l.costAtSale, clientId: invoice.clientId, notes: cancellationReason, createdBy: user._id });
+      const serialsToRestore = await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", l.productId)).collect();
+      for (const serial of serialsToRestore.filter((x) => x.reference === String(a.invoiceId) && x.status === "sold").slice(0, Math.floor(qty))) {
+        await ctx.db.patch("stockSerials", serial._id, { status: "in_stock", soldDate: undefined, reference: serial.receivedReference });
+      }
+    }
+
+    const lotAllocations = await ctx.db.query("stockLotAllocations").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
+    for (const allocation of lotAllocations) {
+      const qtyBack = Math.max(0, allocation.quantity - allocation.returnedQuantity);
+      if (qtyBack > 0) {
+        const lot = await ctx.db.get("stockLots", allocation.lotId);
+        if (lot) await ctx.db.patch("stockLots", lot._id, { quantityRemaining: lot.quantityRemaining + qtyBack });
+        await ctx.db.patch("stockLotAllocations", allocation._id, { returnedQuantity: allocation.quantity });
+      }
     }
 
     // 2. Ledger: reverse revenue, tax and cost of goods; clear what was still owed; refund each payment to its own account.
@@ -469,6 +510,21 @@ export const returnItems = mutation({
       const balance = product.currentQty + x.qty;
       await ctx.db.patch("products", x.line.productId, { currentQty: balance });
       await ctx.db.insert("stockMovements", { ...scope, movementDate: returnDate, productId: x.line.productId, movementType: "sale_return", referenceId: String(returnId), referenceType: "sales_return", qtyIn: x.qty, qtyOut: 0, runningBalance: balance, unitCost: x.line.costAtSale, clientId: invoice.clientId, notes: a.reason, createdBy: user._id });
+      let qtyToRestore = x.qty;
+      const allocations = await ctx.db.query("stockLotAllocations").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
+      for (const allocation of allocations.filter((z) => z.productId === x.line.productId && z.returnedQuantity < z.quantity)) {
+        if (qtyToRestore <= 1e-8) break;
+        const available = allocation.quantity - allocation.returnedQuantity;
+        const back = Math.min(available, qtyToRestore);
+        const lot = await ctx.db.get("stockLots", allocation.lotId);
+        if (lot) await ctx.db.patch("stockLots", lot._id, { quantityRemaining: lot.quantityRemaining + back });
+        await ctx.db.patch("stockLotAllocations", allocation._id, { returnedQuantity: allocation.returnedQuantity + back });
+        qtyToRestore -= back;
+      }
+      const returnedSerials = await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", x.line.productId)).collect();
+      for (const serial of returnedSerials.filter((z) => z.reference === String(a.invoiceId) && z.status === "sold").slice(0, Math.floor(x.qty))) {
+        await ctx.db.patch("stockSerials", serial._id, { status: "in_stock", soldDate: undefined, reference: serial.receivedReference });
+      }
     }
 
     // 5. Ledger (rejects a closed period before anything is committed - the whole mutation rolls back).
@@ -848,9 +904,62 @@ export const invoiceFull = query({
  *  - dashboard totals and customer balance follow, and the change is written to the audit trail with the old and new totals.
  * An invoice that already had returns, or that sits in a customer bill, is refused (cancel it or fix the bill first).
  */
+/**
+ * Batch / serial records follow an edited invoice: when a product's quantity goes down (or the product is removed) the batches and serials taken by
+ * this invoice go back on the shelf, newest allocation first. Called by editInvoice only for products whose quantity really changed.
+ */
+async function releaseInvoiceTracking(ctx: MutationCtx, invoiceId: Id<"invoices">, productId: Id<"products">, qty: number) {
+  let left = qty;
+  const allocations = (await ctx.db.query("stockLotAllocations").withIndex("by_invoice", (q) => q.eq("invoiceId", invoiceId)).collect())
+    .filter((x) => x.productId === productId).sort((a, b) => b._creationTime - a._creationTime);
+  for (const allocation of allocations) {
+    if (left <= 1e-8) break;
+    const open = allocation.quantity - allocation.returnedQuantity;
+    if (open <= 1e-8) continue;
+    const back = Math.min(open, left);
+    const lot = await ctx.db.get("stockLots", allocation.lotId);
+    if (lot) await ctx.db.patch("stockLots", lot._id, { quantityRemaining: lot.quantityRemaining + back });
+    await ctx.db.patch("stockLotAllocations", allocation._id, { returnedQuantity: allocation.returnedQuantity + back });
+    left -= back;
+  }
+  const sold = (await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", productId)).collect())
+    .filter((x) => x.reference === String(invoiceId) && x.status === "sold").sort((a, b) => b._creationTime - a._creationTime);
+  for (const serial of sold.slice(0, Math.floor(qty))) await ctx.db.patch("stockSerials", serial._id, { status: "in_stock", soldDate: undefined, reference: serial.receivedReference });
+}
+
+/** The other direction: a bigger quantity on an edited invoice takes more batch stock (FEFO) and serials, exactly like a new sale. */
+async function takeInvoiceTracking(ctx: MutationCtx, scope: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, invoiceId: Id<"invoices">, product: Doc<"products">, qty: number, soldDate: string) {
+  const allocatedLotIds = new Set<string>();
+  if (product.trackExpiry || product.trackBatchNumbers) {
+    const lots = (await ctx.db.query("stockLots").withIndex("by_product", (q) => q.eq("productId", product._id)).collect())
+      .filter((x) => x.tenantId === scope.tenantId && x.branchId === scope.branchId && x.quantityRemaining > 0)
+      .sort((a, b) => (a.expiryDate ?? "9999-12-31").localeCompare(b.expiryDate ?? "9999-12-31") || a.receivedDate.localeCompare(b.receivedDate));
+    const trackedQty = lots.reduce((n, x) => n + x.quantityRemaining, 0);
+    if (trackedQty + 1e-8 < qty) throw new ConvexError(`Batch stock haitoshi kwa ${product.name}. Batch zilizorekodiwa: ${trackedQty}, unayouza: ${qty}.`);
+    let remaining = qty;
+    for (const lot of lots) {
+      if (remaining <= 1e-8) break;
+      const used = Math.min(remaining, lot.quantityRemaining);
+      await ctx.db.patch("stockLots", lot._id, { quantityRemaining: Math.max(0, lot.quantityRemaining - used) });
+      allocatedLotIds.add(String(lot._id));
+      await ctx.db.insert("stockLotAllocations", { ...scope, invoiceId, productId: product._id, lotId: lot._id, quantity: used, returnedQuantity: 0 });
+      remaining -= used;
+    }
+  }
+  if (product.trackSerialNumbers) {
+    if (!Number.isInteger(qty)) throw new ConvexError(`Bidhaa ${product.name} inafuatilia serial number; idadi ya mauzo lazima iwe namba kamili.`);
+    const serialRows = (await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", product._id)).collect())
+      .filter((x) => x.tenantId === scope.tenantId && x.branchId === scope.branchId && x.status === "in_stock" && (!(product.trackExpiry || product.trackBatchNumbers) || !allocatedLotIds.size || (!!x.lotId && allocatedLotIds.has(String(x.lotId)))))
+      .sort((a, b) => a.receivedDate.localeCompare(b.receivedDate) || a._creationTime - b._creationTime);
+    if (serialRows.length < qty) throw new ConvexError(`Serial stock haitoshi kwa ${product.name}. Serial zilizopo: ${serialRows.length}, unayouza: ${qty}.`);
+    for (const serial of serialRows.slice(0, qty)) await ctx.db.patch("stockSerials", serial._id, { status: "sold", soldDate, reference: String(invoiceId) });
+  }
+}
+
 export const editInvoice = mutation({
   args: {
     invoiceId: v.id("invoices"),
+    invoiceDate: v.optional(v.string()), // corrects the sale day (e.g. a sale made after midnight that belongs to the previous business day)
     lines: v.array(lineValidator),
     discount: v.optional(v.number()),
     taxRate: v.optional(v.number()),
@@ -873,6 +982,14 @@ export const editInvoice = mutation({
       const scope = { tenantId: invoice.tenantId, branchId: invoice.branchId };
       const oldLines = await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
       if (oldLines.some((l) => (l.returnedQty ?? 0) > 0)) throw new ConvexError("Invoice hii ina marejesho ya bidhaa. Haiwezi kuhaririwa; tumia marejesho au ibatilishe.");
+      // Sale day: may be corrected, but never into the future and never into / out of a closed accounting period.
+      const newDate = a.invoiceDate !== undefined && a.invoiceDate !== invoice.invoiceDate ? assertDate(a.invoiceDate, "Tarehe ya invoice") : invoice.invoiceDate;
+      const dateChanged = newDate !== invoice.invoiceDate;
+      if (dateChanged) {
+        if (newDate > new Date(Date.now() + 36 * 3600 * 1000).toISOString().slice(0, 10)) throw new ConvexError("Tarehe ya invoice haiwezi kuwa ya baadaye.");
+        await assertPeriodOpen(ctx, scope, newDate);
+        await assertPeriodOpen(ctx, scope, invoice.invoiceDate);
+      }
       const company = await getCompanySettings(ctx, { ...user, branchId: invoice.branchId });
       const allowNegativeStock = !!company?.allowNegativeStock;
 
@@ -940,6 +1057,8 @@ export const editInvoice = mutation({
         const balance = product.currentQty - diff;
         await ctx.db.patch("products", productId, { currentQty: balance });
         const unitCost = oldCost.get(pid) ?? prepared.find((x) => String(x.productId) === pid)?.cost ?? 0;
+        if (diff < 0) await releaseInvoiceTracking(ctx, a.invoiceId, productId, -diff);
+        else await takeInvoiceTracking(ctx, scope, a.invoiceId, product, diff, newDate);
         await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId, movementType: diff > 0 ? "sale" : "sale_return", referenceId: String(a.invoiceId), referenceType: "invoice_edit", qtyIn: diff < 0 ? -diff : 0, qtyOut: diff > 0 ? diff : 0, runningBalance: balance, unitCost, clientId: invoice.clientId, notes: `Marekebisho ${invoice.invoiceNo} #${revision}: ${reason}`, createdBy: user._id });
       }
       for (const l of oldLines) await ctx.db.delete("invoiceLines", l._id);
@@ -967,14 +1086,35 @@ export const editInvoice = mutation({
       if (payout) await ctx.db.insert("customerPayments", { ...scope, paymentDate: today, clientId: invoice.clientId, invoiceId: a.invoiceId, amount: -refund, paymentMethod: payout.method, paymentMethodId: payout.methodId, receiptNo: `EDIT-${revision}`, notes: `Refund - invoice ${invoice.invoiceNo} corrected`, createdBy: user._id });
 
       await ctx.db.patch("invoices", a.invoiceId, {
+        invoiceDate: newDate,
         subtotal, discount, taxAmount, total, amountPaid: newPaid, outstanding: newOutstanding,
         paymentStatus: newOutstanding <= 0 ? "paid" : newPaid > 0 ? "partial" : "unpaid",
         notes: [a.notes !== undefined ? a.notes.trim() : invoice.notes, `Imesahihishwa #${revision} ${today}: ${reason}`].filter(Boolean).join(" | "),
         revision, lastEditedAt: new Date().toISOString(), lastEditedBy: user._id,
       });
-      await bumpStats(ctx, scope, { receivable: money(newOutstanding - invoice.outstanding), date: invoice.invoiceDate, sales: money(total - invoice.total) });
+      if (dateChanged) {
+        // The sale moves to its new day: everything that was counted / dated on the old day follows (sale count, sales, stock movement, journal, first payment, serials).
+        await bumpStats(ctx, scope, { receivable: money(newOutstanding - invoice.outstanding), date: invoice.invoiceDate, sales: -invoice.total, invoices: -1 });
+        await bumpStats(ctx, scope, { date: newDate, sales: total, invoices: 1 });
+        for (const m of await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "invoice").eq("referenceId", String(a.invoiceId))).collect()) await ctx.db.patch("stockMovements", m._id, { movementDate: newDate });
+        for (const e of await ctx.db.query("journalEntries").withIndex("by_tenant_ref", (q) => q.eq("tenantId", invoice.tenantId).eq("reference", `SALE-${invoice.invoiceNo}`)).collect()) {
+          if (e.sourceId === String(a.invoiceId) && e.branchId === invoice.branchId) await ctx.db.patch("journalEntries", e._id, { entryDate: newDate });
+        }
+        for (const p of await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect()) {
+          if (p.voided || p.notes !== "Malipo ya awali ya invoice" || p.paymentDate !== invoice.invoiceDate) continue;
+          await ctx.db.patch("customerPayments", p._id, { paymentDate: newDate });
+          await bumpStats(ctx, scope, { date: invoice.invoiceDate, collected: -p.amount });
+          await bumpStats(ctx, scope, { date: newDate, collected: p.amount });
+        }
+        for (const pid of new Set(oldLines.map((l) => String(l.productId)))) {
+          const sold = (await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", pid as Id<"products">)).collect()).filter((x) => x.reference === String(a.invoiceId) && x.status === "sold");
+          for (const serial of sold) await ctx.db.patch("stockSerials", serial._id, { soldDate: newDate });
+        }
+      } else {
+        await bumpStats(ctx, scope, { receivable: money(newOutstanding - invoice.outstanding), date: invoice.invoiceDate, sales: money(total - invoice.total) });
+      }
       if (refund) await bumpStats(ctx, scope, { date: today, collected: -refund });
-      await ctx.db.insert("auditLogs", { tenantId: invoice.tenantId, userId: user._id, userName: user.name ?? user.email ?? "user", action: "edit_invoice", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `Invoice ${invoice.invoiceNo} corrected (#${revision}); total ${invoice.total} -> ${total}; debt ${invoice.outstanding} -> ${newOutstanding}; refunded ${refund}; ${reason}`, timestamp: new Date().toISOString(), result: "success" });
+      await ctx.db.insert("auditLogs", { tenantId: invoice.tenantId, userId: user._id, userName: user.name ?? user.email ?? "user", action: "edit_invoice", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `Invoice ${invoice.invoiceNo} corrected (#${revision}); total ${invoice.total} -> ${total}; debt ${invoice.outstanding} -> ${newOutstanding}; refunded ${refund};${dateChanged ? ` date ${invoice.invoiceDate} -> ${newDate};` : ""} ${reason}`, timestamp: new Date().toISOString(), result: "success" });
       return { invoiceNo: invoice.invoiceNo, revision, total, amountPaid: newPaid, outstanding: newOutstanding, refunded: refund };
     } catch (e) { throw surfaceError(e); }
   },
