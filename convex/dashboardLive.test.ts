@@ -27,6 +27,14 @@ async function setup(opts: { rollups: boolean }) {
     await pay(7000, eat(0), true); // refunded / voided: not cash received
     await pay(1000, eat(-1));
     await ctx.db.insert("waiterCollections", { tenantId, staffId: boss, staffName: "W", cashierId: boss, cashierName: "Boss", date: eat(0), total: 3000, splits: [], orderIds: [], settledCount: 2, createdAt: now });
+    // Selling Point bills: a sale as soon as the waiter enters it, paid or not.
+    const bill = (invoiceNo: string, total: number, status: string, extra: Record<string, unknown> = {}) =>
+      ctx.db.insert("waiterOrders", { tenantId, invoiceNo, customerName: "Mteja", waiterId: boss, waiterName: "W", status, stockDeducted: true, lines: [], total, createdAt: now, updatedAt: now, ...extra });
+    await bill("SP-1", 3000, "accepted", { settledAt: now, paidAmount: 3000 }); // already paid to the cashier (the 3000 collection above)
+    await bill("SP-2", 4000, "pending"); // sent, the waiter still owes it: STILL a sale today
+    await bill("SP-3", 1500, "printed", { paidAmount: 500 }); // part paid
+    await bill("SP-4", 1111, "cancelled", { cancelledAt: now }); // never a sale
+    await bill("SP-5", 777, "placed"); // draft not sent yet: not a sale
     const buy = (internalRef: string, total: number, status: string) =>
       ctx.db.insert("purchases", { tenantId, purchaseDate: eat(0), supplierId, internalRef, subtotal: total, discount: 0, additionalCharges: 0, taxAmount: 0, total, amountPaid: 0, outstanding: total, paymentStatus: "unpaid", status, createdBy: boss });
     await buy("P-1", 2000, "posted");
@@ -45,15 +53,15 @@ describe("dashboard cards come from the real records, not from drifted roll-ups"
   it("Today's Sales / Cash Received / Purchases are exact even when the roll-up is wrong", async () => {
     const { me } = await setup({ rollups: true });
     const m = await me.query(api.dashboard.getMetrics, { date: eat(0) });
-    expect(m.todaySales).toBe(8000); // 5000 invoice + 3000 received from waiters; the cancelled 9999 is not a sale
-    expect(m.todayCash).toBe(8000); // 5000 payment + 3000 from waiters; the voided 7000 is not cash
+    expect(m.todaySales).toBe(13500); // 5000 invoice + Selling Point bills 3000 (paid) + 4000 (unpaid) + 1500 (part paid); cancelled invoice 9999, cancelled bill 1111 and the unsent draft 777 are not sales
+    expect(m.todayCash).toBe(8000); // cash is still only what was actually received: 5000 payment + 3000 from waiters; the voided 7000 is not cash
     expect(m.todayPurchaseTotal).toBe(2000); // the cancelled purchase is left out
   });
 
   it("still shows today's figures for a business whose roll-ups were never built (it used to show nothing)", async () => {
     const { me } = await setup({ rollups: false });
     const m = await me.query(api.dashboard.getMetrics, { date: eat(0) });
-    expect(m).toMatchObject({ ready: false, todaySales: 8000, todayCash: 8000, todayPurchaseTotal: 2000 });
+    expect(m).toMatchObject({ ready: false, todaySales: 13500, todayCash: 8000, todayPurchaseTotal: 2000 });
   });
 
   it("the graph's newest days agree with the cards", async () => {
@@ -61,9 +69,9 @@ describe("dashboard cards come from the real records, not from drifted roll-ups"
     const c = await me.query(api.dashboard.getCharts, { from: eat(-6), today: eat(0) });
     const today = c.daily.find((d) => d.date === eat(0));
     const yesterday = c.daily.find((d) => d.date === eat(-1));
-    expect(today).toMatchObject({ sales: 8000, collected: 8000, purchases: 2000, invoices: 3 });
+    expect(today).toMatchObject({ sales: 13500, collected: 8000, purchases: 2000, invoices: 4 });
     expect(yesterday).toMatchObject({ sales: 1000, collected: 1000, purchases: 0, invoices: 1 });
     expect(c.daily).toHaveLength(7);
-    expect(c.totals.sales).toBe(9000);
+    expect(c.totals.sales).toBe(14500);
   });
 });

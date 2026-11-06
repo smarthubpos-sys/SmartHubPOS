@@ -286,22 +286,18 @@ export const rebuild = internalMutation({
           if (inv.invoiceDate >= since7) r.d7.set(id, (r.d7.get(id) ?? 0) + l.lineTotal);
         }
       }
-      // Selling Point orders whose money the cashier received count as sales of their products too (same day rule as the daily totals).
-      const collections = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", since90)).order("desc").take(400);
-      for (const c of collections) {
-        const r = (rev[bkey(c.branchId)] ??= { d7: new Map(), d30: new Map(), d90: new Map() });
-        for (const oid of c.orderIds) {
-          const o = await ctx.db.get("waiterOrders", oid);
-          if (!o) continue;
-          const part = c.allocations?.find((x) => x.orderId === oid)?.amount; // partial payment: only the paid share of the order counts
-          const share = part !== undefined && o.total > 0 ? Math.min(1, part / o.total) : 1;
-          for (const l0 of o.lines) {
-            const l = { productId: l0.productId, lineTotal: l0.lineTotal * share };
-            const id = String(l.productId);
-            r.d90.set(id, (r.d90.get(id) ?? 0) + l.lineTotal);
-            if (c.date >= since30) r.d30.set(id, (r.d30.get(id) ?? 0) + l.lineTotal);
-            if (c.date >= since7) r.d7.set(id, (r.d7.get(id) ?? 0) + l.lineTotal);
-          }
+      // Selling Point bills count as sales of their products from the moment the waiter enters them (same day rule as the daily totals).
+      const orders = await ctx.db.query("waiterOrders").withIndex("by_tenant_created", (q) => q.eq("tenantId", tenantId).gte("createdAt", addDays(since90, -1))).order("desc").take(1500);
+      for (const o of orders) {
+        if (o.cancelledAt || !(o.status === "pending" || o.status === "accepted" || o.status === "printed")) continue;
+        const day = new Date(Date.parse(o.createdAt) + 3 * 3600000).toISOString().slice(0, 10); // East Africa Time business day
+        if (day < since90) continue;
+        const r = (rev[bkey(o.branchId)] ??= { d7: new Map(), d30: new Map(), d90: new Map() });
+        for (const l of o.lines) {
+          const id = String(l.productId);
+          r.d90.set(id, (r.d90.get(id) ?? 0) + l.lineTotal);
+          if (day >= since30) r.d30.set(id, (r.d30.get(id) ?? 0) + l.lineTotal);
+          if (day >= since7) r.d7.set(id, (r.d7.get(id) ?? 0) + l.lineTotal);
         }
       }
       const names = new Map<string, string>();

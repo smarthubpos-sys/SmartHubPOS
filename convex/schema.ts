@@ -1026,7 +1026,8 @@ export default defineSchema({
     .index("by_waiter", ["waiterId"])
     .index("by_client_key", ["waiterId", "clientKey"])
     .index("by_tenant_invoice_no", ["tenantId", "invoiceNo"])
-    .index("by_created", ["createdAt"]),
+    .index("by_created", ["createdAt"])
+    .index("by_tenant_created", ["tenantId", "createdAt"]),
 
   // Money a cashier received from a waiter for sent / printed Selling Point orders. Orders are kept; they are only marked settled.
   waiterCollections: defineTable({

@@ -23,6 +23,9 @@ async function scopedStats(ctx: QueryCtx, user: UserLike) {
   return rows;
 }
 
+const eatDay = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10); // East Africa Time business day
+const eatDayStartIso = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 3 * 3600000).toISOString(); // 00:00 EAT of that day, as UTC
+const addOneDay = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
 type DailyFigures = { date: string; sales: number; purchases: number; collected: number; invoices: number };
 async function liveDailyFigures(ctx: QueryCtx, user: UserLike, from: string, to: string): Promise<DailyFigures[]> {
   const tenantId = user.tenantId;
@@ -30,11 +33,13 @@ async function liveDailyFigures(ctx: QueryCtx, user: UserLike, from: string, to:
   const inScope = (row: { branchId?: Id<"branches"> }) =>
     user.branchId ? row.branchId === user.branchId :
       user.departmentsActive === true && user.allDepartments !== true ? row.branchId === undefined : true;
-  const [invoices, purchases, payments, collections] = await Promise.all([
+  const [invoices, purchases, payments, collections, waiterOrders] = await Promise.all([
     ctx.db.query("invoices").withIndex("by_tenant_date", q => q.eq("tenantId", tenantId).gte("invoiceDate", from).lte("invoiceDate", to)).collect(),
     ctx.db.query("purchases").withIndex("by_tenant_date", q => q.eq("tenantId", tenantId).gte("purchaseDate", from).lte("purchaseDate", to)).collect(),
     ctx.db.query("customerPayments").withIndex("by_tenant_date", q => q.eq("tenantId", tenantId).gte("paymentDate", from).lte("paymentDate", to)).collect(),
     ctx.db.query("waiterCollections").withIndex("by_tenant_date", q => q.eq("tenantId", tenantId).gte("date", from).lte("date", to)).collect(),
+    // Selling Point bills are SALES from the moment the waiter enters them (business day in East Africa Time), paid or not.
+    ctx.db.query("waiterOrders").withIndex("by_tenant_created", q => q.eq("tenantId", tenantId).gte("createdAt", eatDayStartIso(from)).lt("createdAt", eatDayStartIso(addOneDay(to)))).collect(),
   ]);
   const map = new Map<string, DailyFigures>();
   const get = (date: string) => {
@@ -47,10 +52,12 @@ async function liveDailyFigures(ctx: QueryCtx, user: UserLike, from: string, to:
   }
   for (const p of purchases) if (p.status === "posted" && inScope(p)) get(p.purchaseDate).purchases += p.total;
   for (const p of payments) if (!p.voided && inScope(p)) get(p.paymentDate).collected += p.amount;
-  for (const c of collections) if (inScope(c)) {
-    const d = get(c.date); d.sales += c.total; d.collected += c.total;
-    d.invoices += c.settledCount ?? c.orderIds.length;
+  // A bill sent/printed by a waiter is a sale today even if the money has not reached the cashier yet; cancelled bills and unsent drafts are not.
+  for (const o of waiterOrders) if (!o.cancelledAt && (o.status === "pending" || o.status === "accepted" || o.status === "printed") && inScope(o)) {
+    const d = get(eatDay(o.createdAt)); d.sales += o.total; d.invoices += 1;
   }
+  // Money the cashier receives from a waiter later is only CASH RECEIVED (it reduces the waiter's debt); the sale was already counted above.
+  for (const c of collections) if (inScope(c)) get(c.date).collected += c.total;
   return [...map.values()].map(d => ({ ...d, sales: round2(d.sales), purchases: round2(d.purchases), collected: round2(d.collected) }));
 }
 
@@ -90,7 +97,7 @@ export const getMetrics = query({
     const inDepartmentScope = <T extends { branchId?: Id<"branches"> }>(r: T) =>
       user.branchId ? r.branchId === user.branchId :
         user.departmentsActive === true && user.allDepartments !== true ? !r.branchId : true;
-    // Selling Point orders sent/printed but not yet paid to the cashier: not sales yet, shown separately so nothing looks missing.
+    // Selling Point bills sent/printed but not yet paid to the cashier: already counted in Today Sales above; this is the money the waiters still owe (it goes down as they pay).
     const open = (await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId)).collect())
       .filter((o) => inDepartmentScope(o) && !o.settledAt && (o.status === "pending" || o.status === "accepted" || o.status === "printed"));
     const posted = <T extends { status?: string; branchId?: Id<"branches"> }>(rows: T[]) =>
