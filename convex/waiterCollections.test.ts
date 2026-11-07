@@ -60,7 +60,7 @@ describe("Selling Point orders reach the cashier, and the cashier receives the m
     const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
     expect((await asCashier.query(api.waiterCollections.receipts, { date: today }))[0]).toMatchObject({ total: 1000, debt: 3000 });
     const report1 = await asBoss.query(api.sales.salesRegisters, {});
-    expect(report1.totals).toMatchObject({ sales: 1000, waiterDebt: 3000, waiterDebtOpen: 3000 });
+    expect(report1.totals).toMatchObject({ sales: 4000, paid: 1000, waiterDebt: 3000, waiterDebtOpen: 3000 }); // a sale is a sale: the whole 4000 counts on the bill's day, paid or not
     // the rest is paid later, never more than owed
     await expect(asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [sent.orderId], splits: [{ method: "cash", amount: 3500 }] })).rejects.toThrow();
     await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [sent.orderId], splits: [{ method: "cash", amount: 3000 }] });

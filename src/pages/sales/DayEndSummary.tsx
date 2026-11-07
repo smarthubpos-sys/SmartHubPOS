@@ -9,7 +9,7 @@ import { tr, trValue } from "@/lib/i18n.ts";
  */
 export default function DayEndSummary({ payments, sales, debt, debtors, waiterDebt }: {
   payments: Array<{ method: string; amount: number }>; sales: number; debt: number;
-  debtors?: Array<{ name: string; amount: number }>; waiterDebt?: number; // Selling Point: debt waiters were left with (information only, those sales are counted when paid)
+  debtors?: Array<{ name: string; amount: number }>; waiterDebt?: number; // Selling Point: debt waiters were left with (information only)
 }) {
   const { methods, received, difference } = dayEndRows(payments, sales, debt);
   const row = (k: string, v: number, strong = false) => <div key={k} className={`flex justify-between gap-6 ${strong ? "border-t pt-1 font-semibold" : ""}`}><span>{k}</span><span className="tabular-nums">{fmt(v)}</span></div>;

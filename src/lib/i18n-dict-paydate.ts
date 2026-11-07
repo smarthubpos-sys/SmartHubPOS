@@ -10,5 +10,6 @@ export const PAYDATE_DICT: Record<string, { sw: string; en: string }> = {
   "Tarehe ya malipo lazima iwe kati ya {0} na {1}.": { sw: "Tarehe ya malipo lazima iwe kati ya {0} na {1}.", en: "The payment date must be between {0} and {1}." },
   "Mauzo yaliyofanyika usiku na kulipwa asubuhi: chagua tarehe ya siku ya mauzo.": { sw: "Mauzo yaliyofanyika usiku na kulipwa asubuhi: chagua tarehe ya siku ya mauzo.", en: "Sales made at night and paid next morning: choose the day of the sale." },
   "Zilizopokelewa tarehe {0}": { sw: "Zilizopokelewa tarehe {0}", en: "Received on {0}" },
+  "Wahudumu (Selling Point)": { sw: "Wahudumu (Selling Point)", en: "Waiters (Selling Point)" },
   "Hakuna fedha zilizopokelewa siku hii.": { sw: "Hakuna fedha zilizopokelewa siku hii.", en: "No money was received on this day." },
 };

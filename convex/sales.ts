@@ -713,13 +713,53 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
       }
     }
 
-    // Selling Point (waiter) sales: the cashier received this money from waiters and the stock left the shelf when the order was sent / printed.
-    // They are not invoices, so they are added here to the report rows and the headline totals (never to client balances or receivables).
+    // Selling Point (waiter) sales. They are not invoices, so they are added here to the report rows and the headline totals
+    // (never to client balances or receivables).
+    //  - SALES: every bill a waiter SENT / printed counts on the day of the bill (East Africa Time), paid or not. A sale is a sale, cash or credit.
+    //  - MONEY: what the cashier received from waiters counts on the day it was received (spByMethod / totals.paid).
     const SP_CLIENT = "selling-point" as unknown as Id<"clients">;
-    let spSales = 0, spCount = 0, spTruncated = false, spDebt = 0, spDebtOpen = 0;
+    let spSales = 0, spCount = 0, spTruncated = false, spDebt = 0, spDebtOpen = 0, spReceived = 0;
     const spMethods = new Map<string, number>(); // money the cashier received from waiters, by payment method (for the day-end check)
     const openSeen = new Set<string>();
+    const eatDayOf = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10);
+    const dayStartIso = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 3 * 3600000).toISOString(); // 00:00 EAT of that day, as UTC
+    const nextDay = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
     if (tenantId) {
+      // 1) The bills sold in the period.
+      const sold = await ctx.db.query("waiterOrders").withIndex("by_tenant_created", (q) => {
+        const b = q.eq("tenantId", tenantId);
+        if (a.startDate && a.endDate) return b.gte("createdAt", dayStartIso(a.startDate)).lt("createdAt", dayStartIso(nextDay(a.endDate)));
+        if (a.startDate) return b.gte("createdAt", dayStartIso(a.startDate));
+        if (a.endDate) return b.lt("createdAt", dayStartIso(nextDay(a.endDate)));
+        return b;
+      }).take(REG_CAP + 1);
+      if (sold.length > REG_CAP) spTruncated = true;
+      for (const o of sold.slice(0, REG_CAP)) {
+        if (o.cancelledAt || !(o.status === "pending" || o.status === "accepted" || o.status === "printed")) continue; // drafts and cancelled bills are not sales
+        if (branchId && o.branchId !== branchId) continue;
+        if (isOwnDataOnly(user) && o.waiterId !== user._id) continue;
+        const paid = money(Math.min(o.total, o.paidAmount ?? (o.settledAt ? o.total : 0)));
+        const left = money(o.total - paid);
+        spSales = money(spSales + o.total); spCount++; spDebt = money(spDebt + left);
+        if (basic) continue;
+        const no = o.invoiceNo ?? `SP-${String(o._id).slice(-6).toUpperCase()}`;
+        const who = o.customerName || "Selling Point";
+        const day = eatDayOf(o.createdAt);
+        invoiceRows.push({ _id: o._id as unknown as Id<"invoices">, invoiceNo: no, date: day, clientId: SP_CLIENT, clientName: who, subtotal: o.total, discount: 0, taxAmount: 0, total: o.total, amountPaid: paid, outstanding: left, paymentStatus: left <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid", staff: o.waiterName, staffCode: "", source: "Selling Point", notes: [o.tableNumber ? `Meza ${o.tableNumber}` : "", left > 0 ? `Deni la mhudumu lililobaki: ${left}` : ""].filter(Boolean).join(" · ") });
+        if (!wantLines) continue;
+        const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
+        for (const l of o.lines) {
+          let mq = 0, mc = 0;
+          for (const m of moves) if (m.productId === l.productId) { mq += m.qtyOut - m.qtyIn; mc += (m.qtyOut - m.qtyIn) * (m.unitCost ?? 0); }
+          const p = await getProduct(l.productId);
+          const unitCost = mq > 1e-8 ? mc / mq : (p?.weightedAvgCost ?? p?.lastPurchaseCost ?? 0);
+          const group = await getGroup(p?.groupId); const unit = await getUnit(p?.unitId); const supplier = await getSupplier(p?.lastSupplierId);
+          const net = money(l.lineTotal); const cost = money(l.qty * unitCost);
+          lines.push({ invoiceId: o._id as unknown as Id<"invoices">, invoiceNo: no, date: day, clientId: SP_CLIENT, clientName: who, staff: o.waiterName, staffCode: (await staffOf(o.waiterId)).code, source: "Selling Point", productId: l.productId, itemCode: p?.itemCode ?? "—", productName: p?.name ?? l.productName, groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: l.qty, unitPrice: l.unitPrice, discount: 0, net, cost, profit: money(net - cost) });
+        }
+      }
+
+      // 2) The money the cashier received in the period (any bill, any day it was sold): payment methods + "received" total.
       const cols = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => {
         const b = q.eq("tenantId", tenantId);
         if (a.startDate && a.endDate) return b.gte("date", a.startDate).lte("date", a.endDate);
@@ -727,11 +767,10 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
         if (a.endDate) return b.lte("date", a.endDate);
         return b;
       }).take(REG_CAP + 1);
-      spTruncated = cols.length > REG_CAP;
+      if (cols.length > REG_CAP) spTruncated = true;
       for (const c of cols.slice(0, REG_CAP)) {
         const inScopeCol = !branchId || c.branchId === branchId;
         if (inScopeCol && !isOwnDataOnly(user)) for (const sp of c.splits) spMethods.set(sp.method, money((spMethods.get(sp.method) ?? 0) + sp.amount));
-        if (inScopeCol && !isOwnDataOnly(user)) spDebt = money(spDebt + (c.shortfall ?? 0)); // debt the waiter was left with at this receipt (shows on that day's report)
         for (const orderId of c.orderIds) {
           const o = await ctx.db.get("waiterOrders", orderId);
           if (!o || o.tenantId !== tenantId) continue;
@@ -739,25 +778,9 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
           if (isOwnDataOnly(user) && o.waiterId !== user._id) continue;
           const part = c.allocations?.find((x) => x.orderId === orderId)?.amount; // partial payment: this receipt paid only a share of the order
           const share = part !== undefined && o.total > 0 ? Math.min(1, part / o.total) : 1;
-          const paidHere = money(o.total * share);
+          spReceived = money(spReceived + o.total * share);
           const left = money(o.total - (o.paidAmount ?? o.total));
           if (left > 0 && !openSeen.has(String(o._id))) { openSeen.add(String(o._id)); spDebtOpen = money(spDebtOpen + left); } // still owed by the waiter today, counted once per order
-          spSales = money(spSales + paidHere); if (share >= 1 || o.settledAt) spCount++;
-          if (basic) continue;
-          const no = o.invoiceNo ?? `SP-${String(o._id).slice(-6).toUpperCase()}`;
-          const who = o.customerName || "Selling Point";
-          invoiceRows.push({ _id: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, subtotal: paidHere, discount: 0, taxAmount: 0, total: paidHere, amountPaid: paidHere, outstanding: 0, paymentStatus: share < 1 || left > 0 ? "partial" : "paid", staff: o.waiterName, staffCode: "", source: "Selling Point", notes: [o.tableNumber ? `Meza ${o.tableNumber}` : "", left > 0 ? `Deni la mhudumu lililobaki: ${left}` : ""].filter(Boolean).join(" · ") });
-          if (!wantLines) continue;
-          const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
-          for (const l of o.lines) {
-            let mq = 0, mc = 0;
-            for (const m of moves) if (m.productId === l.productId) { mq += m.qtyOut - m.qtyIn; mc += (m.qtyOut - m.qtyIn) * (m.unitCost ?? 0); }
-            const p = await getProduct(l.productId);
-            const unitCost = mq > 1e-8 ? mc / mq : (p?.weightedAvgCost ?? p?.lastPurchaseCost ?? 0);
-            const group = await getGroup(p?.groupId); const unit = await getUnit(p?.unitId); const supplier = await getSupplier(p?.lastSupplierId);
-            const net = money(l.lineTotal * share); const cost = money(l.qty * share * unitCost);
-            lines.push({ invoiceId: o._id as unknown as Id<"invoices">, invoiceNo: no, date: c.date, clientId: SP_CLIENT, clientName: who, staff: o.waiterName, staffCode: (await staffOf(o.waiterId)).code, source: "Selling Point", productId: l.productId, itemCode: p?.itemCode ?? "—", productName: p?.name ?? l.productName, groupName: p?.groupId ? group?.name ?? "—" : "—", unit: p?.unitId ? unit?.name ?? "Unit" : "Unit", supplierName: p?.lastSupplierId ? supplier?.name ?? "—" : "—", qty: l.qty * share, unitPrice: l.unitPrice, discount: 0, net, cost, profit: money(net - cost) });
-          }
         }
       }
     }
@@ -795,7 +818,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
       spByMethod: [...spMethods.entries()].map(([method, amount]) => ({ method, amount })),
       openInvoices: openInvoicesRaw.sort((x, y) => x.invoiceDate.localeCompare(y.invoiceDate)).map(i => ({ _id: i._id, invoiceNo: i.invoiceNo, clientId: i.clientId, clientName: clientName.get(String(i.clientId)) ?? "Mteja", total: i.total, outstanding: i.outstanding, date: i.invoiceDate })),
       truncated: truncated || spTruncated,
-      totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0) + spSales), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0) + spSales), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), invoices: invoices.length + spCount, waiterDebt: spDebt, waiterDebtOpen: spDebtOpen },
+      totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0) + spSales), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0) + spReceived), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), invoices: invoices.length + spCount, waiterDebt: spDebt, waiterDebtOpen: spDebtOpen },
     };
 }
 

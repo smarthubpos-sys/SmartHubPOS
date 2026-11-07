@@ -38,11 +38,15 @@ async function nightOrder() {
 }
 
 describe("cashier chooses the day the waiter's money belongs to", () => {
-  it("without a date the money counts today (unchanged behaviour)", async () => {
-    const { asCashier, asBoss, waiter, orderId, today } = await nightOrder();
+  it("without a date the money counts today, while the sale stays on the day it was sold", async () => {
+    const { asCashier, asBoss, waiter, orderId, yesterday, today } = await nightOrder();
     await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [orderId], splits: [{ method: "cash", amount: 4000 }] });
     expect(await asCashier.query(api.waiterCollections.receipts, { date: today })).toHaveLength(1);
-    expect((await asBoss.query(api.sales.salesRegisters, { startDate: today, endDate: today })).totals.sales).toBe(4000);
+    const sold = await asBoss.query(api.sales.salesRegisters, { startDate: yesterday, endDate: yesterday });
+    const rec = await asBoss.query(api.sales.salesRegisters, { startDate: today, endDate: today });
+    expect(sold.totals.sales).toBe(4000); // sold last night
+    expect(rec.totals.sales).toBe(0); // not a sale of today
+    expect(rec.totals.paid).toBe(4000); // but today's money
   });
 
   it("paid next morning but dated to the night of the sale: counts on the sale day, not today", async () => {
@@ -50,8 +54,28 @@ describe("cashier chooses the day the waiter's money belongs to", () => {
     await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [orderId], splits: [{ method: "cash", amount: 4000 }], paymentDate: yesterday });
     expect(await asCashier.query(api.waiterCollections.receipts, { date: yesterday })).toHaveLength(1);
     expect(await asCashier.query(api.waiterCollections.receipts, { date: today })).toHaveLength(0);
-    expect((await asBoss.query(api.sales.salesRegisters, { startDate: yesterday, endDate: yesterday })).totals.sales).toBe(4000);
-    expect((await asBoss.query(api.sales.salesRegisters, { startDate: today, endDate: today })).totals.sales).toBe(0);
+    expect((await asBoss.query(api.sales.salesRegisters, { startDate: yesterday, endDate: yesterday })).totals).toMatchObject({ sales: 4000, paid: 4000 });
+    expect((await asBoss.query(api.sales.salesRegisters, { startDate: today, endDate: today })).totals).toMatchObject({ sales: 0, paid: 0 });
+  });
+
+  it("a bill nobody has paid yet is still a sale of its day: credit or cash, it shows in the report", async () => {
+    const { asBoss, orderId, yesterday, today } = await nightOrder();
+    const day = await asBoss.query(api.sales.salesRegisters, { startDate: yesterday, endDate: yesterday });
+    expect(day.totals).toMatchObject({ sales: 4000, paid: 0, invoices: 1, waiterDebt: 4000 });
+    expect(day.invoices).toHaveLength(1);
+    expect(day.invoices[0]).toMatchObject({ _id: orderId, date: yesterday, total: 4000, amountPaid: 0, outstanding: 4000, paymentStatus: "unpaid", source: "Selling Point" });
+    expect(day.lines.reduce((n, l) => n + l.net, 0)).toBe(4000);
+    expect((await asBoss.query(api.sales.salesRegisters, { startDate: today, endDate: today })).totals).toMatchObject({ sales: 0, invoices: 0 });
+  });
+
+  it("a bill sold at 01:30 at night belongs to that calendar day in East Africa, and a cancelled bill is not a sale", async () => {
+    const { t, asBoss, asWaiter, productId, orderId, today } = await nightOrder();
+    const early = new Date(Date.parse(`${today}T01:30:00Z`) - 3 * 3600000).toISOString(); // 01:30 EAT today (still yesterday in UTC)
+    await t.run(async (ctx) => { await ctx.db.patch("waiterOrders", orderId, { createdAt: early }); });
+    expect((await asBoss.query(api.sales.salesRegisters, { startDate: today, endDate: today })).totals.sales).toBe(4000);
+    const second = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "key-night-0002", mode: "send", lines: [{ productId, qty: 1 }] });
+    await asBoss.mutation(api.waiterOrders.cancelBillFromFinder, { orderId: second.orderId, reason: "Imerudi" }); // the boss cancels an unpaid sent bill (a cashier has no right to void)
+    expect((await asBoss.query(api.sales.salesRegisters, { startDate: today, endDate: today })).totals).toMatchObject({ sales: 4000, invoices: 1 });
   });
 
   it("refuses a future date, a date before the order, and a malformed date; nothing is saved", async () => {
