@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { resolvePaper } from "@/lib/print-policy.ts";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -25,7 +26,7 @@ export default function WaiterDirectory() {
   const payments = useQuery(api.waiterDirectory.invoicePayments, invoiceId ? { invoiceId } : "skip");
   const settings = useQuery(api.maintenance.getSettings, {});
   const width = (settings?.app?.hardware as { paperWidth?: string } | undefined)?.paperWidth;
-  const paper: Paper = width === "a4" ? "A4" : width === "58mm" ? "58mm" : "80mm";
+  const paper: Paper = resolvePaper(width); // same rule as every other receipt (this computer's choice, then the business setting, then 80mm)
   const preset = (days: number) => { setFrom(localDate(-days)); setTo(localDate()); };
 
   return (

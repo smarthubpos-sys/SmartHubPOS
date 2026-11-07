@@ -12,6 +12,7 @@ import PaymentSplit from "@/components/PaymentSplit.tsx";
 import { newSplitLine, splitsTotal, toSplits, type SplitLine } from "@/lib/payment-split.ts";
 import { allocateSettlement } from "@/lib/settlement.ts";
 import BillSheet from "@/components/BillSheet.tsx";
+import { resolvePaper } from "@/lib/print-policy.ts";
 
 const fmt = (n: number) => new Intl.NumberFormat("sw-TZ", { maximumFractionDigits: 2 }).format(n);
 
@@ -26,6 +27,7 @@ export default function StaffSettlement() {
   const [lines, setLines] = useState<SplitLine[]>(() => [newSplitLine(methods)]);
   const [busy, setBusy] = useState(false);
   const [reprint, setReprint] = useState<Id<"invoices"> | null>(null);
+  const settings = useQuery(api.maintenance.getSettings, {});
   const data = useQuery(api.waiterDirectory.byStaffCode, code.trim() && from <= to ? { code, from, to } : "skip");
 
   const open = (data?.invoices ?? []).filter((i) => i.outstanding > 0).sort((a, b) => a.date.localeCompare(b.date) || a.invoiceNo.localeCompare(b.invoiceNo));
@@ -72,7 +74,7 @@ export default function StaffSettlement() {
               <td className="p-2"><button type="button" className="text-xs underline" onClick={() => setReprint(i._id)}>{tr("Chapisha tena")}</button></td>
             </tr>))}</tbody></table></div>
         {reprint && <div className="rounded-lg border p-3"><p className="mb-2 text-xs text-muted-foreground">{tr("Kuchapisha tena hakutengenezi mauzo, malipo wala kupunguza stock.")}</p>
-          <BillSheet kind="invoice" key={reprint} invoiceIds={[reprint]} paper="80mm" whatsappEnabled={false} setWhatsappEnabled={() => undefined} /></div>}
+          <BillSheet kind="invoice" key={reprint} invoiceIds={[reprint]} paper={resolvePaper((settings?.app?.hardware as { paperWidth?: string } | undefined)?.paperWidth)} whatsappEnabled={false} setWhatsappEnabled={() => undefined} /></div>}
         {open.length > 0 && <div className="space-y-2 rounded-xl border p-3">
           <h3 className="font-semibold">{tr("Weka malipo (settlement)")}</h3>
           <p className="text-sm">{tr("Deni la zilizochaguliwa")}: <strong>{fmt(due)}</strong> · {tr("Unalipa")}: <strong>{fmt(paying)}</strong> · {tr("Litakalobaki")}: <strong>{fmt(Math.max(0, due - paying))}</strong></p>

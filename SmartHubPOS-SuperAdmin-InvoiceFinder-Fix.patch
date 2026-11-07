@@ -1,0 +1,49 @@
+--- a/convex/waiterOrders.ts
++++ b/convex/waiterOrders.ts
+@@ -436,12 +436,12 @@
+ });
+ 
+ /**
+- * Who may see an order on the Bills screen. Every person keeps HIS OWN bills (orders he made himself). A waiter's orders reach the
+- * cashier's Bills screen only after the waiter generated his bill and pressed "Send to cashier" (`billSentAt`). Super Admin never gets
+- * other people's bills.
++ * Invoice Finder is an archive, not the cashier's live queue. Waiters see their own bills;
++ * cashiers see bills sent to them; Super Admin can audit bills across the selected business.
++ * This does not add Super Admin to the cashier receive/settlement workflow.
+  */
+ const billVisible = (user: { _id: Id<"users">; role?: string }, o: Doc<"waiterOrders">) =>
+-  o.waiterId === user._id || (!isWaiter(user.role) && !isSuper(user.role) && !!o.billSentAt);
++  o.waiterId === user._id || (isSuper(user.role) || (!isWaiter(user.role) && !!o.billSentAt));
+ 
+ /** Search archived Selling Point bills from the existing Invoice Finder. No default history listing. */
+ export const searchBillsForFinder = query({
+--- a/convex/sellingPoint.test.ts
++++ b/convex/sellingPoint.test.ts
+@@ -317,6 +317,27 @@
+     expect(history[0].status).toBe("cancelled");
+   });
+ 
++  it("lets Super Admin find and administer another waiter's bill inside the selected business", async () => {
++    const { t, asBoss, asWaiter, boss, tenantId, bia } = await setup();
++    await t.run(async (ctx) => ctx.db.patch("users", boss, { tenantId }));
++    const created = await asWaiter.mutation(api.waiterOrders.submit, {
++      clientKey: "superadmin-finder-12345", mode: "print", customerName: "Mteja wa Juma",
++      lines: [{ productId: bia, qty: 1 }],
++    });
++    const before = await t.run(async (ctx) => ctx.db.get("waiterOrders", created.orderId));
++    const found = await asBoss.query(api.waiterOrders.searchBillsForFinder, { search: before!.invoiceNo! });
++    expect(found).toHaveLength(1);
++    expect(found[0].canEdit).toBe(true);
++    expect(found[0].canVoid).toBe(true);
++    await asBoss.mutation(api.waiterOrders.editBillFromFinder, {
++      orderId: created.orderId, customerName: "Mteja aliyerekebishwa",
++      lines: [{ productId: bia, qty: 1, unitPrice: 2500 }],
++    });
++    const edited = await t.run(async (ctx) => ctx.db.get("waiterOrders", created.orderId));
++    expect(edited?.customerName).toBe("Mteja aliyerekebishwa");
++    expect(edited?.invoiceNo).toBe(before?.invoiceNo);
++  });
++
+   it("refuses to edit or cancel a bill after cashier settlement", async () => {
+     const { asEditor, bia, t } = await setup();
+     const created = await asEditor.mutation(api.waiterOrders.submit, {

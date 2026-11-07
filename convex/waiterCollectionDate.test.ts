@@ -38,15 +38,23 @@ async function nightOrder() {
 }
 
 describe("cashier chooses the day the waiter's money belongs to", () => {
-  it("without a date the money counts today, while the sale stays on the day it was sold", async () => {
+  it("without a date the money goes to the day the goods were sold, not the day the cashier receives it", async () => {
     const { asCashier, asBoss, waiter, orderId, yesterday, today } = await nightOrder();
     await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [orderId], splits: [{ method: "cash", amount: 4000 }] });
-    expect(await asCashier.query(api.waiterCollections.receipts, { date: today })).toHaveLength(1);
+    expect(await asCashier.query(api.waiterCollections.receipts, { date: yesterday })).toHaveLength(1);
+    expect(await asCashier.query(api.waiterCollections.receipts, { date: today })).toHaveLength(0);
+    expect((await asBoss.query(api.sales.salesRegisters, { startDate: yesterday, endDate: yesterday })).totals).toMatchObject({ sales: 4000, paid: 4000 });
+    expect((await asBoss.query(api.sales.salesRegisters, { startDate: today, endDate: today })).totals).toMatchObject({ sales: 0, paid: 0 });
+  });
+
+  it("the cashier may choose today on purpose: the sale stays on its day, the money is today's", async () => {
+    const { asCashier, asBoss, waiter, orderId, yesterday, today } = await nightOrder();
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [orderId], splits: [{ method: "cash", amount: 4000 }], paymentDate: today });
     const sold = await asBoss.query(api.sales.salesRegisters, { startDate: yesterday, endDate: yesterday });
     const rec = await asBoss.query(api.sales.salesRegisters, { startDate: today, endDate: today });
-    expect(sold.totals.sales).toBe(4000); // sold last night
-    expect(rec.totals.sales).toBe(0); // not a sale of today
-    expect(rec.totals.paid).toBe(4000); // but today's money
+    expect(sold.totals.sales).toBe(4000);
+    expect(rec.totals.sales).toBe(0);
+    expect(rec.totals.paid).toBe(4000);
   });
 
   it("paid next morning but dated to the night of the sale: counts on the sale day, not today", async () => {

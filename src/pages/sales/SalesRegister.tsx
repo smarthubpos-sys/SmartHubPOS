@@ -102,8 +102,8 @@ export default function SalesRegister() {
 
   switch (path) {
     case "clients/list":
-      rows = clients.map((c) => ({ Code: c.code, Jina: c.name, Simu: c.phone || "—", "Contact": c.contactPerson || "—", "Credit Policy": trValue(c.creditPolicy), Hali: c.isActive ? tr("Active") : tr("Imezimwa"), Balance: balances.find((b) => b.clientId === c._id)?.closing ?? 0 }));
-      sumCols = [tr("Balance")]; note = tr("Balance = deni la mwanzo + invoices − malipo, hadi tarehe ya “Mpaka”."); break;
+      rows = clients.map((c) => ({ Code: c.code, Jina: c.name, Simu: c.phone || "—", "Contact": c.contactPerson || "—", "Credit Policy": trValue(c.creditPolicy), Hali: c.isActive ? tr("Active") : tr("Imezimwa"), "Amelipa (kipindi)": round2(payments.filter((p) => p.clientId === c._id).reduce((n, p) => n + p.amount, 0)), Balance: balances.find((b) => b.clientId === c._id)?.closing ?? 0 }));
+      sumCols = [tr("Amelipa (kipindi)"), tr("Balance")]; note = tr("Amelipa = malipo na marejesho aliyolipa kwenye kipindi kilichochaguliwa. Balance = anachodaiwa: deni la mwanzo + invoices − malipo, hadi tarehe ya “Mpaka”."); break;
     case "reports/invoices":
       rows = invoices.map((x) => ({ Invoice: x.invoiceNo, Tarehe: x.date, Mteja: x.clientName, Staff: x.staff, Jumla: x.total, Imelipwa: x.amountPaid, Deni: x.outstanding, Hali: x.paymentStatus }));
       sumCols = [tr("Jumla"), tr("Imelipwa"), tr("Deni")]; break;

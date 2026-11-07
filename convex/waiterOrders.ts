@@ -118,7 +118,7 @@ const orderInScope = (user: { role?: string }, scope: ScopeLike, o: { tenantId?:
 
 
 /** Allocate Selling Point numbers from the same tenant-wide sequence used by Sales > Invoicing. */
-async function allocateSellingPointInvoiceNo(ctx: MutationCtx, user: Doc<"users">, tenantId: Id<"tenants">) {
+export async function allocateSellingPointInvoiceNo(ctx: MutationCtx, user: Doc<"users">, tenantId: Id<"tenants">) {
   const company = await getCompanySettings(ctx, user);
   const prefix = company?.invoicePrefix ?? "INV-";
   const seqRows = await ctx.db.query("salesSequences").withIndex("by_scope", q => q.eq("tenantId", tenantId)).collect();
@@ -374,6 +374,7 @@ export const cancel = mutation({
     if (order.status === "cancelled") return order._id;
     if (order.settledAt) throw new ConvexError("Oda hii tayari imelipwa kwa cashier; haiwezi kufutwa (mauzo na fedha vimeshahesabiwa).");
     if ((order.paidAmount ?? 0) > 0) throw new ConvexError("Oda hii imeshalipiwa kiasi kwa cashier; haiwezi kufutwa. Maliza deni lililobaki.");
+    if (order.assignedInvoiceId) throw new ConvexError("Bili hii imeelekezwa kwa mteja kama deni; haiwezi kufutwa. Ghairi deni la mteja kwanza.");
     const now = new Date().toISOString();
     if (order.stockDeducted) {
       for (const line of order.lines) {
@@ -654,6 +655,7 @@ export const cancelBillFromFinder = mutation({
         throw new ConvexError("Bili haipatikani kwenye biashara au tawi lako.");
       }
       if (order.status === "cancelled") return order._id;
+      if (order.assignedInvoiceId) throw new ConvexError("Bili hii imeelekezwa kwa mteja kama deni; haiwezi kubatilishwa. Ghairi deni la mteja kwanza.");
       if (orderHasPayment(order) && !args.refundPayment) {
         throw new ConvexError("Bili hii ina malipo yaliyopokelewa. Thibitisha kurudisha malipo kabla ya kuifuta.");
       }

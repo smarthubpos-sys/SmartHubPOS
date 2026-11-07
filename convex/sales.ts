@@ -6,6 +6,7 @@ import type { QueryCtx } from "./_generated/server";
 import type { UserLike } from "./access";
 import { canAccessRecord, isSuperAdmin, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope, getCompanySettings, logAudit } from "./access";
 import { bumpStats } from "./stats";
+import { waiterOwes } from "./waiterMath";
 import { autoProduceForSale } from "./autoProduce";
 import { visibleClients } from "./clients";
 import { assertDate, assertFinite, assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
@@ -561,17 +562,21 @@ export const returnItems = mutation({
  */
 type PaymentArgs = { invoiceId: Id<"invoices">; amount?: number; paymentMethod?: string; splits?: Infer<typeof splitValidator>[]; paymentDate: string; reference?: string; notes?: string };
 /** The ONE place a customer payment is validated and recorded (payments, journal, invoice balance, stats). Used by recordPayment and settleInvoices. */
-export async function applyCustomerPayment(ctx: MutationCtx, args: PaymentArgs) {
+export async function applyCustomerPayment(ctx: MutationCtx, args: PaymentArgs, opts: { tenantWide?: boolean } = {}) {
   const user = await requireActiveUser(ctx, "sales");
   assertDate(args.paymentDate, "Tarehe ya malipo");
   const role = normalizeRole(user.role);
   if (role !== "cashier" && !(await isManagerRole(ctx, user))) throw new ConvexError("Forbidden: cashier permission required to receive customer payments");
-  const scope = await resolveWriteScope(ctx, user); const invoice = await ctx.db.get("invoices", args.invoiceId);
-  if (!canAccessRecord(user, invoice) || !invoice || invoice.status !== "posted") throw new ConvexError("Invoice haipatikani au haijapostiwa.");
+  const invoice = await ctx.db.get("invoices", args.invoiceId);
+  // `tenantWide` (repayments book): a cashier who works for the WHOLE business may take money for any department of his own business; a user tied to one department still only his own.
+  const reach = (rec: Parameters<typeof canAccessRecord>[1]) => opts.tenantWide ? !!rec && !!user.tenantId && rec.tenantId === user.tenantId && (!user.branchId || rec.branchId === user.branchId) : canAccessRecord(user, rec);
+  if (!reach(invoice) || !invoice || invoice.status !== "posted") throw new ConvexError("Invoice haipatikani au haijapostiwa.");
+  // The money belongs to the department of the INVOICE being paid (a cashier who works for the whole business need not pick a department first).
+  const own = await resolveWriteScope(ctx, user, { tenantWide: true }); const scope = { tenantId: own.tenantId, branchId: invoice.branchId };
   if (isOwnDataOnly(user) && invoice.createdBy !== user._id) throw new ConvexError("Invoice haipatikani au haijapostiwa.");
   const { splits, total: amount } = await normaliseSplits(ctx, user, args.splits ?? [{ method: args.paymentMethod ?? "cash", amount: args.amount ?? NaN, reference: args.reference }]);
   if (amount <= 0 || amount > invoice.outstanding + 1e-8) throw new ConvexError("Malipo lazima yawe zaidi ya sifuri na yasizidi deni.");
-  const client = await ctx.db.get("clients", invoice.clientId); if (!(isSuperAdmin(user) ? sameBusiness(user, client) : canAccessRecord(user, client))) throw new ConvexError("Mteja hayupo kwenye branch yako.");
+  const client = await ctx.db.get("clients", invoice.clientId); if (!(isSuperAdmin(user) ? sameBusiness(user, client) : reach(client))) throw new ConvexError("Mteja hayupo kwenye branch yako.");
   const refs = splits.map((s) => s.reference).filter((r): r is string => !!r);
   if (new Set(refs).size !== refs.length) throw new ConvexError("Reference moja imetumika mara mbili kwenye risiti hii.");
   if (refs.length) { const prior = await ctx.db.query("customerPayments").withIndex("by_client", q => q.eq("clientId", invoice.clientId)).collect(); if (prior.some(p => p.reference && refs.includes(p.reference) && p.tenantId === scope.tenantId && p.branchId === scope.branchId)) throw new ConvexError("Reference ya malipo imeshatumika; ombi linalofanana limezuiwa."); }
@@ -738,14 +743,16 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
         if (o.cancelledAt || !(o.status === "pending" || o.status === "accepted" || o.status === "printed")) continue; // drafts and cancelled bills are not sales
         if (branchId && o.branchId !== branchId) continue;
         if (isOwnDataOnly(user) && o.waiterId !== user._id) continue;
-        const paid = money(Math.min(o.total, o.paidAmount ?? (o.settledAt ? o.total : 0)));
-        const left = money(o.total - paid);
-        spSales = money(spSales + o.total); spCount++; spDebt = money(spDebt + left);
+        // The part the cashier moved to a registered customer is that customer's invoice (counted with the invoices), so it is not counted twice here.
+        const sale = money(o.total - (o.assignedAmount ?? 0));
+        const paid = money(Math.min(sale, o.paidAmount ?? (o.settledAt && !o.assignedAmount ? o.total : 0)));
+        const left = money(sale - paid);
+        if (sale > 0) { spSales = money(spSales + sale); spCount++; spDebt = money(spDebt + left); }
         if (basic) continue;
         const no = o.invoiceNo ?? `SP-${String(o._id).slice(-6).toUpperCase()}`;
         const who = o.customerName || "Selling Point";
         const day = eatDayOf(o.createdAt);
-        invoiceRows.push({ _id: o._id as unknown as Id<"invoices">, invoiceNo: no, date: day, clientId: SP_CLIENT, clientName: who, subtotal: o.total, discount: 0, taxAmount: 0, total: o.total, amountPaid: paid, outstanding: left, paymentStatus: left <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid", staff: o.waiterName, staffCode: "", source: "Selling Point", notes: [o.tableNumber ? `Meza ${o.tableNumber}` : "", left > 0 ? `Deni la mhudumu lililobaki: ${left}` : ""].filter(Boolean).join(" · ") });
+        if (sale > 0) invoiceRows.push({ _id: o._id as unknown as Id<"invoices">, invoiceNo: no, date: day, clientId: SP_CLIENT, clientName: who, subtotal: sale, discount: 0, taxAmount: 0, total: sale, amountPaid: paid, outstanding: left, paymentStatus: left <= 0 ? "paid" : paid > 0 ? "partial" : "unpaid", staff: o.waiterName, staffCode: "", source: "Selling Point", notes: [o.tableNumber ? `Meza ${o.tableNumber}` : "", left > 0 ? `Deni la mhudumu lililobaki: ${left}` : ""].filter(Boolean).join(" · ") });
         if (!wantLines) continue;
         const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
         for (const l of o.lines) {
@@ -779,7 +786,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
           const part = c.allocations?.find((x) => x.orderId === orderId)?.amount; // partial payment: this receipt paid only a share of the order
           const share = part !== undefined && o.total > 0 ? Math.min(1, part / o.total) : 1;
           spReceived = money(spReceived + o.total * share);
-          const left = money(o.total - (o.paidAmount ?? o.total));
+          const left = o.paidAmount === undefined ? 0 : waiterOwes(o); // what the waiter still owes (not what a customer owes)
           if (left > 0 && !openSeen.has(String(o._id))) { openSeen.add(String(o._id)); spDebtOpen = money(spDebtOpen + left); } // still owed by the waiter today, counted once per order
         }
       }

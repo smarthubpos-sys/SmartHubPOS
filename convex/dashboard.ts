@@ -5,6 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { requireActiveUser, isOwnDataOnly, isManagerRole, roleHasPermission, getCompanySettings, filterScoped } from "./access";
 import type { UserLike } from "./access";
 import { daysBetween } from "./plans";
+import { waiterOwes } from "./waiterMath";
 
 /**
  * The main dashboard reads only small pre-computed roll-ups (see stats.ts) plus the 5 latest documents,
@@ -115,7 +116,7 @@ export const getMetrics = query({
       recentInvoices: posted(recentInvoices),
       recentPurchases: posted(recentPurchases),
       totalProducts: sum(totals, "productCount"),
-      waiterOwing: round2(open.reduce((s, o) => s + Math.max(0, o.total - (o.paidAmount ?? 0)), 0)),
+      waiterOwing: round2(open.reduce((s, o) => s + waiterOwes(o), 0)),
       waiterOwingOrders: open.length,
     };
   },

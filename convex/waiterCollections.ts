@@ -8,6 +8,7 @@ import { assertDate, assertPeriodOpen, getSystemAccount, methodAccount, postSyst
 import { surfaceError } from "./surfaceError";
 import { deductStockOnce } from "./waiterOrders";
 import { waiterOrdersAllowedFor } from "./waiterSettings";
+import { waiterOwes } from "./waiterMath";
 
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const isWaiter = (role?: string) => ["waiter", "waitress"].includes(normalizeRole(role));
@@ -15,7 +16,7 @@ const eatDay = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOStr
 /** Orders whose money the cashier can still receive: sent / received / printed, not cancelled, not yet settled. */
 const collectable = (o: Doc<"waiterOrders">) => !o.settledAt && (o.status === "pending" || o.status === "accepted" || o.status === "printed");
 /** What the waiter still owes for an order (a partly paid order owes less than its total). */
-const remainingOf = (o: Doc<"waiterOrders">) => Math.max(0, r2(o.total - (o.paidAmount ?? 0)));
+const remainingOf = (o: Doc<"waiterOrders">) => waiterOwes(o); // total - received - the part moved to a customer
 
 async function cashierScope(ctx: Parameters<typeof requirePermission>[0]) {
   const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
@@ -113,7 +114,7 @@ export const owing = query({
  * The amount can never be zero or more than what is due. Orders are never deleted.
  */
 export const collect = mutation({
-  args: { staffId: v.id("users"), orderIds: v.array(v.id("waiterOrders")), splits: v.array(splitValidator), paymentDate: v.optional(v.string()) }, // paymentDate = business day the money belongs to (default: today, East Africa Time)
+  args: { staffId: v.id("users"), orderIds: v.array(v.id("waiterOrders")), splits: v.array(splitValidator), paymentDate: v.optional(v.string()) }, // paymentDate = business day the money belongs to (default: the day the bills were sold, East Africa Time)
   handler: async (ctx, args) => {
     try {
       const { user, tenantId, branchId } = await cashierScope(ctx);
@@ -145,11 +146,14 @@ export const collect = mutation({
       const staffName = staff?.name ?? staff?.username ?? orders[0].waiterName;
       const now = new Date().toISOString();
       const today = eatDay(now);
-      // Sales made at night may be paid the next morning: the cashier can choose the day the money belongs to.
-      // It can never be in the future, and never before the day of the oldest order being paid. `createdAt` keeps the real moment it was recorded.
-      const date = args.paymentDate === undefined ? today : assertDate(args.paymentDate, "Tarehe ya malipo");
+      // Money belongs to the day the goods were SOLD, even when the cashier receives it later (sold last night, paid this morning).
+      // Without a date, the bills' own day is used; the cashier may choose another day on purpose. It can never be in the future, and never
+      // before the day of the oldest bill being paid. `createdAt` keeps the real moment it was recorded.
+      const orderDays = [...new Set(orders.map((o) => eatDay(o.createdAt)))].sort();
+      const oldestDay = orderDays[0];
+      if (args.paymentDate === undefined && orderDays.length > 1) throw new ConvexError(`Oda ni za siku tofauti (${orderDays.join(", ")}). Pokea siku moja moja, au chagua tarehe ya malipo mwenyewe.`);
+      const date = args.paymentDate === undefined ? oldestDay : assertDate(args.paymentDate, "Tarehe ya malipo");
       if (date > today) throw new ConvexError("Tarehe ya malipo haiwezi kuwa ya baadaye.");
-      const oldestDay = eatDay(orders[0].createdAt);
       if (date < oldestDay) throw new ConvexError(`Tarehe ya malipo haiwezi kuwa kabla ya tarehe ya oda (${oldestDay}).`);
       const collectionId = await ctx.db.insert("waiterCollections", {
         tenantId, branchId, staffId: args.staffId, staffName,

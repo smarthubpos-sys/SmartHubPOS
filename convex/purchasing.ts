@@ -15,8 +15,16 @@ export async function assertSupplierInvoiceFree(ctx: QueryCtx, supplierId: Id<"s
   if (clash) throw new ConvexError(`Namba ya invoice ya supplier "${no!.trim()}" tayari imetumika (Purchase ${clash.invoiceNo ?? clash.internalRef}). Usiingize invoice moja mara mbili.`);
 }
 export const listPurchases = query({args:{},handler:async(ctx)=>{const u=await requirePermission(ctx, "purchasing.view", "purchasing");return (await scopedRows(ctx, u, "purchases")).sort((a,b)=>b.purchaseDate.localeCompare(a.purchaseDate));}});
-export const receivePurchase = mutation({args:{supplierId:v.optional(v.id("suppliers")),purchaseDate:v.string(),supplierInvoiceNo:v.optional(v.string()),paymentAmount:v.optional(v.number()),paymentMethod:v.optional(v.string()),splits:v.optional(v.array(splitValidator)),notes:v.optional(v.string()),lines:v.array(v.object({productId:v.id("products"),qty:v.number(),unitCost:v.number(),lotNumber:v.optional(v.string()),expiryDate:v.optional(v.string()),serialNumbers:v.optional(v.array(v.string()))}))},handler:async(ctx,a)=>{
+export const receivePurchase = mutation({args:{supplierId:v.optional(v.id("suppliers")),purchaseOrderId:v.optional(v.id("purchaseOrders")),purchaseDate:v.string(),supplierInvoiceNo:v.optional(v.string()),paymentAmount:v.optional(v.number()),paymentMethod:v.optional(v.string()),splits:v.optional(v.array(splitValidator)),notes:v.optional(v.string()),lines:v.array(v.object({productId:v.id("products"),qty:v.number(),unitCost:v.number(),lotNumber:v.optional(v.string()),expiryDate:v.optional(v.string()),serialNumbers:v.optional(v.array(v.string()))}))},handler:async(ctx,a)=>{
  const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"),scope=await resolveWriteScope(ctx, u); if(!a.lines.length)throw new ConvexError("Ongeza angalau bidhaa moja."); assertDate(a.purchaseDate,"Tarehe ya purchase"); assertFinite(a.paymentAmount,"Malipo"); let supplierId = a.supplierId;
+ // Received against a Purchase Order: the order must be approved (or part-received) and its supplier is the supplier of this purchase.
+ const po = a.purchaseOrderId ? await ctx.db.get("purchaseOrders", a.purchaseOrderId) : null;
+ if (a.purchaseOrderId) {
+   if (!po || !canAccessRecord(u, po)) throw new ConvexError("Purchase Order haipatikani.");
+   if (!["approved", "partially_received"].includes(po.status)) throw new ConvexError("Purchase Order lazima iwe approved kabla ya kupokea bidhaa.");
+   if (supplierId && supplierId !== po.supplierId) throw new ConvexError("Supplier hailingani na Purchase Order.");
+   supplierId = po.supplierId;
+ }
  if (supplierId) { const supplier=await ctx.db.get("suppliers", supplierId); if(!canAccessBusinessRecord(u,supplier))throw new ConvexError("Supplier hayupo kwenye branch yako."); }
  else {
    const existing=(await ctx.db.query("suppliers").withIndex("by_scope",q=>q.eq("tenantId",scope.tenantId).eq("branchId",scope.branchId)).collect()).find(x=>x.code==="CASH-NO-SUPPLIER");
@@ -29,13 +37,19 @@ export const receivePurchase = mutation({args:{supplierId:v.optional(v.id("suppl
  const sequence=sequenceRows.find(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId); const invoiceNo=String(sequence?.nextNumber??1);
  if(sequence) await ctx.db.patch("purchaseSequences", sequence._id,{nextNumber:Number(invoiceNo)+1}); else await ctx.db.insert("purchaseSequences",{...scope,nextNumber:2});
  const internalRef=`PUR-${Date.now().toString(36).toUpperCase()}`;
- const id=await ctx.db.insert("purchases",{...scope,purchaseDate:a.purchaseDate,supplierId,supplierInvoiceNo:a.supplierInvoiceNo?.trim() || invoiceNo,invoiceNo,internalRef,subtotal,discount:0,additionalCharges:0,taxAmount:0,total:subtotal,amountPaid:paid,outstanding:round(subtotal-paid),paymentStatus:paid===subtotal?"paid":paid>0?"partial":"unpaid",status:"posted",notes:a.notes,createdBy:u._id,postedAt:new Date().toISOString()});
+ const id=await ctx.db.insert("purchases",{...scope,purchaseDate:a.purchaseDate,supplierId,supplierInvoiceNo:a.supplierInvoiceNo?.trim() || invoiceNo,invoiceNo,internalRef,subtotal,discount:0,additionalCharges:0,taxAmount:0,total:subtotal,amountPaid:paid,outstanding:round(subtotal-paid),paymentStatus:paid===subtotal?"paid":paid>0?"partial":"unpaid",status:"posted",notes:a.notes,purchaseOrderId:a.purchaseOrderId,createdBy:u._id,postedAt:new Date().toISOString()});
  await bumpStats(ctx,scope,{payable:round(subtotal-paid),date:a.purchaseDate,purchases:subtotal});
  for(const l of lines){const p=await ctx.db.get("products", l.productId);if(!p)throw new ConvexError("Bidhaa haipo.");const newQty=p.currentQty+l.qty;const oldQty=p.currentQty;const oldCost=p.weightedAvgCost??p.lastPurchaseCost??0;const baseQty=Math.max(0,oldQty);const avg=round((baseQty*oldCost+l.qty*l.unitCost)/(baseQty+l.qty));await ctx.db.patch("products", l.productId,{currentQty:newQty,lastPurchaseCost:l.unitCost,lastPurchaseDate:a.purchaseDate,lastSupplierId:supplierId,weightedAvgCost:avg});await ctx.db.insert("purchaseLines",{purchaseId:id,productId:l.productId,qty:l.qty,qtyStr:String(l.qty),unitCost:l.unitCost,unitCostStr:String(l.unitCost),lineTotal:l.total,lineTotalStr:String(l.total),discount:0,receivedQty:l.qty});await ctx.db.insert("stockMovements",{...scope,movementDate:a.purchaseDate,productId:l.productId,movementType:"purchase",referenceId:String(id),referenceType:"purchase",qtyIn:l.qty,qtyOut:0,runningBalance:newQty,unitCost:l.unitCost,supplierId,createdBy:u._id});let lotId: Id<"stockLots"> | undefined;if(p.trackExpiry||p.trackBatchNumbers){const duplicate=await ctx.db.query("stockLots").withIndex("by_lot",q=>q.eq("tenantId",scope.tenantId).eq("productId",l.productId).eq("lotNumber",l.lotNumber!)).first();if(duplicate)throw new ConvexError(`Batch ${l.lotNumber} tayari ipo kwa ${p.name}.`);lotId=await ctx.db.insert("stockLots",{...scope,productId:l.productId,lotNumber:l.lotNumber!,receivedDate:a.purchaseDate,expiryDate:l.expiryDate,quantityReceived:l.qty,quantityRemaining:l.qty,unitCost:l.unitCost,supplierId,reference:String(id),createdBy:u._id});}if(p.trackSerialNumbers){for(const serialNumber of l.serialNumbers??[]){const duplicate=await ctx.db.query("stockSerials").withIndex("by_serial",q=>q.eq("tenantId",scope.tenantId).eq("serialNumber",serialNumber)).first();if(duplicate)throw new ConvexError(`Serial number ${serialNumber} tayari ipo.`);await ctx.db.insert("stockSerials",{...scope,productId:l.productId,serialNumber,receivedDate:a.purchaseDate,status:"in_stock",unitCost:l.unitCost,lotId,supplierId,reference:String(id),receivedReference:String(id),createdBy:u._id});}}await ctx.db.insert("purchasePriceHistory",{productId:l.productId,purchaseId:id,supplierId,cost:l.unitCost,date:a.purchaseDate,previousCost:oldCost});}
  if(paid>0){const receiptNo=`RC-${Date.now().toString(36).toUpperCase()}`;for(const sp of (norm?.splits??[{method:a.paymentMethod??"cash",amount:paid,methodId:undefined,reference:undefined}]))await ctx.db.insert("supplierPayments",{...scope,paymentDate:a.purchaseDate,supplierId,purchaseId:id,amount:sp.amount,paymentMethod:sp.method,paymentMethodId:sp.methodId,receiptNo,reference:sp.reference,createdBy:u._id,notes:"Malipo wakati wa kupokea bidhaa"});}
  const inventory=await getSystemAccount(ctx,scope,"1200","Inventory","asset"),payable=await getSystemAccount(ctx,scope,"2000","Accounts payable","liability");
  const paidLines=[] as {accountId:Awaited<ReturnType<typeof methodAccount>>;debit:number;credit:number;description:string}[];for(const sp of (norm?.splits??(paid>0?[{method:a.paymentMethod??"cash",methodId:undefined,amount:paid}]:[])))paidLines.push({accountId:await methodAccount(ctx,scope,{methodId:sp.methodId,method:sp.method}),debit:0,credit:sp.amount,description:`Supplier paid - ${sp.method}`}); // each method is paid out of its own account
  await postSystemJournal(ctx,{scope,userId:u._id,date:a.purchaseDate,reference:`PUR-${internalRef}`,description:`Automatic posting for ${internalRef}`,sourceType:"purchase",sourceId:String(id),lines:[{accountId:inventory,debit:subtotal,credit:0,description:"Inventory received"},...paidLines,{accountId:payable,debit:0,credit:round(subtotal-paid),description:"Supplier payable"}]});
+ if (po) { // what arrived is counted on the order; the rest stays open for a later delivery
+   const poLines = await ctx.db.query("purchaseOrderLines").withIndex("by_order", q => q.eq("orderId", po._id)).collect();
+   for (const l of lines) { const pl = poLines.find(x => x.productId === l.productId); if (pl) await ctx.db.patch("purchaseOrderLines", pl._id, { qtyReceived: round(pl.qtyReceived + l.qty) }); }
+   const fresh = await ctx.db.query("purchaseOrderLines").withIndex("by_order", q => q.eq("orderId", po._id)).collect();
+   await ctx.db.patch("purchaseOrders", po._id, { status: fresh.every(x => x.qtyReceived + 1e-8 >= x.qtyOrdered) ? "fully_received" : "partially_received" });
+ }
  await ctx.db.insert("auditLogs",{userId:u._id,userName:u.name??u.email??"user",action:"receive_purchase",module:"purchasing",referenceId:String(id),referenceType:"purchase",details:`${internalRef}; total ${subtotal}`,timestamp:new Date().toISOString(),result:"success"});return {purchaseId:id,invoiceNo,internalRef,total:subtotal,amountPaid:paid,outstanding:round(subtotal-paid)};
 }});
 
@@ -282,4 +296,43 @@ export const postPurchaseReturn = mutation({
     await ctx.db.insert("auditLogs",{userId:u._id,userName:u.name??u.email??"user",action:"post_purchase_return",module:"purchasing",referenceId:String(returnId),referenceType:"purchaseReturn",details:`${returnRef}; total ${total}`,timestamp:new Date().toISOString(),result:"success"});
     return {returnId,returnRef,total};
   }
+});
+
+
+/** Purchase Orders still waiting for goods (approved or part-received), with what was ordered, what arrived and the agreed cost: Purchase Entry loads one of these. */
+export const ordersToReceive = query({
+  args: {},
+  handler: async (ctx) => {
+    const u = await requirePermission(ctx, "purchasing.view", "purchasing");
+    const orders = filterScoped(u, await scopedRows(ctx, u, "purchaseOrders")).filter(o => o.status === "approved" || o.status === "partially_received").sort((a, b) => b.orderDate.localeCompare(a.orderDate)).slice(0, 200);
+    const out = [];
+    for (const o of orders) {
+      const supplier = await ctx.db.get("suppliers", o.supplierId);
+      const lines = [];
+      for (const l of await ctx.db.query("purchaseOrderLines").withIndex("by_order", q => q.eq("orderId", o._id)).collect()) {
+        const p = await ctx.db.get("products", l.productId);
+        lines.push({ productId: l.productId, productName: p?.name ?? "—", qtyOrdered: l.qtyOrdered, qtyReceived: l.qtyReceived, unitCost: l.unitCost });
+      }
+      out.push({ _id: o._id, orderRef: o.orderRef, orderDate: o.orderDate, expectedDelivery: o.expectedDelivery ?? "", status: o.status, supplierId: o.supplierId, supplierName: supplier?.name ?? "—", total: o.total, lines });
+    }
+    return out;
+  },
+});
+
+/** One Purchase Order with its lines, for the printable sheet (PDF) and the Excel file. */
+export const orderDetails = query({
+  args: { orderId: v.id("purchaseOrders") },
+  handler: async (ctx, a) => {
+    const u = await requirePermission(ctx, "purchasing.view", "purchasing");
+    const o = await ctx.db.get("purchaseOrders", a.orderId);
+    if (!o || !canAccessRecord(u, o)) throw new ConvexError("Purchase Order haipatikani.");
+    const supplier = await ctx.db.get("suppliers", o.supplierId);
+    const lines = [];
+    for (const l of await ctx.db.query("purchaseOrderLines").withIndex("by_order", q => q.eq("orderId", o._id)).collect()) {
+      const p = await ctx.db.get("products", l.productId);
+      const unit = p?.unitId ? await ctx.db.get("unitsOfMeasure", p.unitId) : null;
+      lines.push({ itemCode: p?.itemCode ?? "", productName: p?.name ?? "—", unit: unit?.name ?? "Unit", qtyOrdered: l.qtyOrdered, qtyReceived: l.qtyReceived, unitCost: l.unitCost, lineTotal: l.lineTotal });
+    }
+    return { _id: o._id, orderRef: o.orderRef, orderDate: o.orderDate, expectedDelivery: o.expectedDelivery ?? "", status: o.status, notes: o.notes ?? "", total: o.total, supplier: { name: supplier?.name ?? "—", phone: supplier?.phone ?? "", address: supplier?.address ?? "" }, lines };
+  },
 });

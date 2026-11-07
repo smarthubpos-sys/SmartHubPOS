@@ -26,10 +26,14 @@ export default function WaiterCollection() {
   const [viewDate, setViewDate] = useState(() => localDate()); // day of the "received" list below
   const receipts = useQuery(api.waiterCollections.receipts, { date: viewDate });
   const collect = useMutation(api.waiterCollections.collect);
+  const assign = useMutation(api.customerDebt.assignOrdersToCustomer);
+  const customers = useQuery(api.customerDebt.customersForCashier);
+  const [clientId, setClientId] = useState("");
   const [staffId, setStaffId] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
   const [lines, setLines] = useState<SplitLine[]>(() => [newSplitLine(methods)]);
-  const [payDate, setPayDate] = useState(() => localDate()); // day the money belongs to: sales made at night may be paid next morning
+  const [changeDate, setChangeDate] = useState(false); // by default the money goes to the day the goods were SOLD; the cashier may choose another day on purpose
+  const [payDate, setPayDate] = useState(() => localDate());
   const [busy, setBusy] = useState(false);
   const [printReceipt, setPrintReceipt] = useState<boolean>(readPrintReceiptChoice); // option: print a payment receipt after receiving
   const user = useQuery(api.users.getCurrentUser);
@@ -44,14 +48,17 @@ export default function WaiterCollection() {
   const paying = splitsTotal(lines);
   const debtLeft = Math.round((due - paying) * 100) / 100; // > 0: the waiter hands over less than the bill; the rest stays as his debt
   const today = localDate();
-  const oldestDay = chosen.length ? chosen.map((o) => orderDay(o.createdAt)).sort()[0] : today; // money cannot belong to a day before the order
-  const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(payDate) && payDate <= today && payDate >= oldestDay;
+  const days = [...new Set(chosen.map((o) => orderDay(o.createdAt)))].sort();
+  const oldestDay = days[0] ?? today; // money cannot belong to a day before the sale
+  const mixedDays = days.length > 1;
+  const effectiveDate = changeDate ? payDate : oldestDay; // the day the money is counted on
+  const dateOk = changeDate ? /^\d{4}-\d{2}-\d{2}$/.test(payDate) && payDate <= today && payDate >= oldestDay : !mixedDays;
   const canSave = !busy && chosen.length > 0 && paying > 0.005 && debtLeft > -0.005 && dateOk;
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
   function pickWaiter(id: string) {
     setStaffId(id);
-    setPayDate(localDate());
+    setChangeDate(false); setPayDate(localDate()); setClientId("");
     const w = (owing ?? []).find((x) => String(x.staffId) === id);
     const all = (w?.orders ?? []).map((o) => String(o._id));
     setPicked(all);
@@ -63,7 +70,7 @@ export default function WaiterCollection() {
     setBusy(true);
     try {
       const splits = toSplits(lines, methods);
-      const res = await collect({ staffId: waiter.staffId as Id<"users">, orderIds: chosen.map((o) => o._id), splits: splits as never, paymentDate: payDate });
+      const res = await collect({ staffId: waiter.staffId as Id<"users">, orderIds: chosen.map((o) => o._id), splits: splits as never, paymentDate: changeDate ? payDate : undefined }); // no date = the day of the sale
       toast.success(res.debt > 0 ? tr("Fedha zimepokelewa. Deni lililobaki kwa mhudumu: {0}", [money(res.debt)]) : tr("Fedha zimepokelewa na kuhifadhiwa."));
       const receipt = {
         receiptNo: String(res.collectionId).slice(-6).toUpperCase(),
@@ -74,14 +81,28 @@ export default function WaiterCollection() {
         total: res.total,
         debt: res.debt,
       };
-      setViewDate(payDate); // show the receipt just saved, even when it belongs to an earlier day
-      setPicked([]); setStaffId(""); setLines([newSplitLine(methods)]); setPayDate(localDate());
+      setViewDate(effectiveDate); // show the receipt just saved, even when it belongs to an earlier day
+      setPicked([]); setStaffId(""); setLines([newSplitLine(methods)]); setChangeDate(false); setPayDate(localDate());
       if (printReceipt) {
         const ok = await printPaymentReceipt(receipt, qzPrinterFrom(hw), hw.paperWidth, branding);
         if (!ok) toast.message(tr("Fedha zimepokelewa. Risiti haikuchapishwa; unaweza kuichapa tena kutoka \"Zilizopokelewa leo\"."));
       }
     } catch (e) {
       toast.error(errorText(e, tr("Imeshindikana kupokea fedha. Hakuna kilichorekodiwa; jaribu tena.")));
+    } finally { setBusy(false); }
+  }
+
+  async function assignToCustomer() {
+    if (!waiter || !clientId || chosen.length === 0) return;
+    const name = (customers ?? []).find((c) => String(c._id) === clientId)?.name ?? "";
+    if (!window.confirm(tr("Elekeza {0} kwa mteja {1}? Mhudumu hatadaiwa tena.", [money(due), name]))) return;
+    setBusy(true);
+    try {
+      const res = await assign({ orderIds: chosen.map((o) => o._id), clientId: clientId as Id<"clients"> });
+      toast.success(tr("Deni la {0} limeelekezwa kwa {1}.", [money(res.total), res.clientName]));
+      setPicked([]); setStaffId(""); setClientId(""); setLines([newSplitLine(methods)]);
+    } catch (e) {
+      toast.error(errorText(e, tr("Imeshindikana kuelekeza deni. Hakuna kilichorekodiwa; jaribu tena.")));
     } finally { setBusy(false); }
   }
 
@@ -120,16 +141,28 @@ export default function WaiterCollection() {
             ))}
           </ul>
           <p className="text-base font-bold">{tr("Jumla ya kupokea")}: {money(due)}</p>
-          <label className="grid max-w-xs gap-1 text-sm">{tr("Tarehe ya malipo")}
-            <Input type="date" value={payDate} min={oldestDay} max={today} disabled={busy} onChange={(e) => setPayDate(e.target.value)} />
-          </label>
-          {payDate !== today && dateOk && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs">{tr("Fedha hizi zitahesabiwa kwenye siku ya {0}, si leo.", [payDate])}</p>}
-          {!dateOk && <p className="text-xs text-destructive">{tr("Tarehe ya malipo lazima iwe kati ya {0} na {1}.", [oldestDay, today])}</p>}
-          <p className="text-xs text-muted-foreground">{tr("Mauzo yaliyofanyika usiku na kulipwa asubuhi: chagua tarehe ya siku ya mauzo.")}</p>
+          <div className="space-y-2 rounded-lg border p-3 text-sm">
+            <p>{tr("Fedha zitahesabiwa kwenye siku ya mauzo")}: <strong>{mixedDays && !changeDate ? "—" : effectiveDate}</strong></p>
+            {mixedDays && !changeDate && <p className="text-xs text-destructive">{tr("Oda ni za siku tofauti ({0}). Pokea siku moja moja, au badilisha tarehe mwenyewe.", [days.join(", ")])}</p>}
+            <label className="flex items-center gap-2 text-xs"><input type="checkbox" className="h-4 w-4" checked={changeDate} disabled={busy} onChange={(e) => { setChangeDate(e.target.checked); if (e.target.checked) setPayDate(oldestDay); }} />{tr("Badilisha tarehe ya malipo")}</label>
+            {changeDate && <Input type="date" className="max-w-xs" value={payDate} min={oldestDay} max={today} disabled={busy} onChange={(e) => setPayDate(e.target.value)} />}
+            {changeDate && !dateOk && <p className="text-xs text-destructive">{tr("Tarehe ya malipo lazima iwe kati ya {0} na {1}.", [oldestDay, today])}</p>}
+          </div>
           <PaymentSplit methods={methods} lines={lines} onChange={setLines} due={due} disabled={busy} />
           <p className="text-xs text-muted-foreground">{tr("Unaweza kupokea kiasi kidogo kuliko jumla (kile alichonacho mhudumu mkononi). Kinachobaki kinabaki kama deni lake.")}</p>
           {debtLeft > 0.005 && paying > 0.005 && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-sm font-semibold">{tr("Deni litakalobaki kwa mhudumu")}: {money(debtLeft)}</p>}
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4" checked={printReceipt} onChange={(e) => { setPrintReceipt(e.target.checked); try { localStorage.setItem(PRINT_RECEIPT_KEY, e.target.checked ? "1" : "0"); } catch { /* remembering the choice is optional */ } }} />{tr("Chapisha risiti ya malipo")}</label>
+          <details className="rounded-lg border p-3 text-sm">
+            <summary className="cursor-pointer font-medium">{tr("Elekeza deni kwa mteja (mkopo)")}</summary>
+            <p className="mt-2 text-xs text-muted-foreground">{tr("Bili zilizotiki ({0}) zitahamishiwa kwa mteja kama deni lake. Mhudumu hatadaiwa tena, na ripoti za madeni zitaonyesha jina la mteja.", [money(due)])}</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <select className="h-10 min-w-56 rounded-md border bg-background px-3" value={clientId} disabled={busy} onChange={(e) => setClientId(e.target.value)}>
+                <option value="">{tr("Chagua mteja")}</option>
+                {(customers ?? []).map((c) => <option key={String(c._id)} value={String(c._id)}>{c.name}{c.owes > 0 ? ` · ${tr("anadaiwa")} ${money(c.owes)}` : ""}</option>)}
+              </select>
+              <Button type="button" variant="outline" disabled={busy || !clientId || chosen.length === 0 || due <= 0.005} onClick={() => void assignToCustomer()}>{tr("Elekeza deni kwa mteja")}</Button>
+            </div>
+          </details>
           <Button disabled={!canSave} onClick={() => void receive()}>{busy ? tr("Inahifadhi...") : tr("Pokea fedha")}</Button>
         </div>
       )}

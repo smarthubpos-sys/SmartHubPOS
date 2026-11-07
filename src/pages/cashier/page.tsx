@@ -5,6 +5,7 @@ import { api } from "@/convex/_generated/api";
 import ErrorBoundary from "@/components/error-boundary.tsx";
 import { tr } from "@/lib/i18n.ts";
 import WaiterCollection from "@/pages/waiter-orders/WaiterCollection.tsx";
+import CustomerRepayments from "@/pages/waiter-orders/CustomerRepayments.tsx";
 import StaffSettlement from "@/pages/waiter-orders/StaffSettlement.tsx";
 import WaiterDirectory from "@/pages/waiter-orders/WaiterDirectory.tsx";
 import SellingPoint from "@/pages/waiter-orders/SellingPoint.tsx";
@@ -42,7 +43,7 @@ export default function CashierPage() {
       </header>
       {selling && business?.waiterOrdersEnabled !== false
         ? <ErrorBoundary inline><SellingPoint counter /></ErrorBoundary>
-        : <ErrorBoundary inline><WaiterCollection /></ErrorBoundary>}
+        : <><ErrorBoundary inline><WaiterCollection /></ErrorBoundary><ErrorBoundary inline><CustomerRepayments /></ErrorBoundary></>}
       {business?.canViewSales && <>
         <ErrorBoundary inline><StaffSettlement /></ErrorBoundary>
         <ErrorBoundary inline><WaiterDirectory /></ErrorBoundary>

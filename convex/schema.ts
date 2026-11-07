@@ -272,6 +272,7 @@ export default defineSchema({
     paymentStatus: v.string(), // unpaid | partial | paid
     status: v.string(), // draft | posted | cancelled
     notes: v.optional(v.string()),
+    purchaseOrderId: v.optional(v.id("purchaseOrders")), // set when the goods were received against a Purchase Order
     createdBy: v.id("users"),
     postedAt: v.optional(v.string()),
     cancelledAt: v.optional(v.string()),
@@ -1001,6 +1002,9 @@ export default defineSchema({
     printedAt: v.optional(v.string()),
     settledAt: v.optional(v.string()), // cashier received the money for this order from the waiter (set only when the order is paid IN FULL)
     paidAmount: v.optional(v.number()), // money the cashier has received so far for this order; below `total` = the waiter still owes the rest
+    assignedAmount: v.optional(v.number()), // part of the bill the cashier moved to a registered customer as his debt (the waiter no longer owes it)
+    assignedClientId: v.optional(v.id("clients")),
+    assignedInvoiceId: v.optional(v.id("invoices")), // the customer invoice that now carries that debt
     collectionId: v.optional(v.id("waiterCollections")),
     billPrintedAt: v.optional(v.string()), // set only after a Bills-screen print succeeded; the order itself is never deleted
     billSentAt: v.optional(v.string()), // the waiter generated his bill and SENT it to the cashier: only then does the cashier see it on the Bills screen

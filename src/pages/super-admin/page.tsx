@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { toast } from "sonner";
 import { useMutation, useQuery } from "convex/react";
 import { Plus, X, Pencil } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
@@ -16,6 +17,15 @@ type Office = FunctionReturnType<typeof api.tenants.list>[number];
 export default function SuperAdminPage() {
   const offices = useQuery(api.tenants.list, {});
   const create = useMutation(api.tenants.create);
+  const backfillPrint = useMutation(api.printDefaults.backfillPrintDefaults);
+  const [printBusy, setPrintBusy] = useState(false);
+  async function fixPrintLayouts() {
+    setPrintBusy(true);
+    try {
+      const r = await backfillPrint({});
+      toast.success(r.fixed ? tr("Biashara {0} zimerekebishwa: zinachapa sasa kama zingine.", [String(r.fixed)]) : tr("Biashara zote tayari zina mpangilio sahihi wa kuchapa."));
+    } catch (e) { toast.error(errorText(e, tr("Imeshindikana kurekebisha mpangilio wa kuchapa."))); } finally { setPrintBusy(false); }
+  }
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [currency, setCurrency] = useState("TZS");
@@ -73,6 +83,10 @@ export default function SuperAdminPage() {
             {offices === undefined && <tr><td colSpan={5} className="p-4">{tr("Inapakia…")}</td></tr>}
           </tbody>
         </table>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border p-3">
+        <Button type="button" variant="outline" size="sm" disabled={printBusy} onClick={() => void fixPrintLayouts()}>{printBusy ? tr("Inarekebisha…") : tr("Rekebisha mpangilio wa invoice / bili / risiti")}</Button>
+        <span className="text-xs text-muted-foreground">{tr("Inaongeza jina la biashara, upana wa karatasi na maandishi ya chini kwa biashara zinazokosa. Hakuna kilichowekwa tayari kinabadilishwa.")}</span>
       </div>
       <p className="text-xs text-muted-foreground">{tr("Ulinzi wa Super Admin unatekelezwa pia kwenye Convex backend; kuficha ukurasa pekee hakutoshi kwa usalama.")}</p>
     </section>

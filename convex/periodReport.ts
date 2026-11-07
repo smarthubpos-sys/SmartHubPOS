@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
+import { waiterOwes } from "./waiterMath";
 import { activeDepartments, allowedBranchIds, isSuperAdmin, logAudit, requireActiveUser, requirePermission, roleHasPermission } from "./access";
 import type { UserLike } from "./access";
 import { accRows, channelOfKind, entryRows, isDate, round2, statement, summarize, type DebtRow, type ExpenseItem, type JEntry, type Row } from "./reportCore";
@@ -115,7 +116,7 @@ export const debts = query({
           if (o.settledAt || o.cancelledAt) continue;
           const day = eatDay(o.createdAt);
           if (day < a.from || day > a.to) continue;
-          const left = Math.max(0, round2(o.total - (o.paidAmount ?? 0)));
+          const left = waiterOwes(o);
           if (left <= 0) continue;
           if (++seen > MAX_DEBT_ORDERS) { truncated = true; break; }
           const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();

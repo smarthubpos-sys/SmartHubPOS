@@ -1,0 +1,1257 @@
+--- a/convex/schema.ts
++++ b/convex/schema.ts
+@@ -349,6 +349,9 @@
+     qtyReceived: v.number(),
+     qtyRejected: v.number(),
+     unitCost: v.number(),
++    lotNumber: v.optional(v.string()),
++    expiryDate: v.optional(v.string()),
++    serialNumbers: v.optional(v.array(v.string())),
+   }).index("by_grn", ["grnId"]),
+ 
+   // ── SUPPLIER PAYMENTS ────────────────────────────────────────
+@@ -587,6 +590,29 @@
+     .index("by_reference", ["referenceType", "referenceId"]),
+ 
+   // ── STOCK ADJUSTMENTS ────────────────────────────────────────
++  // ── TRACKED STOCK LOTS / EXPIRY ────────────────────────────────
++  stockLots: defineTable({
++    tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
++    productId: v.id("products"), lotNumber: v.string(), receivedDate: v.string(),
++    expiryDate: v.optional(v.string()), quantityReceived: v.number(), quantityRemaining: v.number(),
++    unitCost: v.number(), supplierId: v.optional(v.id("suppliers")),
++    reference: v.optional(v.string()), notes: v.optional(v.string()), createdBy: v.id("users"),
++  }).index("by_scope", ["tenantId", "branchId"])
++    .index("by_product", ["productId"])
++    .index("by_expiry", ["tenantId", "expiryDate"])
++    .index("by_lot", ["tenantId", "productId", "lotNumber"]),
++
++  stockSerials: defineTable({
++    tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
++    productId: v.id("products"), serialNumber: v.string(), receivedDate: v.string(),
++    status: v.string(), unitCost: v.number(), lotId: v.optional(v.id("stockLots")), supplierId: v.optional(v.id("suppliers")),
++    reference: v.optional(v.string()), receivedReference: v.optional(v.string()), returnOriginReference: v.optional(v.string()), soldDate: v.optional(v.string()),
++    notes: v.optional(v.string()), createdBy: v.id("users"),
++  }).index("by_scope", ["tenantId", "branchId"])
++    .index("by_product", ["productId"])
++    .index("by_serial", ["tenantId", "serialNumber"])
++    .index("by_status_date", ["tenantId", "status", "receivedDate"]),
++
+   stockAdjustments: defineTable({
+     tenantId: v.optional(v.id("tenants")),
+     branchId: v.optional(v.id("branches")),
+@@ -1037,4 +1063,10 @@
+   }) .index("by_scope", ["tenantId", "branchId"])
+     .index("by_user", ["createdBy"])
+     .index("by_status", ["status"]),
++
++  stockLotAllocations: defineTable({
++    tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
++    invoiceId: v.optional(v.id("invoices")), waiterOrderId: v.optional(v.id("waiterOrders")), purchaseReturnId: v.optional(v.id("purchaseReturns")),
++    productId: v.id("products"), lotId: v.id("stockLots"), quantity: v.number(), returnedQuantity: v.number(),
++  }).index("by_invoice", ["invoiceId"]).index("by_waiter_order", ["waiterOrderId"]).index("by_purchase_return", ["purchaseReturnId"]).index("by_product", ["productId"]),
+ });
+--- a/convex/purchasing.ts
++++ b/convex/purchasing.ts
+@@ -15,7 +15,7 @@
+   if (clash) throw new ConvexError(`Namba ya invoice ya supplier "${no!.trim()}" tayari imetumika (Purchase ${clash.invoiceNo ?? clash.internalRef}). Usiingize invoice moja mara mbili.`);
+ }
+ export const listPurchases = query({args:{},handler:async(ctx)=>{const u=await requirePermission(ctx, "purchasing.view", "purchasing");return (await scopedRows(ctx, u, "purchases")).sort((a,b)=>b.purchaseDate.localeCompare(a.purchaseDate));}});
+-export const receivePurchase = mutation({args:{supplierId:v.optional(v.id("suppliers")),purchaseDate:v.string(),supplierInvoiceNo:v.optional(v.string()),paymentAmount:v.optional(v.number()),paymentMethod:v.optional(v.string()),splits:v.optional(v.array(splitValidator)),notes:v.optional(v.string()),lines:v.array(v.object({productId:v.id("products"),qty:v.number(),unitCost:v.number()}))},handler:async(ctx,a)=>{
++export const receivePurchase = mutation({args:{supplierId:v.optional(v.id("suppliers")),purchaseDate:v.string(),supplierInvoiceNo:v.optional(v.string()),paymentAmount:v.optional(v.number()),paymentMethod:v.optional(v.string()),splits:v.optional(v.array(splitValidator)),notes:v.optional(v.string()),lines:v.array(v.object({productId:v.id("products"),qty:v.number(),unitCost:v.number(),lotNumber:v.optional(v.string()),expiryDate:v.optional(v.string()),serialNumbers:v.optional(v.array(v.string()))}))},handler:async(ctx,a)=>{
+  const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"),scope=await resolveWriteScope(ctx, u); if(!a.lines.length)throw new ConvexError("Ongeza angalau bidhaa moja."); assertDate(a.purchaseDate,"Tarehe ya purchase"); assertFinite(a.paymentAmount,"Malipo"); let supplierId = a.supplierId;
+  if (supplierId) { const supplier=await ctx.db.get("suppliers", supplierId); if(!canAccessBusinessRecord(u,supplier))throw new ConvexError("Supplier hayupo kwenye branch yako."); }
+  else {
+@@ -23,15 +23,15 @@
+    supplierId=existing?._id ?? await ctx.db.insert("suppliers",{...scope,code:"CASH-NO-SUPPLIER",name:"Unassigned / Cash Purchase",openingBalance:0,isActive:true,notes:"System supplier for purchases recorded without a named supplier."});
+  }
+  await assertSupplierInvoiceFree(ctx,supplierId,a.supplierInvoiceNo);
+- let subtotal=0;const lines=[] as {productId:typeof a.lines[number]["productId"];qty:number;unitCost:number;total:number}[];
+- for(const l of a.lines){if(!Number.isFinite(l.qty)||l.qty<=0||!Number.isFinite(l.unitCost)||l.unitCost<0)throw new ConvexError("Kiasi au gharama si sahihi.");const p=await ctx.db.get("products", l.productId);if(!canAccessRecord(u,p)||!p?.isActive)throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");const total=round(l.qty*l.unitCost);subtotal+=total;lines.push({...l,total});}
++ let subtotal=0;const lines=[] as {productId:typeof a.lines[number]["productId"];qty:number;unitCost:number;total:number;lotNumber?:string;expiryDate?:string;serialNumbers?:string[]}[];
++ for(const l of a.lines){if(!Number.isFinite(l.qty)||l.qty<=0||!Number.isFinite(l.unitCost)||l.unitCost<0)throw new ConvexError("Kiasi au gharama si sahihi.");const p=await ctx.db.get("products", l.productId);if(!canAccessRecord(u,p)||!p?.isActive)throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");const serialNumbers=(l.serialNumbers??[]).map(x=>x.trim()).filter(Boolean);if(p.trackExpiry||p.trackBatchNumbers){if(!l.lotNumber?.trim()||(p.trackExpiry&&!l.expiryDate))throw new ConvexError(`Weka batch/lot na expiry date kwa ${p.name}.`);if(l.expiryDate){assertDate(l.expiryDate,"Expiry date");if(l.expiryDate<a.purchaseDate)throw new ConvexError(`Expiry date ya ${p.name} haiwezi kuwa kabla ya tarehe ya kupokea.`);}}if(p.trackSerialNumbers&&(!Number.isInteger(l.qty)||serialNumbers.length!==l.qty||serialNumbers.some(x=>!x)||new Set(serialNumbers).size!==serialNumbers.length))throw new ConvexError(`Weka serial number tofauti kwa kila kipande cha ${p.name}.`);if(!p.trackSerialNumbers&&serialNumbers.length)throw new ConvexError(`Serial tracking haijawezeshwa kwa ${p.name}.`);const total=round(l.qty*l.unitCost);subtotal+=total;lines.push({...l,lotNumber:l.lotNumber?.trim(),serialNumbers,total});}
+  subtotal=round(subtotal);const norm=a.splits?.length?await normaliseSplits(ctx,u,a.splits):null;const paid=norm?norm.total:round(a.paymentAmount??0);if(paid<0||paid>subtotal)throw new ConvexError("Malipo si sahihi.");const sequenceRows=await ctx.db.query("purchaseSequences").withIndex("by_scope",q=>scope.branchId?q.eq("tenantId",scope.tenantId).eq("branchId",scope.branchId):q.eq("tenantId",scope.tenantId)).collect();
+  const sequence=sequenceRows.find(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId); const invoiceNo=String(sequence?.nextNumber??1);
+  if(sequence) await ctx.db.patch("purchaseSequences", sequence._id,{nextNumber:Number(invoiceNo)+1}); else await ctx.db.insert("purchaseSequences",{...scope,nextNumber:2});
+  const internalRef=`PUR-${Date.now().toString(36).toUpperCase()}`;
+  const id=await ctx.db.insert("purchases",{...scope,purchaseDate:a.purchaseDate,supplierId,supplierInvoiceNo:a.supplierInvoiceNo?.trim() || invoiceNo,invoiceNo,internalRef,subtotal,discount:0,additionalCharges:0,taxAmount:0,total:subtotal,amountPaid:paid,outstanding:round(subtotal-paid),paymentStatus:paid===subtotal?"paid":paid>0?"partial":"unpaid",status:"posted",notes:a.notes,createdBy:u._id,postedAt:new Date().toISOString()});
+  await bumpStats(ctx,scope,{payable:round(subtotal-paid),date:a.purchaseDate,purchases:subtotal});
+- for(const l of lines){const p=await ctx.db.get("products", l.productId);if(!p)throw new ConvexError("Bidhaa haipo.");const newQty=p.currentQty+l.qty;const oldQty=p.currentQty;const oldCost=p.weightedAvgCost??p.lastPurchaseCost??0;const baseQty=Math.max(0,oldQty);const avg=round((baseQty*oldCost+l.qty*l.unitCost)/(baseQty+l.qty));await ctx.db.patch("products", l.productId,{currentQty:newQty,lastPurchaseCost:l.unitCost,lastPurchaseDate:a.purchaseDate,lastSupplierId:supplierId,weightedAvgCost:avg});await ctx.db.insert("purchaseLines",{purchaseId:id,productId:l.productId,qty:l.qty,qtyStr:String(l.qty),unitCost:l.unitCost,unitCostStr:String(l.unitCost),lineTotal:l.total,lineTotalStr:String(l.total),discount:0,receivedQty:l.qty});await ctx.db.insert("stockMovements",{...scope,movementDate:a.purchaseDate,productId:l.productId,movementType:"purchase",referenceId:String(id),referenceType:"purchase",qtyIn:l.qty,qtyOut:0,runningBalance:newQty,unitCost:l.unitCost,supplierId,createdBy:u._id});await ctx.db.insert("purchasePriceHistory",{productId:l.productId,purchaseId:id,supplierId,cost:l.unitCost,date:a.purchaseDate,previousCost:oldCost});}
++ for(const l of lines){const p=await ctx.db.get("products", l.productId);if(!p)throw new ConvexError("Bidhaa haipo.");const newQty=p.currentQty+l.qty;const oldQty=p.currentQty;const oldCost=p.weightedAvgCost??p.lastPurchaseCost??0;const baseQty=Math.max(0,oldQty);const avg=round((baseQty*oldCost+l.qty*l.unitCost)/(baseQty+l.qty));await ctx.db.patch("products", l.productId,{currentQty:newQty,lastPurchaseCost:l.unitCost,lastPurchaseDate:a.purchaseDate,lastSupplierId:supplierId,weightedAvgCost:avg});await ctx.db.insert("purchaseLines",{purchaseId:id,productId:l.productId,qty:l.qty,qtyStr:String(l.qty),unitCost:l.unitCost,unitCostStr:String(l.unitCost),lineTotal:l.total,lineTotalStr:String(l.total),discount:0,receivedQty:l.qty});await ctx.db.insert("stockMovements",{...scope,movementDate:a.purchaseDate,productId:l.productId,movementType:"purchase",referenceId:String(id),referenceType:"purchase",qtyIn:l.qty,qtyOut:0,runningBalance:newQty,unitCost:l.unitCost,supplierId,createdBy:u._id});let lotId: Id<"stockLots"> | undefined;if(p.trackExpiry||p.trackBatchNumbers){const duplicate=await ctx.db.query("stockLots").withIndex("by_lot",q=>q.eq("tenantId",scope.tenantId).eq("productId",l.productId).eq("lotNumber",l.lotNumber!)).first();if(duplicate)throw new ConvexError(`Batch ${l.lotNumber} tayari ipo kwa ${p.name}.`);lotId=await ctx.db.insert("stockLots",{...scope,productId:l.productId,lotNumber:l.lotNumber!,receivedDate:a.purchaseDate,expiryDate:l.expiryDate,quantityReceived:l.qty,quantityRemaining:l.qty,unitCost:l.unitCost,supplierId,reference:String(id),createdBy:u._id});}if(p.trackSerialNumbers){for(const serialNumber of l.serialNumbers??[]){const duplicate=await ctx.db.query("stockSerials").withIndex("by_serial",q=>q.eq("tenantId",scope.tenantId).eq("serialNumber",serialNumber)).first();if(duplicate)throw new ConvexError(`Serial number ${serialNumber} tayari ipo.`);await ctx.db.insert("stockSerials",{...scope,productId:l.productId,serialNumber,receivedDate:a.purchaseDate,status:"in_stock",unitCost:l.unitCost,lotId,supplierId,reference:String(id),receivedReference:String(id),createdBy:u._id});}}await ctx.db.insert("purchasePriceHistory",{productId:l.productId,purchaseId:id,supplierId,cost:l.unitCost,date:a.purchaseDate,previousCost:oldCost});}
+  if(paid>0){const receiptNo=`RC-${Date.now().toString(36).toUpperCase()}`;for(const sp of (norm?.splits??[{method:a.paymentMethod??"cash",amount:paid,methodId:undefined,reference:undefined}]))await ctx.db.insert("supplierPayments",{...scope,paymentDate:a.purchaseDate,supplierId,purchaseId:id,amount:sp.amount,paymentMethod:sp.method,paymentMethodId:sp.methodId,receiptNo,reference:sp.reference,createdBy:u._id,notes:"Malipo wakati wa kupokea bidhaa"});}
+  const inventory=await getSystemAccount(ctx,scope,"1200","Inventory","asset"),payable=await getSystemAccount(ctx,scope,"2000","Accounts payable","liability");
+  const paidLines=[] as {accountId:Awaited<ReturnType<typeof methodAccount>>;debit:number;credit:number;description:string}[];for(const sp of (norm?.splits??(paid>0?[{method:a.paymentMethod??"cash",methodId:undefined,amount:paid}]:[])))paidLines.push({accountId:await methodAccount(ctx,scope,{methodId:sp.methodId,method:sp.method}),debit:0,credit:sp.amount,description:`Supplier paid - ${sp.method}`}); // each method is paid out of its own account
+@@ -183,16 +183,24 @@
+     if(!["approved","partially_received"].includes(order.status)) throw new ConvexError("Purchase Order lazima iwe approved kabla ya kupokea bidhaa.");
+     if(!a.lines.length) throw new ConvexError("Ongeza bidhaa za kupokea."); assertDate(a.receiptDate,"Tarehe ya kupokea");
+     const poLines=await ctx.db.query("purchaseOrderLines").withIndex("by_order",q=>q.eq("orderId",a.purchaseOrderId)).collect();
+-    const clean=[] as Array<{productId:typeof a.lines[number]["productId"];qtyReceived:number;qtyRejected:number;qtyOrdered:number;unitCost:number}>;
++    const clean=[] as Array<{productId:typeof a.lines[number]["productId"];qtyReceived:number;qtyRejected:number;qtyOrdered:number;unitCost:number;lotNumber?:string;expiryDate?:string;serialNumbers?:string[]}>;
+     for(const line of a.lines){
+       const poLine=poLines.find(x=>x.productId===line.productId); if(!poLine) throw new ConvexError("Bidhaa haipo kwenye Purchase Order.");
+       const rejected=line.qtyRejected??0; if(!Number.isFinite(line.qtyReceived)||line.qtyReceived<0||!Number.isFinite(rejected)||rejected<0||line.qtyReceived+rejected<=0) throw new ConvexError("Kiasi kilichopokelewa/kukataliwa si sahihi.");
+       if(line.qtyReceived+rejected>poLine.qtyOrdered-poLine.qtyReceived+1e-8) throw new ConvexError("Kiasi kinazidi salio la Purchase Order.");
+-      clean.push({productId:line.productId,qtyReceived:line.qtyReceived,qtyRejected:rejected,qtyOrdered:poLine.qtyOrdered,unitCost:poLine.unitCost});
++      const product=await ctx.db.get("products",line.productId);
++      const serialNumbers=(line.serialNumbers??[]).map(x=>x.trim()).filter(Boolean);
++      if (product?.trackExpiry || product?.trackBatchNumbers) {
++        if (line.qtyReceived>0 && (!line.lotNumber?.trim() || (product.trackExpiry && !line.expiryDate))) throw new ConvexError(`Weka batch/lot na expiry date kwa ${product.name}.`);
++        if (line.expiryDate) { assertDate(line.expiryDate,"Expiry date"); if(line.expiryDate<a.receiptDate) throw new ConvexError(`Expiry date ya ${product.name} haiwezi kuwa kabla ya tarehe ya kupokea.`); }
++      }
++      if (product?.trackSerialNumbers && line.qtyReceived>0 && (!Number.isInteger(line.qtyReceived) || serialNumbers.length!==line.qtyReceived || new Set(serialNumbers).size!==serialNumbers.length)) throw new ConvexError(`Weka serial number tofauti kwa kila kipande cha ${product.name}.`);
++      if (!product?.trackSerialNumbers && serialNumbers.length) throw new ConvexError(`Serial tracking haijawezeshwa kwa ${product?.name??"bidhaa"}.`);
++      clean.push({productId:line.productId,qtyReceived:line.qtyReceived,qtyRejected:rejected,qtyOrdered:poLine.qtyOrdered,unitCost:poLine.unitCost,lotNumber:line.lotNumber?.trim(),expiryDate:line.expiryDate,serialNumbers});
+     }
+     const existing=await scopedRows(ctx,u,"goodsReceivedNotes"); const grnRef=`GRN-${existing.length+1}-${Date.now().toString(36).toUpperCase()}`;
+     const grnId=await ctx.db.insert("goodsReceivedNotes",{...scope,grnRef,receiptDate:a.receiptDate,supplierId:order.supplierId,purchaseOrderId:a.purchaseOrderId,status:"draft",notes:a.notes,receivedBy:u._id});
+-    for(const line of clean) await ctx.db.insert("grnLines",{grnId,productId:line.productId,qtyOrdered:line.qtyOrdered,qtyReceived:line.qtyReceived,qtyRejected:line.qtyRejected,unitCost:line.unitCost});
++    for(const line of clean) await ctx.db.insert("grnLines",{grnId,productId:line.productId,qtyOrdered:line.qtyOrdered,qtyReceived:line.qtyReceived,qtyRejected:line.qtyRejected,unitCost:line.unitCost,lotNumber:line.lotNumber,expiryDate:line.expiryDate,serialNumbers:line.serialNumbers});
+     return {grnId,grnRef};
+   }
+ });
+@@ -212,6 +220,22 @@
+       const baseQty=Math.max(0,oldQty);const avg=line.qtyReceived>0?round((baseQty*oldCost+line.qtyReceived*line.unitCost)/(baseQty+line.qtyReceived)):oldCost;
+       await ctx.db.patch("products", line.productId,{currentQty:newQty,lastPurchaseCost:line.unitCost,lastPurchaseDate:grn.receiptDate,lastSupplierId:grn.supplierId,weightedAvgCost:avg});
+       await ctx.db.insert("stockMovements",{...scope,movementDate:grn.receiptDate,productId:line.productId,movementType:"grn",referenceId:String(a.grnId),referenceType:"goodsReceivedNote",qtyIn:line.qtyReceived,qtyOut:0,runningBalance:newQty,unitCost:line.unitCost,supplierId:grn.supplierId,notes:grn.grnRef,createdBy:u._id});
++      let receivedLotId: Id<"stockLots"> | undefined;
++      if (line.qtyReceived > 0 && (product.trackExpiry || product.trackBatchNumbers)) {
++        if (!line.lotNumber?.trim() || (product.trackExpiry && !line.expiryDate)) throw new ConvexError(`GRN haina batch/expiry taarifa kamili kwa ${product.name}.`);
++        const duplicate = await ctx.db.query("stockLots").withIndex("by_lot",q=>q.eq("tenantId",scope.tenantId).eq("productId",line.productId).eq("lotNumber",line.lotNumber!)).first();
++        if (duplicate) throw new ConvexError(`Batch ${line.lotNumber} tayari ipo kwa ${product.name}. Tumia lot number tofauti.`);
++        receivedLotId = await ctx.db.insert("stockLots",{...scope,productId:line.productId,lotNumber:line.lotNumber,receivedDate:grn.receiptDate,expiryDate:line.expiryDate,quantityReceived:line.qtyReceived,quantityRemaining:line.qtyReceived,unitCost:line.unitCost,supplierId:grn.supplierId,reference:grn.grnRef,createdBy:u._id});
++      }
++      if (product.trackSerialNumbers && line.qtyReceived > 0) {
++        const numbers = line.serialNumbers ?? [];
++        if (numbers.length !== line.qtyReceived) throw new ConvexError(`GRN inahitaji serial number moja kwa kila kipande cha ${product.name}.`);
++        for (const serialNumber of numbers) {
++          const exists = await ctx.db.query("stockSerials").withIndex("by_serial",q=>q.eq("tenantId",scope.tenantId).eq("serialNumber",serialNumber)).first();
++          if (exists) throw new ConvexError(`Serial number ${serialNumber} tayari imesajiliwa.`);
++          await ctx.db.insert("stockSerials",{...scope,productId:line.productId,serialNumber,receivedDate:grn.receiptDate,status:"in_stock",unitCost:line.unitCost,lotId:typeof receivedLotId === "undefined" ? undefined : receivedLotId,supplierId:grn.supplierId,reference:grn.grnRef,receivedReference:grn.grnRef,createdBy:u._id});
++        }
++      }
+       if(order){const poLine=(await ctx.db.query("purchaseOrderLines").withIndex("by_order",q=>q.eq("orderId",order._id)).collect()).find(x=>x.productId===line.productId);if(poLine)await ctx.db.patch("purchaseOrderLines", poLine._id,{qtyReceived:round(poLine.qtyReceived+line.qtyReceived)});}
+     }
+     if(order){const refreshed=await ctx.db.query("purchaseOrderLines").withIndex("by_order",q=>q.eq("orderId",order._id)).collect();const complete=refreshed.every(x=>x.qtyReceived+1e-8>=x.qtyOrdered);await ctx.db.patch("purchaseOrders", order._id,{status:complete?"fully_received":"partially_received"});}
+@@ -242,7 +266,15 @@
+     for(const line of a.lines){if(!Number.isFinite(line.qty)||line.qty<=0)throw new ConvexError("Kiasi cha return si sahihi.");const bought=purchaseLines.find(x=>x.productId===line.productId);if(!bought)throw new ConvexError("Bidhaa hii haipo kwenye invoice.");const already=priorLines.filter(x=>x.productId===line.productId).reduce((s,x)=>s+x.qty,0);if(line.qty> bought.qty-already+1e-8)throw new ConvexError("Return inazidi kiasi kilichonunuliwa.");const product=await ctx.db.get("products", line.productId);if(!canAccessRecord(u,product)||!product)throw new ConvexError("Bidhaa haipatikani.");if(product.currentQty+1e-8<line.qty)throw new ConvexError(`Stock haitoshi kurudisha ${product.name}.`);const lineTotal=round(line.qty*bought.unitCost);total=round(total+lineTotal);clean.push({productId:line.productId,qty:line.qty,unitCost:bought.unitCost,lineTotal});}
+     const existing=await scopedRows(ctx,u,"purchaseReturns");const returnRef=`PR-${existing.length+1}-${Date.now().toString(36).toUpperCase()}`;
+     const returnId=await ctx.db.insert("purchaseReturns",{...scope,returnDate:a.returnDate,supplierId:purchase.supplierId,purchaseId:a.purchaseId,returnRef,total,reason:a.reason,status:"posted",createdBy:u._id});
+-    for(const line of clean){const p=await ctx.db.get("products", line.productId);if(!p)throw new ConvexError("Bidhaa haipo.");const newQty=p.currentQty-line.qty;await ctx.db.patch("products", line.productId,{currentQty:newQty});await ctx.db.insert("purchaseReturnLines",{returnId,productId:line.productId,qty:line.qty,unitCost:line.unitCost,lineTotal:line.lineTotal});await ctx.db.insert("stockMovements",{...scope,movementDate:a.returnDate,productId:line.productId,movementType:"purchase_return",referenceId:String(returnId),referenceType:"purchaseReturn",qtyIn:0,qtyOut:line.qty,runningBalance:newQty,unitCost:line.unitCost,supplierId:purchase.supplierId,notes:returnRef,createdBy:u._id});}
++    for(const line of clean){const p=await ctx.db.get("products", line.productId);if(!p)throw new ConvexError("Bidhaa haipo.");
++      const returnedLotIds = new Set<string>();
++      if ((p.trackExpiry || p.trackBatchNumbers)) {
++        const lots=(await ctx.db.query("stockLots").withIndex("by_product",q=>q.eq("productId",line.productId)).collect()).filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.quantityRemaining>1e-8&&(!x.supplierId||x.supplierId===purchase.supplierId)).sort((a,b)=>(a.expiryDate??"9999-12-31").localeCompare(b.expiryDate??"9999-12-31")||a.receivedDate.localeCompare(b.receivedDate));
++        const lotQty=lots.reduce((n,x)=>n+x.quantityRemaining,0); if(lotQty+1e-8<line.qty)throw new ConvexError(`Batch zilizopo hazitoshi kurudisha ${p.name} kwa supplier. Sajili/rekebisha batch kwanza.`);
++        let left=line.qty; for(const lot of lots){if(left<=1e-8)break;const used=Math.min(left,lot.quantityRemaining);await ctx.db.patch("stockLots",lot._id,{quantityRemaining:lot.quantityRemaining-used});returnedLotIds.add(String(lot._id));await ctx.db.insert("stockLotAllocations",{...scope,purchaseReturnId:returnId,productId:line.productId,lotId:lot._id,quantity:used,returnedQuantity:0});left-=used;}
++      }
++      if(p.trackSerialNumbers){if(!Number.isInteger(line.qty))throw new ConvexError(`Idadi ya ${p.name} yenye serial lazima iwe namba kamili.`);const serials=(await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",line.productId)).collect()).filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.status==="in_stock"&&((x.supplierId&&x.supplierId===purchase.supplierId)||x.receivedReference===String(a.purchaseId)||(!x.supplierId&&(!x.receivedReference||(!!x.lotId&&returnedLotIds.has(String(x.lotId))))))&&(!(p.trackExpiry||p.trackBatchNumbers)||!returnedLotIds.size||(!!x.lotId&&returnedLotIds.has(String(x.lotId))))).sort((a,b)=>a.receivedDate.localeCompare(b.receivedDate));if(serials.length<line.qty)throw new ConvexError(`Serial numbers hazitoshi kurudisha ${p.name} kwa supplier.`);for(const serial of serials.slice(0,line.qty))await ctx.db.patch("stockSerials",serial._id,{status:"returned",returnOriginReference:serial.reference,reference:`PURCHASE_RETURN:${String(returnId)}`});}
++      const newQty=p.currentQty-line.qty;await ctx.db.patch("products", line.productId,{currentQty:newQty});await ctx.db.insert("purchaseReturnLines",{returnId,productId:line.productId,qty:line.qty,unitCost:line.unitCost,lineTotal:line.lineTotal});await ctx.db.insert("stockMovements",{...scope,movementDate:a.returnDate,productId:line.productId,movementType:"purchase_return",referenceId:String(returnId),referenceType:"purchaseReturn",qtyIn:0,qtyOut:line.qty,runningBalance:newQty,unitCost:line.unitCost,supplierId:purchase.supplierId,notes:returnRef,createdBy:u._id});}
+     // Returns reduce the supplier payable. A return exceeding the remaining payable creates a supplier credit.
+     const inventory=await getSystemAccount(ctx,scope,"1200","Inventory","asset"),payable=await getSystemAccount(ctx,scope,"2000","Accounts payable","liability");
+     await postSystemJournal(ctx,{scope,userId:u._id,date:a.returnDate,reference:returnRef,description:`Supplier purchase return ${returnRef}`,sourceType:"purchase_return",sourceId:String(returnId),lines:[{accountId:payable,debit:total,credit:0,description:"Reduce supplier payable"},{accountId:inventory,debit:0,credit:total,description:"Goods returned to supplier"}]});
+--- a/convex/purchasingEdit.ts
++++ b/convex/purchasingEdit.ts
+@@ -79,6 +79,26 @@
+     }
+     if (a.notes !== undefined) patch.notes = a.notes.trim() || undefined;
+     const newDate = a.purchaseDate ?? purchase.purchaseDate;
++    let trackedLots: Doc<"stockLots">[] = [];
++    let trackedSerials: Doc<"stockSerials">[] = [];
++    if (a.lines || (a.purchaseDate !== undefined && newDate !== purchase.purchaseDate)) {
++      const oldLinesForTracking = await ctx.db.query("purchaseLines").withIndex("by_purchase", (q) => q.eq("purchaseId", a.purchaseId)).collect();
++      const trackedProductIds = [...new Set(oldLinesForTracking.map(l => l.productId))];
++      trackedLots = (await Promise.all(trackedProductIds.map(id => ctx.db.query("stockLots").withIndex("by_product", q => q.eq("productId", id)).collect()))).flat().filter(x => x.reference === String(a.purchaseId));
++      trackedSerials = (await Promise.all(trackedProductIds.map(id => ctx.db.query("stockSerials").withIndex("by_product", q => q.eq("productId", id)).collect()))).flat().filter(x => x.receivedReference === String(a.purchaseId));
++    }
++    if (a.lines && (trackedLots.length || trackedSerials.length)) throw new ConvexError("Purchase hii ina batch/serial tracking. Ili kulinda ufuatiliaji, usibadilishe mistari yake moja kwa moja; futa purchase (ikiwa stock bado haijatumika) kisha iingize upya kwa batch/serial sahihi.");
++    if (a.purchaseDate !== undefined && newDate !== purchase.purchaseDate) {
++      if (trackedLots.some(x => x.expiryDate && x.expiryDate < newDate)) throw new ConvexError("Tarehe mpya ya purchase iko baada ya expiry date ya batch. Rekebisha tarehe au batch kwanza.");
++      for (const lot of trackedLots) await ctx.db.patch("stockLots", lot._id, { receivedDate: newDate });
++      for (const serial of trackedSerials) await ctx.db.patch("stockSerials", serial._id, { receivedDate: newDate });
++      const purchaseMoves = await ctx.db.query("stockMovements").withIndex("by_reference", q => q.eq("referenceType", "purchase").eq("referenceId", String(a.purchaseId))).collect();
++      for (const move of purchaseMoves) await ctx.db.patch("stockMovements", move._id, { movementDate: newDate });
++      for (const productId of trackedProductIds) {
++        const prices = await ctx.db.query("purchasePriceHistory").withIndex("by_product", q => q.eq("productId", productId)).collect();
++        for (const price of prices.filter(x => x.purchaseId === a.purchaseId)) await ctx.db.patch("purchasePriceHistory", price._id, { date: newDate });
++      }
++    }
+     let newTotal = purchase.total;
+     let newOutstanding = purchase.outstanding;
+ 
+@@ -166,6 +186,18 @@
+     for (const l of lines) {
+       const p = await ctx.db.get("products", l.productId);
+       if (!p) continue;
++      if (p.trackExpiry || p.trackBatchNumbers) {
++        const sourceLots=(await ctx.db.query("stockLots").withIndex("by_product",q=>q.eq("productId",l.productId)).collect()).filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.reference===String(a.purchaseId));
++        const lots=sourceLots.filter(x=>x.quantityRemaining>1e-8);
++        const available=lots.reduce((n,x)=>n+x.quantityRemaining,0); if(sourceLots.length&&available+EPS<l.qty)throw new ConvexError(`Huwezi kufuta purchase: batch ya ${p.name} imeshatumika au kuuzwa.`);
++        let leftToVoid=l.qty; for(const lot of lots){if(leftToVoid<=EPS)break;const used=Math.min(leftToVoid,lot.quantityRemaining);await ctx.db.patch("stockLots",lot._id,{quantityRemaining:Math.max(0,lot.quantityRemaining-used),notes:[lot.notes,"Purchase voided"].filter(Boolean).join(" | ")});leftToVoid-=used;}
++      }
++      if (p.trackSerialNumbers) {
++        const sourceSerials=(await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",l.productId)).collect()).filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.receivedReference===String(a.purchaseId));
++        const serials=sourceSerials.filter(x=>x.status==="in_stock");
++        if(sourceSerials.length&&serials.length<l.qty)throw new ConvexError(`Huwezi kufuta purchase: serial za ${p.name} zimeshauzwa au kutumika.`);
++        for(const serial of serials.slice(0,l.qty))await ctx.db.patch("stockSerials",serial._id,{status:"voided",reference:`PURCHASE_VOID:${String(a.purchaseId)}`});
++      }
+       const left = p.currentQty - l.qty;
+       const patch: Partial<Doc<"products">> = { currentQty: left };
+       if (p.weightedAvgCost !== undefined) patch.weightedAvgCost = avgAfterRemoving(p.currentQty, p.weightedAvgCost, l.qty, l.unitCost);
+@@ -262,7 +294,7 @@
+     const grn = await ctx.db.get("goodsReceivedNotes", a.grnId);
+     if (!grn || !canAccessRecord(u, grn)) return null;
+     const lines = await ctx.db.query("grnLines").withIndex("by_grn", (q) => q.eq("grnId", a.grnId)).collect();
+-    return { grn, lines: lines.map((l) => ({ productId: l.productId, qtyReceived: l.qtyReceived, qtyRejected: l.qtyRejected })) };
++    return { grn, lines: lines.map((l) => ({ productId: l.productId, qtyReceived: l.qtyReceived, qtyRejected: l.qtyRejected, lotNumber: l.lotNumber, expiryDate: l.expiryDate, serialNumbers: l.serialNumbers })) };
+   },
+ });
+ 
+@@ -279,14 +311,26 @@
+     if (a.lines) {
+       if (!a.lines.length) throw new ConvexError("Ongeza bidhaa za kupokea.");
+       const poLines = grn.purchaseOrderId ? await ctx.db.query("purchaseOrderLines").withIndex("by_order", (q) => q.eq("orderId", grn.purchaseOrderId!)).collect() : [];
+-      const clean: Array<{ productId: Id<"products">; qtyOrdered: number; qtyReceived: number; qtyRejected: number; unitCost: number }> = [];
++      const oldGrnLines = await ctx.db.query("grnLines").withIndex("by_grn", (q) => q.eq("grnId", a.grnId)).collect();
++      const clean: Array<{ productId: Id<"products">; qtyOrdered: number; qtyReceived: number; qtyRejected: number; unitCost: number; lotNumber?: string; expiryDate?: string; serialNumbers?: string[] }> = [];
++      const nextReceiptDate = a.receiptDate ?? grn.receiptDate;
+       for (const l of a.lines) {
+         const po = poLines.find((x) => x.productId === l.productId);
+         if (!po) throw new ConvexError("Bidhaa haipo kwenye Purchase Order.");
+         const rejected = l.qtyRejected ?? 0;
+         if (!Number.isFinite(l.qtyReceived) || l.qtyReceived < 0 || !Number.isFinite(rejected) || rejected < 0 || l.qtyReceived + rejected <= 0) throw new ConvexError("Kiasi kilichopokelewa/kukataliwa si sahihi.");
+         if (l.qtyReceived + rejected > po.qtyOrdered - po.qtyReceived + EPS) throw new ConvexError("Kiasi kinazidi salio la Purchase Order.");
+-        clean.push({ productId: l.productId, qtyOrdered: po.qtyOrdered, qtyReceived: l.qtyReceived, qtyRejected: rejected, unitCost: po.unitCost });
++        const product = await ctx.db.get("products", l.productId);
++        const old = oldGrnLines.find(x => x.productId === l.productId);
++        const lotNumber = old?.lotNumber;
++        const expiryDate = old?.expiryDate;
++        const serialNumbers = old?.serialNumbers;
++        if (product && (product.trackExpiry || product.trackBatchNumbers)) {
++          if (l.qtyReceived > 0 && (!lotNumber || (product.trackExpiry && !expiryDate))) throw new ConvexError(`GRN hii haina batch/expiry data ya ${product.name}. Futa rasimu na uunde GRN upya yenye tracking data.`);
++          if (expiryDate && expiryDate < nextReceiptDate) throw new ConvexError(`Expiry date ya ${product.name} iko kabla ya tarehe mpya ya kupokea.`);
++        }
++        if (product?.trackSerialNumbers && l.qtyReceived > 0 && (serialNumbers?.length ?? 0) !== l.qtyReceived) throw new ConvexError(`Idadi ya serial numbers za ${product.name} lazima ilingane na quantity. Futa rasimu na uunde GRN upya ikiwa unabadilisha quantity.`);
++        clean.push({ productId: l.productId, qtyOrdered: po.qtyOrdered, qtyReceived: l.qtyReceived, qtyRejected: rejected, unitCost: po.unitCost, lotNumber, expiryDate, serialNumbers });
+       }
+       for (const old of await ctx.db.query("grnLines").withIndex("by_grn", (q) => q.eq("grnId", a.grnId)).collect()) await ctx.db.delete("grnLines", old._id);
+       for (const l of clean) await ctx.db.insert("grnLines", { grnId: a.grnId, ...l });
+@@ -320,6 +364,17 @@
+         if (p.weightedAvgCost !== undefined) patch.weightedAvgCost = avgAfterRemoving(p.currentQty, p.weightedAvgCost, l.qtyReceived, l.unitCost);
+         await ctx.db.patch("products", l.productId, patch);
+         await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId: l.productId, movementType: "grn_void", referenceId: String(a.grnId), referenceType: "goodsReceivedNote", qtyIn: 0, qtyOut: l.qtyReceived, runningBalance: left, unitCost: l.unitCost, supplierId: grn.supplierId, notes: `Cancelled ${grn.grnRef}`, createdBy: u._id });
++        if (l.lotNumber) {
++          const lot=(await ctx.db.query("stockLots").withIndex("by_product",q=>q.eq("productId",l.productId)).collect()).find(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.reference===grn.grnRef&&x.lotNumber===l.lotNumber);
++          if(!lot)throw new ConvexError(`Batch ${l.lotNumber} ya GRN haipatikani; haiwezekani kurekebisha traceability kwa usalama.`);
++          if(lot.quantityRemaining+EPS<l.qtyReceived)throw new ConvexError(`Huwezi kufuta GRN: batch ${l.lotNumber} imeshatumika.`);
++          await ctx.db.patch("stockLots",lot._id,{quantityRemaining:0,notes:[lot.notes,`GRN ${grn.grnRef} cancelled`].filter(Boolean).join(" | ")});
++        }
++        if (l.serialNumbers?.length) {
++          const serialRows=(await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",l.productId)).collect()).filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.receivedReference===grn.grnRef&&x.status==="in_stock");
++          if(serialRows.length<l.serialNumbers.length)throw new ConvexError(`Huwezi kufuta GRN: baadhi ya serial za ${p.name} zimeshauzwa au kutumika.`);
++          for(const serial of serialRows)await ctx.db.patch("stockSerials",serial._id,{status:"voided",reference:`GRN_VOID:${String(a.grnId)}`});
++        }
+       }
+       const value = round(lines.reduce((n, l) => n + round(l.qtyReceived * l.unitCost), 0));
+       if (value > 0) {
+@@ -355,6 +410,10 @@
+     const today = new Date().toISOString().slice(0, 10);
+     const lines = await ctx.db.query("purchaseReturnLines").withIndex("by_return", (q) => q.eq("returnId", a.returnId)).collect();
+ 
++    // Restore the exact batch allocations and serials that were sent back to the supplier.
++    const lotAllocations=await ctx.db.query("stockLotAllocations").withIndex("by_purchase_return",q=>q.eq("purchaseReturnId",a.returnId)).collect();
++    for(const allocation of lotAllocations){const back=Math.max(0,allocation.quantity-allocation.returnedQuantity);if(back>0){const lot=await ctx.db.get("stockLots",allocation.lotId);if(lot)await ctx.db.patch("stockLots",lot._id,{quantityRemaining:lot.quantityRemaining+back});await ctx.db.patch("stockLotAllocations",allocation._id,{returnedQuantity:allocation.quantity});}}
++    for(const l of lines){const serials=await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",l.productId)).collect();for(const serial of serials.filter(x=>x.status==="returned"&&x.reference===`PURCHASE_RETURN:${String(a.returnId)}`))await ctx.db.patch("stockSerials",serial._id,{status:"in_stock",reference:serial.receivedReference,returnOriginReference:undefined});}
+     // Goods go back on the shelf.
+     for (const l of lines) {
+       const p = await ctx.db.get("products", l.productId);
+--- a/convex/waiterOrders.ts
++++ b/convex/waiterOrders.ts
+@@ -64,9 +64,39 @@
+       unitCost: product.weightedAvgCost ?? product.lastPurchaseCost ?? 0,
+       createdBy: user._id,
+     });
++    if (product.trackExpiry || product.trackBatchNumbers) {
++      const lots=(await ctx.db.query("stockLots").withIndex("by_product",q=>q.eq("productId",product._id)).collect())
++        .filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.quantityRemaining>0)
++        .sort((a,b)=>(a.expiryDate??"9999-12-31").localeCompare(b.expiryDate??"9999-12-31")||a.receivedDate.localeCompare(b.receivedDate));
++      const lotQty=lots.reduce((n,x)=>n+x.quantityRemaining,0);
++      if(lotQty+1e-8<qty) throw new ConvexError(`Batch stock haitoshi kwa ${product.name}.`);
++      let left=qty;
++      for(const lot of lots){if(left<=1e-8)break;const used=Math.min(left,lot.quantityRemaining);await ctx.db.patch("stockLots",lot._id,{quantityRemaining:lot.quantityRemaining-used});await ctx.db.insert("stockLotAllocations",{...scope,waiterOrderId:fresh._id,productId:product._id,lotId:lot._id,quantity:used,returnedQuantity:0});left-=used;}
++    }
++    if(product.trackSerialNumbers && !Number.isInteger(qty)) throw new ConvexError(`Bidhaa ${product.name} inafuatilia serial number; oda lazima iwe na idadi kamili.`);
++    if(product.trackSerialNumbers){
++      const serials=(await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",product._id)).collect())
++        .filter(x=>x.tenantId===scope.tenantId&&x.branchId===scope.branchId&&x.status==="in_stock")
++        .sort((a,b)=>a.receivedDate.localeCompare(b.receivedDate)||a._creationTime-b._creationTime);
++      if(serials.length<qty) throw new ConvexError(`Serial stock haitoshi kwa ${product.name}.`);
++      for(const serial of serials.slice(0,qty)) await ctx.db.patch("stockSerials",serial._id,{status:"sold",soldDate:now.slice(0,10),reference:String(fresh._id)});
++    }
+   }
+   await ctx.db.patch("waiterOrders", fresh._id, { stockDeducted: true, stockDeductedAt: now, updatedAt: now });
+   return true;
++}
++
++async function restoreWaiterLotAllocations(ctx: MutationCtx, orderId: Id<"waiterOrders">) {
++  const allocations=await ctx.db.query("stockLotAllocations").withIndex("by_waiter_order",q=>q.eq("waiterOrderId",orderId)).collect();
++  for(const allocation of allocations){
++    const back=Math.max(0,allocation.quantity-allocation.returnedQuantity);
++    if(back>0){const lot=await ctx.db.get("stockLots",allocation.lotId);if(lot)await ctx.db.patch("stockLots",lot._id,{quantityRemaining:lot.quantityRemaining+back});await ctx.db.patch("stockLotAllocations",allocation._id,{returnedQuantity:allocation.quantity});}
++  }
++  const order=await ctx.db.get("waiterOrders",orderId);
++  for(const productId of [...new Set((order?.lines??[]).map(x=>String(x.productId)))]) {
++    const serials=await ctx.db.query("stockSerials").withIndex("by_product",q=>q.eq("productId",productId as Id<"products">)).collect();
++    for(const serial of serials.filter(x=>x.reference===String(orderId)&&x.status==="sold")) await ctx.db.patch("stockSerials",serial._id,{status:"in_stock",soldDate:undefined,reference:serial.receivedReference});
++  }
+ }
+ 
+ /**
+@@ -362,6 +392,7 @@
+         });
+       }
+     }
++    if (order.stockDeducted) await restoreWaiterLotAllocations(ctx, order._id);
+     await ctx.db.patch("waiterOrders", order._id, { status: "cancelled", stockDeducted: false, cancelledAt: now, cancelledBy: user._id, updatedAt: now });
+     await logAudit(ctx, user, { action: "cancel_waiter_order", module: "sales", referenceId: String(order._id), referenceType: "waiterOrder", details: `${order.customerName}; total ${order.total}` });
+     return order._id;
+@@ -566,6 +597,7 @@
+           });
+         }
+       }
++      if (order.stockDeducted) await restoreWaiterLotAllocations(ctx, order._id);
+       const updated = {
+         ...order,
+         customerName,
+@@ -627,6 +659,7 @@
+           });
+         }
+       }
++      if (order.stockDeducted) await restoreWaiterLotAllocations(ctx, order._id);
+       await ctx.db.patch("waiterOrders", order._id, {
+         status: "cancelled", stockDeducted: false, cancelledAt: now, cancelledBy: user._id, updatedAt: now,
+       });
+--- a/convex/sales.ts
++++ b/convex/sales.ts
+@@ -188,6 +188,33 @@
+       const product = await ctx.db.get("products", line.productId); if (!product) throw new ConvexError("Bidhaa haipatikani."); const balance = product.currentQty - line.qty;
+       await ctx.db.patch("products", line.productId, { currentQty: balance });
+       await ctx.db.insert("stockMovements", { ...scope, movementDate: args.invoiceDate, productId: line.productId, movementType: "sale", referenceId: String(invoiceId), referenceType: "invoice", qtyIn: 0, qtyOut: line.qty, runningBalance: balance, unitCost: line.cost, clientId: args.clientId, createdBy: user._id });
++      // Keep tracked lot balances in sync with ordinary invoice stock-out (FEFO).
++      const allocatedLotIds = new Set<string>();
++      if (product.trackExpiry || product.trackBatchNumbers) {
++        const lots = (await ctx.db.query("stockLots").withIndex("by_product", (q) => q.eq("productId", line.productId)).collect())
++          .filter((x) => x.tenantId === scope.tenantId && x.branchId === scope.branchId && x.quantityRemaining > 0)
++          .sort((a, b) => (a.expiryDate ?? "9999-12-31").localeCompare(b.expiryDate ?? "9999-12-31") || a.receivedDate.localeCompare(b.receivedDate));
++        const trackedQty = lots.reduce((n, x) => n + x.quantityRemaining, 0);
++        if (trackedQty + 1e-8 < line.qty) throw new ConvexError(`Batch stock haitoshi kwa ${product.name}. Batch zilizorekodiwa: ${trackedQty}, unayouza: ${line.qty}.`);
++        let remaining = line.qty;
++        for (const lot of lots) {
++          if (remaining <= 1e-8) break;
++          const used = Math.min(remaining, lot.quantityRemaining);
++          await ctx.db.patch("stockLots", lot._id, { quantityRemaining: Math.max(0, lot.quantityRemaining - used) });
++          allocatedLotIds.add(String(lot._id));
++          await ctx.db.insert("stockLotAllocations", { ...scope, invoiceId, productId: line.productId, lotId: lot._id, quantity: used, returnedQuantity: 0 });
++          remaining -= used;
++        }
++      }
++      // Serial-tracked items are assigned oldest in-stock serials automatically at invoice posting.
++      if (product.trackSerialNumbers && !Number.isInteger(line.qty)) throw new ConvexError(`Bidhaa ${product.name} inafuatilia serial number; idadi ya mauzo lazima iwe namba kamili.`);
++      if (product.trackSerialNumbers && Number.isInteger(line.qty)) {
++        const serialRows = (await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", line.productId)).collect())
++          .filter((x) => x.tenantId === scope.tenantId && x.branchId === scope.branchId && x.status === "in_stock" && (!(product.trackExpiry || product.trackBatchNumbers) || !allocatedLotIds.size || (!!x.lotId && allocatedLotIds.has(String(x.lotId)))))
++          .sort((a, b) => a.receivedDate.localeCompare(b.receivedDate) || a._creationTime - b._creationTime);
++        if (serialRows.length < line.qty) throw new ConvexError(`Serial stock haitoshi kwa ${product.name}. Serial zilizopo: ${serialRows.length}, unayouza: ${line.qty}.`);
++        for (const serial of serialRows.slice(0, line.qty)) await ctx.db.patch("stockSerials", serial._id, { status: "sold", soldDate: args.invoiceDate, reference: String(invoiceId) });
++      }
+     }
+     if (paid > 0) await ctx.db.insert("customerPayments", { ...scope, paymentDate: args.invoiceDate, clientId: args.clientId, invoiceId, amount: paid, paymentMethod: initialPay?.method ?? "cash", paymentMethodId: initialPay?.methodId, createdBy: user._id, notes: "Malipo ya awali ya invoice" });
+     // Post revenue, receivable/cash, tax and cost of goods sold atomically with invoice and stock.
+@@ -334,6 +361,20 @@
+       const balance = product.currentQty + qty;
+       await ctx.db.patch("products", l.productId, { currentQty: balance });
+       await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId: l.productId, movementType: "sale_return", referenceId: String(a.invoiceId), referenceType: "invoice_void", qtyIn: qty, qtyOut: 0, runningBalance: balance, unitCost: l.costAtSale, clientId: invoice.clientId, notes: cancellationReason, createdBy: user._id });
++      const serialsToRestore = await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", l.productId)).collect();
++      for (const serial of serialsToRestore.filter((x) => x.reference === String(a.invoiceId) && x.status === "sold").slice(0, Math.floor(qty))) {
++        await ctx.db.patch("stockSerials", serial._id, { status: "in_stock", soldDate: undefined, reference: serial.receivedReference });
++      }
++    }
++
++    const lotAllocations = await ctx.db.query("stockLotAllocations").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
++    for (const allocation of lotAllocations) {
++      const qtyBack = Math.max(0, allocation.quantity - allocation.returnedQuantity);
++      if (qtyBack > 0) {
++        const lot = await ctx.db.get("stockLots", allocation.lotId);
++        if (lot) await ctx.db.patch("stockLots", lot._id, { quantityRemaining: lot.quantityRemaining + qtyBack });
++        await ctx.db.patch("stockLotAllocations", allocation._id, { returnedQuantity: allocation.quantity });
++      }
+     }
+ 
+     // 2. Ledger: reverse revenue, tax and cost of goods; clear what was still owed; refund each payment to its own account.
+@@ -469,6 +510,21 @@
+       const balance = product.currentQty + x.qty;
+       await ctx.db.patch("products", x.line.productId, { currentQty: balance });
+       await ctx.db.insert("stockMovements", { ...scope, movementDate: returnDate, productId: x.line.productId, movementType: "sale_return", referenceId: String(returnId), referenceType: "sales_return", qtyIn: x.qty, qtyOut: 0, runningBalance: balance, unitCost: x.line.costAtSale, clientId: invoice.clientId, notes: a.reason, createdBy: user._id });
++      let qtyToRestore = x.qty;
++      const allocations = await ctx.db.query("stockLotAllocations").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
++      for (const allocation of allocations.filter((z) => z.productId === x.line.productId && z.returnedQuantity < z.quantity)) {
++        if (qtyToRestore <= 1e-8) break;
++        const available = allocation.quantity - allocation.returnedQuantity;
++        const back = Math.min(available, qtyToRestore);
++        const lot = await ctx.db.get("stockLots", allocation.lotId);
++        if (lot) await ctx.db.patch("stockLots", lot._id, { quantityRemaining: lot.quantityRemaining + back });
++        await ctx.db.patch("stockLotAllocations", allocation._id, { returnedQuantity: allocation.returnedQuantity + back });
++        qtyToRestore -= back;
++      }
++      const returnedSerials = await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", x.line.productId)).collect();
++      for (const serial of returnedSerials.filter((z) => z.reference === String(a.invoiceId) && z.status === "sold").slice(0, Math.floor(x.qty))) {
++        await ctx.db.patch("stockSerials", serial._id, { status: "in_stock", soldDate: undefined, reference: serial.receivedReference });
++      }
+     }
+ 
+     // 5. Ledger (rejects a closed period before anything is committed - the whole mutation rolls back).
+--- a/convex/inventory.ts
++++ b/convex/inventory.ts
+@@ -233,6 +233,139 @@
+   },
+ });
+ 
++
++/** Historical inventory valuation reconstructed from dated stock movements using FIFO layers. */
++export const historicalStockValue = query({
++  args: { asOfDate: v.string(), groupId: v.optional(v.id("productGroups")) },
++  handler: async (ctx, a) => {
++    const user = await requirePermission(ctx, "stock.view", "stock");
++    assertDate(a.asOfDate, "Tarehe ya valuation");
++    const products = filterScoped(user, await scopedRows(ctx, user, "products"))
++      .filter((p) => p.isActive && (!a.groupId || p.groupId === a.groupId));
++    const groups = filterScoped(user, await scopedRows(ctx, user, "productGroups"));
++    const groupNames = new Map(groups.map((g) => [String(g._id), g.name]));
++    const productIds = new Set(products.map((p) => String(p._id)));
++    const allMoves = filterScoped(user, await scopedRows(ctx, user, "stockMovements"))
++      .filter((m) => productIds.has(String(m.productId)) && m.movementDate <= a.asOfDate)
++      .sort((x, y) => x.movementDate.localeCompare(y.movementDate) || x._creationTime - y._creationTime);
++    const layers = new Map<string, Array<{ qty: number; cost: number }>>();
++    for (const p of products) layers.set(String(p._id), []);
++    for (const m of allMoves) {
++      const q = layers.get(String(m.productId)); if (!q) continue;
++      if (m.qtyIn > 0) q.push({ qty: m.qtyIn, cost: m.unitCost ?? 0 });
++      let out = m.qtyOut;
++      while (out > 1e-8 && q.length) {
++        const first = q[0]; const used = Math.min(first.qty, out);
++        first.qty = round8(first.qty - used); out = round8(out - used);
++        if (first.qty <= 1e-8) q.shift();
++      }
++      // If outbound history predates the first recorded receipt, retain an explicit zero-cost layer
++      // rather than fabricating a historical purchase cost.
++      if (out > 1e-8) q.unshift({ qty: out, cost: 0 });
++    }
++    const rows = products.map((p) => {
++      const remaining = layers.get(String(p._id)) ?? [];
++      const qty = round8(remaining.reduce((n, x) => n + x.qty, 0));
++      const value = round2(remaining.reduce((n, x) => n + x.qty * x.cost, 0));
++      const unknownQty = round8(remaining.filter((x) => x.cost <= 0).reduce((n, x) => n + x.qty, 0));
++      return { productId: p._id, code: p.itemCode, name: p.name, groupName: p.groupId ? groupNames.get(String(p.groupId)) ?? "—" : "—", quantity: qty, value, averageCost: qty > 0 ? round2(value / qty) : 0, unknownCostQty: unknownQty };
++    }).sort((x, y) => y.value - x.value);
++    return { asOfDate: a.asOfDate, method: "FIFO", rows, totals: {
++      quantity: round8(rows.reduce((n, x) => n + x.quantity, 0)),
++      value: round2(rows.reduce((n, x) => n + x.value, 0)),
++      unknownCostQty: round8(rows.reduce((n, x) => n + x.unknownCostQty, 0)),
++    }};
++  },
++});
++
++/** Lot/expiry register for goods already received. This is a traceability record; it does not change stock quantity. */
++export const listTrackedLots = query({
++  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()), productId: v.optional(v.id("products")) },
++  handler: async (ctx, a) => {
++    const user = await requirePermission(ctx, "stock.view", "stock");
++    const products = filterScoped(user, await scopedRows(ctx, user, "products"));
++    const names = new Map(products.map((p) => [String(p._id), { name: p.name, code: p.itemCode }]));
++    const rows = filterScoped(user, await scopedRows(ctx, user, "stockLots"))
++      .filter((x) => (!a.productId || x.productId === a.productId) && (!a.startDate || (x.expiryDate ?? "") >= a.startDate) && (!a.endDate || (x.expiryDate ?? "") <= a.endDate))
++      .map((x) => ({ ...x, productName: names.get(String(x.productId))?.name ?? "Bidhaa", itemCode: names.get(String(x.productId))?.code ?? "—" }))
++      .sort((x, y) => (x.expiryDate ?? "9999").localeCompare(y.expiryDate ?? "9999"));
++    return rows;
++  },
++});
++
++export const registerStockLot = mutation({
++  args: { productId: v.id("products"), lotNumber: v.string(), receivedDate: v.string(), expiryDate: v.optional(v.string()), quantity: v.number(), unitCost: v.number(), reference: v.optional(v.string()), notes: v.optional(v.string()) },
++  handler: async (ctx, a) => {
++    const user = await requirePermission(ctx, "stock.adjust", "stock");
++    const scope = await resolveWriteScope(ctx, user);
++    assertDate(a.receivedDate, "Tarehe ya kupokea");
++    if (a.expiryDate) { assertDate(a.expiryDate, "Tarehe ya mwisho wa matumizi"); if (a.expiryDate < a.receivedDate) throw new ConvexError("Expiry date haiwezi kuwa kabla ya tarehe ya kupokea."); }
++    if (!a.lotNumber.trim() || !(a.quantity > 0) || !(a.unitCost >= 0)) throw new ConvexError("Jaza lot number, quantity na unit cost sahihi.");
++    const product = await ctx.db.get("products", a.productId);
++    if (!product || !canAccessRecord(user, product) || !product.trackExpiry && !product.trackBatchNumbers) throw new ConvexError("Bidhaa hii haijawezeshwa Batch/Expiry tracking.");
++    const duplicate = await ctx.db.query("stockLots").withIndex("by_lot", q => q.eq("tenantId", scope.tenantId).eq("productId", a.productId).eq("lotNumber", a.lotNumber.trim())).first();
++    if (duplicate) throw new ConvexError("Lot number hii tayari imesajiliwa kwa bidhaa hii.");
++    const existing = filterScoped(user, await scopedRows(ctx, user, "stockLots")).filter((x) => x.productId === a.productId).reduce((n, x) => n + x.quantityRemaining, 0);
++    if (existing + a.quantity > product.currentQty + 1e-8) throw new ConvexError("Kiasi cha batch kinazidi stock iliyopo. Sajili kiasi kilichopokelewa tu.");
++    return await ctx.db.insert("stockLots", { ...scope, productId: a.productId, lotNumber: a.lotNumber.trim(), receivedDate: a.receivedDate, expiryDate: a.expiryDate, quantityReceived: a.quantity, quantityRemaining: a.quantity, unitCost: a.unitCost, reference: a.reference, notes: a.notes, createdBy: user._id });
++  },
++});
++
++export const listTrackedSerials = query({
++  args: { startDate: v.optional(v.string()), endDate: v.optional(v.string()), productId: v.optional(v.id("products")), status: v.optional(v.string()) },
++  handler: async (ctx, a) => {
++    const user = await requirePermission(ctx, "stock.view", "stock");
++    const products = filterScoped(user, await scopedRows(ctx, user, "products"));
++    const names = new Map(products.map((p) => [String(p._id), { name: p.name, code: p.itemCode }]));
++    return filterScoped(user, await scopedRows(ctx, user, "stockSerials"))
++      .filter((x) => (!a.productId || x.productId === a.productId) && (!a.status || x.status === a.status) && (!a.startDate || x.receivedDate >= a.startDate) && (!a.endDate || x.receivedDate <= a.endDate))
++      .map((x) => ({ ...x, productName: names.get(String(x.productId))?.name ?? "Bidhaa", itemCode: names.get(String(x.productId))?.code ?? "—" }))
++      .sort((x, y) => y.receivedDate.localeCompare(x.receivedDate));
++  },
++});
++
++export const registerStockSerials = mutation({
++  args: { productId: v.id("products"), serialNumbers: v.array(v.string()), receivedDate: v.string(), unitCost: v.number(), lotId: v.optional(v.id("stockLots")), reference: v.optional(v.string()), notes: v.optional(v.string()) },
++  handler: async (ctx, a) => {
++    const user = await requirePermission(ctx, "stock.adjust", "stock");
++    const scope = await resolveWriteScope(ctx, user);
++    assertDate(a.receivedDate, "Tarehe ya kupokea");
++    const serials = [...new Set(a.serialNumbers.map((x) => x.trim()).filter(Boolean))];
++    if (!serials.length || serials.length !== a.serialNumbers.length || serials.length > 200 || !(a.unitCost >= 0)) throw new ConvexError("Weka serial numbers za kipekee (zisizozidi 200) na unit cost sahihi.");
++    const product = await ctx.db.get("products", a.productId);
++    if (!product || !canAccessRecord(user, product) || !product.trackSerialNumbers) throw new ConvexError("Bidhaa hii haijawezeshwa Serial Number tracking.");
++    let linkedLot: Doc<"stockLots"> | null = null;
++    if (product.trackExpiry || product.trackBatchNumbers) {
++      if (!a.lotId) throw new ConvexError("Chagua batch/lot inayohusiana na serial numbers hizi.");
++      linkedLot = await ctx.db.get("stockLots", a.lotId);
++      if (!linkedLot || linkedLot.productId !== a.productId || linkedLot.tenantId !== scope.tenantId || linkedLot.branchId !== scope.branchId) throw new ConvexError("Batch/lot haipatikani kwenye biashara au tawi hili.");
++      if (a.receivedDate < linkedLot.receivedDate) throw new ConvexError("Tarehe ya serial haiwezi kuwa kabla ya tarehe ya batch.");
++      const inStockForLot = (await ctx.db.query("stockSerials").withIndex("by_product", q => q.eq("productId", a.productId)).collect()).filter(x => x.lotId === linkedLot!._id && x.status === "in_stock").length;
++      if (inStockForLot + serials.length > linkedLot.quantityRemaining + 1e-8) throw new ConvexError("Serial numbers zinazidi vipande vilivyobaki kwenye batch hii.");
++    }
++    const existing = filterScoped(user, await scopedRows(ctx, user, "stockSerials")).filter((x) => x.productId === a.productId && x.status === "in_stock");
++    if (existing.length + serials.length > Math.floor(product.currentQty)) throw new ConvexError("Serial numbers zinazidi vipande vya stock vilivyopo.");
++    for (const serialNumber of serials) {
++      const found = await ctx.db.query("stockSerials").withIndex("by_serial", q => q.eq("tenantId", scope.tenantId).eq("serialNumber", serialNumber)).first();
++      if (found) throw new ConvexError(`Serial number ${serialNumber} tayari imesajiliwa.`);
++    }
++    for (const serialNumber of serials) await ctx.db.insert("stockSerials", { ...scope, productId: a.productId, serialNumber, receivedDate: a.receivedDate, status: "in_stock", unitCost: a.unitCost, lotId: linkedLot?._id, supplierId: linkedLot?.supplierId, reference: a.reference ?? linkedLot?.reference, receivedReference: a.reference ?? linkedLot?.reference, notes: a.notes, createdBy: user._id });
++    return { created: serials.length };
++  },
++});
++
++export const updateStockSerialStatus = mutation({
++  args: { serialId: v.id("stockSerials"), status: v.string(), soldDate: v.optional(v.string()) },
++  handler: async (ctx, a) => {
++    const user = await requirePermission(ctx, "stock.adjust", "stock");
++    if (!["in_stock", "sold", "returned", "scrapped"].includes(a.status)) throw new ConvexError("Hali ya serial si sahihi.");
++    const row = await ctx.db.get("stockSerials", a.serialId);
++    if (!row || !canAccessRecord(user, row)) throw new ConvexError("Serial number haipatikani.");
++    if (a.soldDate) assertDate(a.soldDate, "Tarehe ya mauzo");
++    await ctx.db.patch("stockSerials", a.serialId, { status: a.status, soldDate: a.status === "sold" ? (a.soldDate ?? new Date().toISOString().slice(0, 10)) : undefined });
++  },
++});
++
+ /** Repairs old products whose movement history does not add up to the current quantity (e.g. opening stock saved before movements existed). */
+ export const reconcileMovements = mutation({
+   args: {},
+--- a/convex/maintenance.ts
++++ b/convex/maintenance.ts
+@@ -1032,7 +1032,7 @@
+   "productGroups", "unitsOfMeasure", "products", "purchasePriceHistory", "suppliers", "purchaseSequences",
+   "purchases", "purchaseLines", "purchaseOrders", "purchaseOrderLines", "goodsReceivedNotes", "grnLines",
+   "supplierPayments", "purchaseReturns", "purchaseReturnLines", "clients", "invoices", "invoiceLines",
+-  "customerPayments", "salesReturns", "stockMovements", "stockAdjustments", "employees", "attendance",
++  "customerPayments", "salesReturns", "stockMovements", "stockAdjustments", "stockLots", "stockSerials", "stockLotAllocations", "employees", "attendance",
+   "workSchedules", "offDays", "attendanceRules", "payrollPeriods", "payrollRecords", "accounts", "journalEntries", "journalLines", "expenses", "auditLogs",
+ ] as const;
+ 
+--- a/convex/tenants.ts
++++ b/convex/tenants.ts
+@@ -33,7 +33,7 @@
+ /** Switch the department a floating user (owner / manager not tied to one department) is working in. */
+ export const switchDepartment=mutation({args:{branchId:v.optional(v.id("branches"))},handler:async(ctx,args)=>{const user=await requireActiveUser(ctx);if(!user.tenantId)throw new ConvexError("Chagua biashara kwanza.");const locked=!!user.branchId&&!user.branchPicked&&!isSuperAdmin(user);if(locked)throw new ConvexError("Akaunti yako imefungwa kwenye idara moja.");const allowedIds=allowedBranchIds(user);if(allowedIds&&(!args.branchId||!allowedIds.includes(args.branchId)))throw new ConvexError("Huna ruhusa ya idara hiyo.");if(!args.branchId){await ctx.db.patch("users", user._id,{branchId:undefined,branchPicked:false});return null;}const branch=await ctx.db.get("branches", args.branchId);if(!branch||branch.tenantId!==user.tenantId||!branch.isActive)throw new ConvexError("Idara haipatikani.");await ctx.db.patch("users", user._id,{branchId:args.branchId,branchPicked:true});return args.branchId;}});
+ /** Remove (deactivate) a department — only when nothing was ever recorded in it and nobody is tied to it. */
+-export const removeDepartment=mutation({args:{branchId:v.id("branches")},handler:async(ctx,args)=>{const user=await requireManager(ctx);const branch=await ctx.db.get("branches", args.branchId);if(!branch)throw new ConvexError("Idara haipatikani.");if(!isSuperAdmin(user)&&branch.tenantId!==user.tenantId)throw new ConvexError("Huna ruhusa kwa biashara hii.");const tenantScope=branch.tenantId;const branchScope=args.branchId;const tied=(await ctx.db.query("users").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).collect()).filter(u=>!u.branchPicked);if(tied.length>0)throw new ConvexError("Kuna watumiaji waliofungwa kwenye idara hii. Wahamishe kwanza.");const records=await Promise.all([ctx.db.query("products").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("clients").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("suppliers").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("invoices").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("purchases").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("stockMovements").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("journalEntries").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("expenses").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("bills").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("employees").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("customerPayments").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("supplierPayments").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("capitalReceipts").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("payrollPeriods").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("stockAdjustments").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("productGroups").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("salesReturns").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("purchaseOrders").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("attendance").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("leaveRequests").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first()]);if(records.some(Boolean))throw new ConvexError("Idara hii ina rekodi (mauzo, stock au hesabu), haiwezi kuondolewa.");// Users given several departments just lose this one (left with one department they become tied to it).
++export const removeDepartment=mutation({args:{branchId:v.id("branches")},handler:async(ctx,args)=>{const user=await requireManager(ctx);const branch=await ctx.db.get("branches", args.branchId);if(!branch)throw new ConvexError("Idara haipatikani.");if(!isSuperAdmin(user)&&branch.tenantId!==user.tenantId)throw new ConvexError("Huna ruhusa kwa biashara hii.");const tenantScope=branch.tenantId;const branchScope=args.branchId;const tied=(await ctx.db.query("users").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).collect()).filter(u=>!u.branchPicked);if(tied.length>0)throw new ConvexError("Kuna watumiaji waliofungwa kwenye idara hii. Wahamishe kwanza.");const records=await Promise.all([ctx.db.query("products").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("clients").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("suppliers").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("invoices").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("purchases").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("stockMovements").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("journalEntries").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("expenses").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("bills").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("employees").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("customerPayments").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("supplierPayments").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("capitalReceipts").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("payrollPeriods").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("stockAdjustments").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("stockLots").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("stockSerials").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("productGroups").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("salesReturns").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("purchaseOrders").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("attendance").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first(),ctx.db.query("leaveRequests").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).first()]);if(records.some(Boolean))throw new ConvexError("Idara hii ina rekodi (mauzo, stock au hesabu), haiwezi kuondolewa.");// Users given several departments just lose this one (left with one department they become tied to it).
+ for(const u of await ctx.db.query("users").withIndex("by_scope",q=>q.eq("tenantId",tenantScope)).collect()){if(!u.branchIds?.includes(args.branchId))continue;const acc=resolveDepartmentAccess({branchId:u.branchId===args.branchId?undefined:u.branchId,branchIds:u.branchIds.filter(id=>id!==args.branchId)});await ctx.db.patch("users", u._id,{branchId:acc.branchId,branchIds:acc.branchIds,branchPicked:acc.branchPicked});}
+ for(const u of await ctx.db.query("users").withIndex("by_scope",q=>q.eq("tenantId",tenantScope).eq("branchId",branchScope)).collect())await ctx.db.patch("users", u._id,{branchId:undefined,branchPicked:false});await ctx.db.patch("branches", args.branchId,{isActive:false});await logAudit(ctx,user,{action:"remove_department",module:"maintenance",referenceId:String(args.branchId),details:branch.name});return args.branchId;}});
+ 
+--- a/convex/sellingPoint.test.ts
++++ b/convex/sellingPoint.test.ts
+@@ -354,3 +354,28 @@
+     })).rejects.toThrow(/malipo/i);
+   });
+ });
++
++describe("Selling Point: tracked batches and serial numbers", () => {
++  it("deducts FEFO batch quantity and assigns serials, then restores both when the waiter cancels", async () => {
++    const { t, asEditor, tenantId, bia } = await setup();
++    await t.run(async (ctx) => {
++      await ctx.db.patch("products", bia, { trackExpiry: true, trackBatchNumbers: true, trackSerialNumbers: true });
++      const lotId = await ctx.db.insert("stockLots", { tenantId, productId: bia, lotNumber: "LOT-W1", receivedDate: day, expiryDate: "2099-12-31", quantityReceived: 10, quantityRemaining: 10, unitCost: 500, reference: "OPENING-W1", createdBy: (await ctx.db.query("users").collect()).find(u => u.username === "boss")!._id });
++      const waiter = (await ctx.db.query("users").collect()).find(u => u.username === "editor")!;
++      for (let i = 1; i <= 10; i++) await ctx.db.insert("stockSerials", { tenantId, productId: bia, lotId, serialNumber: `W-SN-${i}`, receivedDate: day, status: "in_stock", unitCost: 500, reference: "OPENING-W1", receivedReference: "OPENING-W1", createdBy: waiter._id });
++    });
++    const placed = await asEditor.mutation(api.waiterOrders.submit, { clientKey: "track-waiter-001", mode: "send", lines: [{ productId: bia, qty: 2 }] });
++    await t.run(async (ctx) => {
++      const lot = (await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-W1");
++      expect(lot?.quantityRemaining).toBe(8);
++      expect((await ctx.db.query("stockLotAllocations").withIndex("by_waiter_order", q => q.eq("waiterOrderId", placed.orderId)).collect()).reduce((n, x) => n + x.quantity, 0)).toBe(2);
++      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "sold" && x.reference === String(placed.orderId))).toHaveLength(2);
++    });
++    await asEditor.mutation(api.waiterOrders.cancel, { orderId: placed.orderId });
++    await t.run(async (ctx) => {
++      const lot = (await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-W1");
++      expect(lot?.quantityRemaining).toBe(10);
++      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "in_stock")).toHaveLength(10);
++    });
++  });
++});
+--- a/convex/purchasingEdit.test.ts
++++ b/convex/purchasingEdit.test.ts
+@@ -155,3 +155,53 @@
+     expect(await asClerk.query(api.tenants.current, {})).toMatchObject({ canEditPurchase: false, canDeletePurchase: true });
+   });
+ });
++
++describe("purchase / GRN tracked stock integration", () => {
++  it("captures batch, expiry and serials on direct purchase and restores provenance on supplier return void", async () => {
++    const { t, asMgr, supplierId, productId } = await setup();
++    await t.run(async (ctx) => { await ctx.db.patch("products", productId, { trackExpiry: true, trackBatchNumbers: true, trackSerialNumbers: true }); });
++    const r = await asMgr.mutation(api.purchasing.receivePurchase, { supplierId, purchaseDate: date, lines: [{ productId, qty: 2, unitCost: 1000, lotNumber: "LOT-PUR-1", expiryDate: "2099-12-31", serialNumbers: ["PUR-SN-1", "PUR-SN-2"] }] });
++    await t.run(async (ctx) => {
++      const lot = (await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-PUR-1");
++      expect(lot).toMatchObject({ quantityReceived: 2, quantityRemaining: 2, supplierId });
++      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.receivedReference === String(r.purchaseId))).toHaveLength(2);
++    });
++    const ret = await asMgr.mutation(api.purchasing.postPurchaseReturn, { purchaseId: r.purchaseId, returnDate: date, lines: [{ productId, qty: 1 }] });
++    await t.run(async (ctx) => {
++      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-PUR-1")?.quantityRemaining).toBe(1);
++      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "returned" && x.reference === `PURCHASE_RETURN:${String(ret.returnId)}`)).toHaveLength(1);
++    });
++    await asMgr.mutation(api.purchasingEdit.voidPurchaseReturn, { returnId: ret.returnId });
++    await t.run(async (ctx) => {
++      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-PUR-1")?.quantityRemaining).toBe(2);
++      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "in_stock" && x.receivedReference === String(r.purchaseId))).toHaveLength(2);
++    });
++    await asMgr.mutation(api.purchasingEdit.voidPurchase, { purchaseId: r.purchaseId });
++    await t.run(async (ctx) => {
++      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-PUR-1")?.quantityRemaining).toBe(0);
++      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.status === "voided")).toHaveLength(2);
++    });
++  });
++
++  it("captures batch, expiry and serials when an approved PO is received through GRN", async () => {
++    const { t, asMgr, supplierId, productId } = await setup();
++    await t.run(async (ctx) => { await ctx.db.patch("products", productId, { trackExpiry: true, trackBatchNumbers: true, trackSerialNumbers: true }); });
++    const po = await asMgr.mutation(api.purchasing.createPurchaseOrder, { supplierId, orderDate: date, lines: [{ productId, qty: 2, unitCost: 750 }] });
++    await asMgr.mutation(api.purchasing.approvePurchaseOrder, { orderId: po.orderId });
++    const grn = await asMgr.mutation(api.purchasing.createGoodsReceivedNote, { purchaseOrderId: po.orderId, receiptDate: date, lines: [{ productId, qtyReceived: 2, qtyRejected: 0, lotNumber: "LOT-GRN-1", expiryDate: "2099-12-31", serialNumbers: ["GRN-SN-1", "GRN-SN-2"] }] });
++    // Editing a draft line must preserve its batch and serial metadata.
++    await asMgr.mutation(api.purchasingEdit.editGoodsReceivedNote, { grnId: grn.grnId, lines: [{ productId, qtyReceived: 2, qtyRejected: 0 }] });
++    await asMgr.mutation(api.purchasing.confirmGoodsReceivedNote, { grnId: grn.grnId });
++    await t.run(async (ctx) => {
++      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-GRN-1")).toMatchObject({ quantityReceived: 2, quantityRemaining: 2, reference: grn.grnRef });
++      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.receivedReference === grn.grnRef)).toHaveLength(2);
++      expect((await ctx.db.get("products", productId))?.currentQty).toBe(2);
++    });
++    await asMgr.mutation(api.purchasingEdit.cancelGoodsReceivedNote, { grnId: grn.grnId, reason: "Jaribio la kurudisha GRN" });
++    await t.run(async (ctx) => {
++      expect((await ctx.db.get("products", productId))?.currentQty).toBe(0);
++      expect((await ctx.db.query("stockLots").collect()).find(x => x.lotNumber === "LOT-GRN-1")?.quantityRemaining).toBe(0);
++      expect((await ctx.db.query("stockSerials").collect()).filter(x => x.receivedReference === grn.grnRef && x.status === "voided")).toHaveLength(2);
++    });
++  });
++});
+--- a/src/pages/layout/_components/ModuleWorkspace.tsx
++++ b/src/pages/layout/_components/ModuleWorkspace.tsx
+@@ -46,6 +46,7 @@
+   const [busy,setBusy]=useState(false);
+   const [purchaseReceipt,setPurchaseReceipt]=useState<null|{reference:string;date:string;party:string;amount:number;method:string}>(null);
+   const [purchaseLines,setPurchaseLines]=useState<Array<{productId:string;qty:string;unitCost:string;total:string}>>([]);
++  const [purchaseTracking,setPurchaseTracking]=useState<Record<string,{lotNumber:string;expiryDate:string;serialNumbers:string}>>({});
+   useEffect(()=>{ if(module==="purchasing" && (products??[]).length && purchaseLines.length===0) setPurchaseLines((products??[]).map(p=>({productId:String(p._id),qty:"",unitCost:String(p.lastPurchaseCost??p.weightedAvgCost??0),total:"0"}))); },[module,products,purchaseLines.length]);
+   const [form,setForm]=useState<Record<string,string>>({date:new Date().toISOString().slice(0,10),qty:"1",price:"0",cost:"0",amount:"0",tax:"0",discount:"0",newQty:"0",rate:"0",purchasePaymentMode:"credit"});
+   const set=(key:string,value:string)=>setForm(p=>({...p,[key]:value}));
+@@ -57,7 +58,7 @@
+   return <div className="mx-auto max-w-6xl space-y-6 p-4 md:p-8">{purchaseReceipt && <TransactionReceipt title={tr("RISITI YA MALIPO YA MANUNUZI")} reference={purchaseReceipt.reference} date={purchaseReceipt.date} partyLabel={tr("Supplier")} party={purchaseReceipt.party} amount={purchaseReceipt.amount} method={purchaseReceipt.method} note={tr("Malipo ya awali ya purchase yamehifadhiwa.")} />}<div><h1 className="text-2xl font-bold">{title}</h1><p className="text-sm text-muted-foreground">{tr("Taarifa huhifadhiwa kwenye database; ruhusa za ofisi na branch hukaguliwa upande wa server.")}</p></div>
+   {module==="sales"&&<><section className="rounded-xl border p-5"><h2 className="mb-4 font-semibold">{tr("Tengeneza invoice na punguza stock")}</h2><div className="grid gap-4 md:grid-cols-2">{select(tr("Mteja"),"clientId",clients)}{field(tr("Tarehe"),"date","date")}{select(tr("Bidhaa"),"productId",products)}{field(tr("Kiasi"),"qty","number")}{field(tr("Bei kwa kipande"),"price","number")}{field(tr("Discount ya mstari"),"lineDiscount","number")}{field(tr("Tax (%)"),"tax","number")}</div><div className="mt-4">{submit(async()=>{if(!form.clientId||!form.productId)throw new Error(tr("Chagua mteja na bidhaa."));return createInvoice({clientId:form.clientId as Id<"clients">,invoiceDate:form.date??"",lines:[{productId:form.productId as Id<"products">,qty:Number(form.qty),unitPrice:Number(form.price),discount:Number(form.lineDiscount||0)}],taxRate:Number(form.tax||0),paymentAmount:0,paymentMethod:"cash"});})}</div></section><DataTable title={tr("Invoices za karibuni")} rows={(invoices??[]).slice().reverse().slice(0,20).map(x=>({Namba:x.invoiceNo,Tarehe:x.invoiceDate,Jumla:x.total,Deni:x.outstanding,Hali:x.paymentStatus}))}/></>}
+   {module==="stock"&&<>{canAdjustStock&&<section className="rounded-xl border p-5"><h2 className="mb-4 font-semibold">{tr("Stock adjustment")}</h2><div className="grid gap-4 md:grid-cols-2">{select(tr("Bidhaa"),"productId",products)}{field(tr("Kiasi kipya"),"newQty","number")}{field(tr("Tarehe"),"date","date")}{field(tr("Sababu"),"reason")}</div><div className="mt-4">{submit(async()=>{if(!form.productId)throw new Error(tr("Chagua bidhaa."));return adjustStock({productId:form.productId as Id<"products">,newQty:Number(form.newQty),reason:form.reason||"Stock count",adjustmentDate:form.date??""});})}</div></section>}<DataTable title={tr("Stock movement history")} rows={(movements??[]).slice(0,30).map(x=>({Tarehe:x.movementDate,Bidhaa:(products??[]).find(p=>p._id===x.productId)?.name??String(x.productId),Aina:trValue(x.movementType),Ingizo:x.qtyIn,Matumizi:x.qtyOut,Balance:x.runningBalance}))}/></>}
+-  {module==="purchasing"&&<><section className="rounded-xl border p-5"><h2 className="mb-2 text-lg font-semibold">{tr("Purchase Entry — pokea bidhaa")}</h2><p className="mb-4 text-sm text-muted-foreground">{tr("Bidhaa zote zinaonekana kwenye jedwali. Jaza kiasi kilichopokelewa tu; mistari yenye kiasi tupu au sifuri haitahifadhiwa.")}</p><div className="grid gap-4 md:grid-cols-2"><label className="grid gap-1 text-sm">{tr("Supplier (hiari)")}<SearchSelect value={form.supplierId??""} onChange={v=>set("supplierId",v)} placeholder={tr("Chagua supplier au acha wazi")} options={(suppliers??[]).filter(x=>x.isActive||String(x._id)===form.supplierId).map(x=>({value:String(x._id),label:x.name,hint:[x.code,x.phone].filter(Boolean).join(" · ")}))}/></label>{field(tr("Tarehe"),"date","date")}<label className="grid gap-1 text-sm">{tr("Invoice number ya supplier (hiari)")}<Input value={form.supplierInvoiceNo??""} onChange={e=>set("supplierInvoiceNo",e.target.value)}/></label><div className="grid gap-1 text-sm"><span>{tr("Aina ya malipo")}</span><select className="h-10 rounded-md border bg-background px-3" value={form.purchasePaymentMode??"credit"} onChange={e=>{set("purchasePaymentMode",e.target.value);if(e.target.value==="credit")setPurchasePay([newSplitLine(methods)]);}}><option value="credit">{tr("Credit — deni lote")}</option><option value="partial">{tr("Partial payment — malipo ya sehemu")}</option><option value="paid">{tr("Paid — imelipwa yote")}</option></select></div></div>{form.purchasePaymentMode!=="credit"&&<div className="mt-4"><PaymentSplit methods={methods} lines={purchasePay} onChange={setPurchasePay} due={purchaseLines.reduce((t,l)=>t+(Number(l.total)||0),0)}/></div>}<div className="mt-6 overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead><tr className="border-b text-left"><th className="p-2">{tr("Bidhaa")}</th><th className="p-2">{tr("Unit")}</th><th className="p-2">{tr("Stock ya sasa")}</th><th className="p-2">{tr("Quantity iliyopokelewa")}</th><th className="p-2">{tr("Last Cost")}</th><th className="p-2 text-right">{tr("Total")}</th></tr></thead><tbody>{purchaseLines.map((line,index)=>{const product=(products??[]).find(p=>String(p._id)===line.productId);const updateLine=(patch:Partial<typeof line>)=>setPurchaseLines(old=>old.map((x,i)=>i===index?{...x,...patch}:x));return <tr key={line.productId} className="border-b"><td className="p-2 font-medium">{product?.name??"—"}</td><td className="p-2">{units?.find(unit=>unit._id===product?.unitId)?.name??tr("Unit")}</td><td className="p-2">{product?.currentQty??0}</td><td className="p-2"><Input aria-label={tr("Quantity {0}",[product?.name??index+1])} className="w-28" type="number" min="0" step="any" placeholder="0" value={line.qty} onChange={e=>{const qty=e.target.value;updateLine({qty,total:String((Number(qty)||0)*(Number(line.unitCost)||0))});}}/></td><td className="p-2"><Input aria-label={tr("Last Cost ya {0}",[product?.name??index+1])} className="w-28" type="number" min="0" step="any" value={line.unitCost} onChange={e=>{const unitCost=e.target.value;updateLine({unitCost,total:String((Number(line.qty)||0)*(Number(unitCost)||0))});}}/></td><td className="p-2"><Input aria-label={tr("Total ya {0}",[product?.name??index+1])} className="w-32 text-right" type="number" min="0" step="any" value={line.total} onChange={e=>{const total=e.target.value;const qty=Number(line.qty)||0;updateLine({total,unitCost:qty>0&&Number.isFinite(Number(total))?String(Number(total)/qty):"0"});}}/></td></tr>})}</tbody></table></div><div className="mt-4 flex flex-wrap items-center justify-between gap-3"><div className="text-sm text-muted-foreground">{tr("Bidhaa zitakazoingizwa")}: {purchaseLines.filter(l=>Number(l.qty)>0).length}</div><div className="text-right"><div className="text-sm text-muted-foreground">{tr("Jumla ya invoice")}</div><div className="text-xl font-bold">{purchaseLines.reduce((s,l)=>s+(Number(l.total)||0),0).toLocaleString("en-US")}</div></div></div><div className="mt-4">{submit(async()=>{const activeLines=purchaseLines.filter(l=>Number(l.qty)>0);if(!activeLines.length)throw new Error(tr("Weka kiasi cha angalau bidhaa moja."));if(activeLines.some(l=>!(Number(l.unitCost)>=0)||!Number.isFinite(Number(l.unitCost))))throw new Error(tr("Gharama ya bidhaa si sahihi."));const total=activeLines.reduce((sum,l)=>sum+Number(l.qty)*Number(l.unitCost),0);let splits= form.purchasePaymentMode==="credit"?undefined:toSplits(purchasePay,methods);if(form.purchasePaymentMode==="paid"&&Math.abs(splitsTotal(purchasePay)-total)>0.01)throw new Error(tr("Kwa malipo kamili, kiasi cha malipo lazima kilingane na jumla ya invoice."));if(form.purchasePaymentMode==="partial"&&(splitsTotal(purchasePay)<=0||splitsTotal(purchasePay)>=total))throw new Error(tr("Weka malipo ya sehemu yaliyo chini ya jumla ya invoice."));const result=await receivePurchase({supplierId:form.supplierId?form.supplierId as Id<"suppliers">:undefined,purchaseDate:form.date??"",supplierInvoiceNo:form.supplierInvoiceNo||undefined,splits:splits?.length?splits:undefined,lines:activeLines.map(l=>({productId:l.productId as Id<"products">,qty:Number(l.qty),unitCost:Number(l.unitCost)}))});if(splitsTotal(purchasePay)>0)setPurchaseReceipt({reference:result.internalRef||result.invoiceNo,date:form.date??"",party:(suppliers??[]).find(s=>String(s._id)===form.supplierId)?.name??tr("Supplier hajatajwa"),amount:splitsTotal(purchasePay),method:describeSplits(purchasePay,methods)});setPurchasePay([newSplitLine(methods)]);setForm(old=>({...old,supplierInvoiceNo:"",purchasePaymentMode:"credit"}));return result;})}</div></section><PurchaseListTable purchases={purchases??[]}/></>}
++  {module==="purchasing"&&<><section className="rounded-xl border p-5"><h2 className="mb-2 text-lg font-semibold">{tr("Purchase Entry — pokea bidhaa")}</h2><p className="mb-4 text-sm text-muted-foreground">{tr("Bidhaa zote zinaonekana kwenye jedwali. Jaza kiasi kilichopokelewa tu; mistari yenye kiasi tupu au sifuri haitahifadhiwa.")}</p><div className="grid gap-4 md:grid-cols-2"><label className="grid gap-1 text-sm">{tr("Supplier (hiari)")}<SearchSelect value={form.supplierId??""} onChange={v=>set("supplierId",v)} placeholder={tr("Chagua supplier au acha wazi")} options={(suppliers??[]).filter(x=>x.isActive||String(x._id)===form.supplierId).map(x=>({value:String(x._id),label:x.name,hint:[x.code,x.phone].filter(Boolean).join(" · ")}))}/></label>{field(tr("Tarehe"),"date","date")}<label className="grid gap-1 text-sm">{tr("Invoice number ya supplier (hiari)")}<Input value={form.supplierInvoiceNo??""} onChange={e=>set("supplierInvoiceNo",e.target.value)}/></label><div className="grid gap-1 text-sm"><span>{tr("Aina ya malipo")}</span><select className="h-10 rounded-md border bg-background px-3" value={form.purchasePaymentMode??"credit"} onChange={e=>{set("purchasePaymentMode",e.target.value);if(e.target.value==="credit")setPurchasePay([newSplitLine(methods)]);}}><option value="credit">{tr("Credit — deni lote")}</option><option value="partial">{tr("Partial payment — malipo ya sehemu")}</option><option value="paid">{tr("Paid — imelipwa yote")}</option></select></div></div>{form.purchasePaymentMode!=="credit"&&<div className="mt-4"><PaymentSplit methods={methods} lines={purchasePay} onChange={setPurchasePay} due={purchaseLines.reduce((t,l)=>t+(Number(l.total)||0),0)}/></div>}<div className="mt-6 overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead><tr className="border-b text-left"><th className="p-2">{tr("Bidhaa")}</th><th className="p-2">{tr("Unit")}</th><th className="p-2">{tr("Stock ya sasa")}</th><th className="p-2">{tr("Quantity iliyopokelewa")}</th><th className="p-2">{tr("Last Cost")}</th><th className="p-2 text-right">{tr("Total")}</th></tr></thead><tbody>{purchaseLines.map((line,index)=>{const product=(products??[]).find(p=>String(p._id)===line.productId);const updateLine=(patch:Partial<typeof line>)=>setPurchaseLines(old=>old.map((x,i)=>i===index?{...x,...patch}:x));return <tr key={line.productId} className="border-b"><td className="p-2 font-medium">{product?.name??"—"}</td><td className="p-2">{units?.find(unit=>unit._id===product?.unitId)?.name??tr("Unit")}</td><td className="p-2">{product?.currentQty??0}</td><td className="p-2"><Input aria-label={tr("Quantity {0}",[product?.name??index+1])} className="w-28" type="number" min="0" step="any" placeholder="0" value={line.qty} onChange={e=>{const qty=e.target.value;updateLine({qty,total:String((Number(qty)||0)*(Number(line.unitCost)||0))});}}/></td><td className="p-2"><Input aria-label={tr("Last Cost ya {0}",[product?.name??index+1])} className="w-28" type="number" min="0" step="any" value={line.unitCost} onChange={e=>{const unitCost=e.target.value;updateLine({unitCost,total:String((Number(line.qty)||0)*(Number(unitCost)||0))});}}/></td><td className="p-2"><Input aria-label={tr("Total ya {0}",[product?.name??index+1])} className="w-32 text-right" type="number" min="0" step="any" value={line.total} onChange={e=>{const total=e.target.value;const qty=Number(line.qty)||0;updateLine({total,unitCost:qty>0&&Number.isFinite(Number(total))?String(Number(total)/qty):"0"});}}/></td></tr>})}</tbody></table></div>{purchaseLines.filter(l=>Number(l.qty)>0).some(l=>{const p=(products??[]).find(x=>String(x._id)===l.productId);return !!(p?.trackExpiry||p?.trackBatchNumbers||p?.trackSerialNumbers);})&&<section className="mt-4 space-y-3 rounded-lg border p-3"><h3 className="font-semibold">{tr("Batch / Expiry / Serial tracking")}</h3>{purchaseLines.filter(l=>Number(l.qty)>0).map(line=>{const product=(products??[]).find(p=>String(p._id)===line.productId);if(!product?.trackExpiry&&!product?.trackBatchNumbers&&!product?.trackSerialNumbers)return null;const meta=purchaseTracking[line.productId]??{lotNumber:"",expiryDate:"",serialNumbers:""};return <div key={line.productId} className="grid gap-2 rounded-md border p-3 md:grid-cols-2"><div className="md:col-span-2 text-sm font-medium">{product.name} — Qty {line.qty}</div>{(product.trackExpiry||product.trackBatchNumbers)&&<><label className="grid gap-1 text-xs">{tr("Batch / Lot number")}<Input value={meta.lotNumber} onChange={e=>setPurchaseTracking(v=>({...v,[line.productId]:{...meta,lotNumber:e.target.value}}))}/></label>{product.trackExpiry&&<label className="grid gap-1 text-xs">{tr("Expiry date")}<Input type="date" value={meta.expiryDate} onChange={e=>setPurchaseTracking(v=>({...v,[line.productId]:{...meta,expiryDate:e.target.value}}))}/></label>}</>}{product.trackSerialNumbers&&<label className="grid gap-1 text-xs md:col-span-2">{tr("Serial numbers — moja kwa kila mstari")}<textarea className="min-h-20 rounded-md border bg-background p-2" value={meta.serialNumbers} onChange={e=>setPurchaseTracking(v=>({...v,[line.productId]:{...meta,serialNumbers:e.target.value}}))}/></label>}</div>})}</section>}<div className="mt-4 flex flex-wrap items-center justify-between gap-3"><div className="text-sm text-muted-foreground">{tr("Bidhaa zitakazoingizwa")}: {purchaseLines.filter(l=>Number(l.qty)>0).length}</div><div className="text-right"><div className="text-sm text-muted-foreground">{tr("Jumla ya invoice")}</div><div className="text-xl font-bold">{purchaseLines.reduce((s,l)=>s+(Number(l.total)||0),0).toLocaleString("en-US")}</div></div></div><div className="mt-4">{submit(async()=>{const activeLines=purchaseLines.filter(l=>Number(l.qty)>0);if(!activeLines.length)throw new Error(tr("Weka kiasi cha angalau bidhaa moja."));if(activeLines.some(l=>!(Number(l.unitCost)>=0)||!Number.isFinite(Number(l.unitCost))))throw new Error(tr("Gharama ya bidhaa si sahihi."));const total=activeLines.reduce((sum,l)=>sum+Number(l.qty)*Number(l.unitCost),0);let splits= form.purchasePaymentMode==="credit"?undefined:toSplits(purchasePay,methods);if(form.purchasePaymentMode==="paid"&&Math.abs(splitsTotal(purchasePay)-total)>0.01)throw new Error(tr("Kwa malipo kamili, kiasi cha malipo lazima kilingane na jumla ya invoice."));if(form.purchasePaymentMode==="partial"&&(splitsTotal(purchasePay)<=0||splitsTotal(purchasePay)>=total))throw new Error(tr("Weka malipo ya sehemu yaliyo chini ya jumla ya invoice."));const result=await receivePurchase({supplierId:form.supplierId?form.supplierId as Id<"suppliers">:undefined,purchaseDate:form.date??"",supplierInvoiceNo:form.supplierInvoiceNo||undefined,splits:splits?.length?splits:undefined,lines:activeLines.map(l=>{const meta=purchaseTracking[l.productId]??{lotNumber:"",expiryDate:"",serialNumbers:""};return {productId:l.productId as Id<"products">,qty:Number(l.qty),unitCost:Number(l.unitCost),lotNumber:meta.lotNumber||undefined,expiryDate:meta.expiryDate||undefined,serialNumbers:meta.serialNumbers.split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean)};})});if(splitsTotal(purchasePay)>0)setPurchaseReceipt({reference:result.internalRef||result.invoiceNo,date:form.date??"",party:(suppliers??[]).find(s=>String(s._id)===form.supplierId)?.name??tr("Supplier hajatajwa"),amount:splitsTotal(purchasePay),method:describeSplits(purchasePay,methods)});setPurchasePay([newSplitLine(methods)]);setPurchaseLines(old=>old.map(line=>({...line,qty:"",total:"0"})));setPurchaseTracking({});setForm(old=>({...old,supplierInvoiceNo:"",purchasePaymentMode:"credit"}));return result;})}</div></section><PurchaseListTable purchases={purchases??[]}/></>}
+   {module==="payroll"&&<><section className="rounded-xl border p-5"><h2 className="mb-4 font-semibold">{tr("Sajili mfanyakazi")}</h2><div className="grid gap-4 md:grid-cols-2">{field(tr("Employee code"),"employeeCode")}{field(tr("Jina kamili"),"name")}{field(tr("Tarehe ya kuanza"),"startDate","date")}{field(tr("Mshahara wa msingi"),"basicSalary","number")}{select(tr("Aina ya mshahara"),"salaryType",[{_id:"monthly",name:tr("Monthly")},{_id:"daily",name:tr("Daily")},{_id:"hourly",name:tr("Hourly")}])}{field(tr("Simu"),"phone")}{field(tr("Email"),"email")}{field(tr("Nafasi"),"position")}</div><div className="mt-4">{submit(()=>createEmployee({employeeCode:form.employeeCode??"",name:form.name??"",startDate:form.startDate||form.date||"",basicSalary:Number(form.basicSalary),salaryType:form.salaryType||"monthly",phone:form.phone,email:form.email,position:form.position}))}</div></section><section className="rounded-xl border p-5"><h2 className="mb-4 font-semibold">{tr("Hesabu payroll")}</h2><div className="grid gap-4 md:grid-cols-2">{field(tr("Jina la kipindi"),"periodName")}{field(tr("Tarehe ya kuanza"),"startDate","date")}{field(tr("Tarehe ya mwisho"),"endDate","date")}{field(tr("Deduction rate (%) — weka kiwango kilichoidhinishwa"),"rate","number")}{field(tr("Makato mengine kwa mfanyakazi"),"otherDeduction","number")}</div><div className="mt-4">{submit(()=>processPayroll({name:form.periodName??"",startDate:form.startDate??"",endDate:form.endDate??"",deductionRatePercent:Number(form.rate||0),otherDeductionPerEmployee:Number(form.otherDeduction||0)}))}</div></section><section className="rounded-xl border p-5"><h2 className="mb-3 font-semibold">{tr("Idhinisha na lipa payroll")}</h2><div className="space-y-3">{(periods??[]).map(x=><div key={x._id} className="flex flex-wrap items-center justify-between gap-3 border-b pb-3"><div><div className="font-medium">{x.name}</div><div className="text-sm text-muted-foreground">{x.startDate} — {x.endDate}  {tr("· Net:")} {x.totalNet} · {trValue(x.status)}</div></div><div className="flex gap-2">{x.status==="draft"&&<Button disabled={busy} onClick={()=>void run(()=>approvePayroll({periodId:x._id}))}>{tr("Idhinisha")}</Button>}{x.status==="approved"&&<Button disabled={busy} onClick={()=>void run(()=>markPayrollPaid({periodId:x._id}))}>{tr("Thibitisha malipo")}</Button>}</div></div>)}</div></section><DataTable title={tr("Payroll periods")} rows={(periods??[]).map(x=>({Kipindi:x.name,Kuanzia:x.startDate,Kuishia:x.endDate,Gross:x.totalGross,Makato:x.totalDeductions,Net:x.totalNet,Hali:trValue(x.status)}))}/><DataTable title={tr("Wafanyakazi")} rows={(employees??[]).map(x=>({Code:x.employeeCode,Jina:x.name,Mshahara:x.basicSalary,Hali:x.isActive?tr("Active"):tr("Inactive")}))}/></>}
+   {module==="accounts"&&<><section className="rounded-xl border p-5"><h2 className="mb-4 font-semibold">{tr("Ongeza account kwenye Chart of Accounts")}</h2><div className="grid gap-4 md:grid-cols-2">{field(tr("Account code"),"accountCode")}{field(tr("Jina la account"),"accountName")}{select(tr("Aina ya account"),"accountType",[{_id:"asset",name:tr("Asset")},{_id:"liability",name:tr("Liability")},{_id:"equity",name:tr("Equity")},{_id:"revenue",name:tr("Revenue")},{_id:"expense",name:tr("Expense")}])}{field(tr("Maelezo"),"accountDescription")}</div><div className="mt-4">{submit(()=>createAccount({code:form.accountCode??"",name:form.accountName??"",type:form.accountType??"",description:form.accountDescription}))}</div></section><section className="rounded-xl border p-5"><h2 className="mb-4 font-semibold">{tr("Journal entry (double-entry)")}</h2><p className="mb-4 text-sm text-muted-foreground">{tr("Weka account ya debit na account ya credit; jumla lazima zilingane kabla ya kupost.")}</p><div className="grid gap-4 md:grid-cols-2">{field(tr("Tarehe"),"date","date")}{field(tr("Reference ya kipekee"),"reference")}{field(tr("Maelezo"),"description")}{select(tr("Account ya Debit"),"debitAccount",accounts)}{field(tr("Kiasi cha Debit"),"debit","number")}{select(tr("Account ya Credit"),"creditAccount",accounts)}{field(tr("Kiasi cha Credit"),"credit","number")}</div><div className="mt-4">{submit(()=>postJournal({entryDate:form.date??"",reference:form.reference??"",description:form.description??"",lines:[{accountId:form.debitAccount as Id<"accounts">,debit:Number(form.debit),credit:0},{accountId:form.creditAccount as Id<"accounts">,debit:0,credit:Number(form.credit)}]}))}</div></section><DataTable title={tr("Journal entries")} rows={(journals??[]).slice(0,30).map(x=>({Tarehe:x.entryDate,Reference:x.reference,Maelezo:x.description,Debit:x.totalDebit,Credit:x.totalCredit,Hali:trValue(x.status)}))}/><DataTable title={tr("Chart of accounts")} rows={(accounts??[]).map(x=>({Code:x.code,Jina:x.name,Aina:trValue(x.type),Balance:x.balance}))}/></>}
+   </div>;
+--- a/src/pages/purchasing/RegisterWorkspace.tsx
++++ b/src/pages/purchasing/RegisterWorkspace.tsx
+@@ -21,6 +21,7 @@
+   const [qty, setQty] = useState("1"); const [unitCost, setUnitCost] = useState("0");
+   const [orderId, setOrderId] = useState(""); const [purchaseId, setPurchaseId] = useState("");
+   const [returnQty, setReturnQty] = useState("1"); const [returnReason, setReturnReason] = useState("");
++  const [trackingByProduct, setTrackingByProduct] = useState<Record<string,{lotNumber:string;expiryDate:string;serialNumbers:string}>>({});
+   const createOrder = useMutation(api.purchasing.createPurchaseOrder);
+   const approveOrder = useMutation(api.purchasing.approvePurchaseOrder);
+   const createGrn = useMutation(api.purchasing.createGoodsReceivedNote);
+@@ -62,7 +63,7 @@
+   const selectedPurchase = data.purchases.find(p => String(p._id) === purchaseId);
+   const form = showForm && (path === "orders" || path === "grn" || path === "returns") ? <section className="space-y-4 rounded-xl border p-4">
+     {path === "orders" && <><h2 className="font-semibold">{tr("Unda Purchase Order")}</h2><div className="grid gap-3 md:grid-cols-2"><label className="grid gap-1 text-sm">{tr("Supplier")}<select className="h-10 rounded-md border bg-background px-3" value={supplierId} onChange={e=>setSupplierId(e.target.value)}><option value="">{tr("Chagua supplier")}</option>{data.suppliers.filter(s=>s.isActive).map(s=><option key={s._id} value={s._id}>{s.name}</option>)}</select></label><label className="grid gap-1 text-sm">{tr("Bidhaa")}<select className="h-10 rounded-md border bg-background px-3" value={productId} onChange={e=>setProductId(e.target.value)}><option value="">{tr("Chagua bidhaa")}</option>{activeProducts.map(p=><option key={p._id} value={p._id}>{p.name}</option>)}</select></label><label className="grid gap-1 text-sm">{tr("Quantity")}<Input type="number" step="any" min="0.00000001" value={qty} onChange={e=>setQty(e.target.value)}/></label><label className="grid gap-1 text-sm">{tr("Unit Cost")}<Input type="number" step="any" min="0" value={unitCost} onChange={e=>setUnitCost(e.target.value)}/></label></div><Button onClick={()=>void run(async()=>{if(!supplierId||!productId)throw new Error(tr("Chagua supplier na bidhaa."));await createOrder({supplierId:supplierId as Id<"suppliers">,orderDate:today(),lines:[{productId:productId as Id<"products">,qty:Number(qty),unitCost:Number(unitCost)}]});})}>{tr("Save Purchase Order")}</Button></>}
+-    {path === "grn" && <><h2 className="font-semibold">{tr("Goods Received Note")}</h2><label className="grid max-w-xl gap-1 text-sm">{tr("Approved Purchase Order")}<select className="h-10 rounded-md border bg-background px-3" value={orderId} onChange={e=>setOrderId(e.target.value)}><option value="">{tr("Chagua PO")}</option>{data.orders.filter(o=>["approved","partially_received"].includes(o.status)).map(o=><option key={o._id} value={o._id}>{o.orderRef} — {supplierName(o.supplierId)}</option>)}</select></label>{selectedOrder&&data.orderLines.filter(l=>String(l.orderId)===orderId&&l.remaining>0).map(l=><div key={l._id} className="flex flex-wrap items-center justify-between gap-2 text-sm"><span>{l.productName}  {tr("— salio")} {l.remaining}</span><span>{tr("Unit cost:")} {money(l.unitCost)}</span></div>)}<p className="text-xs text-muted-foreground">{tr("Fomu hii inapokea bidhaa zote zilizobaki kwenye PO iliyochaguliwa. Hakikisha PO imeidhinishwa kwanza.")}</p><Button onClick={()=>void run(async()=>{if(!selectedOrder)throw new Error(tr("Chagua PO."));const lines=data.orderLines.filter(l=>String(l.orderId)===orderId&&l.remaining>0).map(l=>({productId:l.productId,qtyReceived:l.remaining,qtyRejected:0}));if(!lines.length)throw new Error(tr("Hakuna bidhaa zilizosalia kupokea."));const result=await createGrn({purchaseOrderId:selectedOrder._id,receiptDate:today(),lines});await confirmGrn({grnId:result.grnId});})}>{tr("Confirm Receipt & Update Stock")}</Button></>}
++    {path === "grn" && <><h2 className="font-semibold">{tr("Goods Received Note")}</h2><label className="grid max-w-xl gap-1 text-sm">{tr("Approved Purchase Order")}<select className="h-10 rounded-md border bg-background px-3" value={orderId} onChange={e=>setOrderId(e.target.value)}><option value="">{tr("Chagua PO")}</option>{data.orders.filter(o=>["approved","partially_received"].includes(o.status)).map(o=><option key={o._id} value={o._id}>{o.orderRef} — {supplierName(o.supplierId)}</option>)}</select></label>{selectedOrder&&data.orderLines.filter(l=>String(l.orderId)===orderId&&l.remaining>0).map(l=>{const product=data.products.find(p=>p._id===l.productId);const tracked=!!(product?.trackExpiry||product?.trackBatchNumbers||product?.trackSerialNumbers);const meta=trackingByProduct[String(l.productId)]??{lotNumber:"",expiryDate:"",serialNumbers:""};return <div key={l._id} className="grid gap-2 rounded-lg border p-3 text-sm"><div className="flex flex-wrap items-center justify-between"><span className="font-medium">{l.productName} — {tr("salio")} {l.remaining}</span><span>{tr("Unit cost:")} {money(l.unitCost)}</span></div>{tracked&&<div className="grid gap-2 md:grid-cols-2">{(product?.trackExpiry||product?.trackBatchNumbers)&&<><label className="grid gap-1">{tr("Batch / Lot number")}<Input value={meta.lotNumber} onChange={e=>setTrackingByProduct(v=>({...v,[String(l.productId)]:{...meta,lotNumber:e.target.value}}))}/></label>{product?.trackExpiry&&<label className="grid gap-1">{tr("Expiry date")}<Input type="date" value={meta.expiryDate} onChange={e=>setTrackingByProduct(v=>({...v,[String(l.productId)]:{...meta,expiryDate:e.target.value}}))}/></label>}</>}{product?.trackSerialNumbers&&<label className="grid gap-1 md:col-span-2">{tr("Serial numbers — moja kwa kila mstari")}<textarea className="min-h-20 rounded-md border bg-background p-2" value={meta.serialNumbers} onChange={e=>setTrackingByProduct(v=>({...v,[String(l.productId)]:{...meta,serialNumbers:e.target.value}}))}/></label>}</div>}</div>})}<p className="text-xs text-muted-foreground">{tr("Fomu hii inapokea bidhaa zote zilizobaki kwenye PO iliyochaguliwa. Hakikisha PO imeidhinishwa kwanza.")}</p><Button onClick={()=>void run(async()=>{if(!selectedOrder)throw new Error(tr("Chagua PO."));const lines=data.orderLines.filter(l=>String(l.orderId)===orderId&&l.remaining>0).map(l=>{const product=data.products.find(p=>p._id===l.productId);const meta=trackingByProduct[String(l.productId)]??{lotNumber:"",expiryDate:"",serialNumbers:""};return {productId:l.productId,qtyReceived:l.remaining,qtyRejected:0,lotNumber:meta.lotNumber||undefined,expiryDate:meta.expiryDate||undefined,serialNumbers:meta.serialNumbers.split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean)};});if(!lines.length)throw new Error(tr("Hakuna bidhaa zilizosalia kupokea."));const result=await createGrn({purchaseOrderId:selectedOrder._id,receiptDate:today(),lines});await confirmGrn({grnId:result.grnId});})}>{tr("Confirm Receipt & Update Stock")}</Button></>}
+     {path === "returns" && <><h2 className="font-semibold">{tr("Purchase Return")}</h2><div className="grid gap-3 md:grid-cols-2"><label className="grid gap-1 text-sm">{tr("Purchase Invoice")}<select className="h-10 rounded-md border bg-background px-3" value={purchaseId} onChange={e=>setPurchaseId(e.target.value)}><option value="">{tr("Chagua invoice")}</option>{data.purchases.filter(p=>p.status==="posted").map(p=><option key={p._id} value={p._id}>{p.invoiceNo??p.internalRef} — {supplierName(p.supplierId)}</option>)}</select></label><label className="grid gap-1 text-sm">{tr("Bidhaa iliyonunuliwa")}<select className="h-10 rounded-md border bg-background px-3" value={productId} onChange={e=>setProductId(e.target.value)}><option value="">{tr("Chagua bidhaa")}</option>{data.lines.filter(l=>String(l.purchaseId)===purchaseId).map(l=><option key={`${l.purchaseId}-${l.productId}`} value={l.productId}>{l.productName}  {tr("(qty")} {l.qty})</option>)}</select></label><label className="grid gap-1 text-sm">{tr("Quantity ya kurudisha")}<Input type="number" min="0.00000001" step="any" value={returnQty} onChange={e=>setReturnQty(e.target.value)}/></label><label className="grid gap-1 text-sm">{tr("Sababu")}<Input value={returnReason} onChange={e=>setReturnReason(e.target.value)}/></label></div><Button onClick={()=>void run(async()=>{if(!selectedPurchase||!productId)throw new Error(tr("Chagua invoice na bidhaa."));await postReturn({purchaseId:selectedPurchase._id,returnDate:today(),reason:returnReason||undefined,lines:[{productId:productId as Id<"products">,qty:Number(returnQty)}]});})}>{tr("Post Return & Reduce Stock")}</Button></>}
+     <Button variant="outline" onClick={()=>setShowForm(false)}>{tr("Cancel")}</Button>
+   </section> : null;
+--- a/src/components/PurchaseManage.tsx
++++ b/src/components/PurchaseManage.tsx
+@@ -183,7 +183,7 @@
+   );
+ }
+ 
+-function GrnEditForm({ id, data, products, onClose }: { id: Id<"goodsReceivedNotes">; data: { grn: { receiptDate: string; notes?: string }; lines: Array<{ productId: Id<"products">; qtyReceived: number; qtyRejected: number }> }; products: Products; onClose: () => void }) {
++function GrnEditForm({ id, data, products, onClose }: { id: Id<"goodsReceivedNotes">; data: { grn: { receiptDate: string; notes?: string }; lines: Array<{ productId: Id<"products">; qtyReceived: number; qtyRejected: number; lotNumber?: string; expiryDate?: string; serialNumbers?: string[] }> }; products: Products; onClose: () => void }) {
+   const edit = useMutation(api.purchasingEdit.editGoodsReceivedNote);
+   const { busy, run } = useSave(onClose);
+   const [f, setF] = useState({ date: data.grn.receiptDate, notes: data.grn.notes ?? "", lines: data.lines.map((l) => ({ productId: String(l.productId), received: String(l.qtyReceived), rejected: String(l.qtyRejected) })) });
+@@ -201,7 +201,7 @@
+           <tbody>
+             {f.lines.map((l, i) => (
+               <tr key={l.productId} className="border-b">
+-                <td className="p-2">{nameOf(l.productId)}</td>
++                <td className="p-2">{nameOf(l.productId)}{(data.lines[i].lotNumber || data.lines[i].expiryDate || data.lines[i].serialNumbers?.length) && <div className="mt-1 text-xs text-muted-foreground">{[data.lines[i].lotNumber ? `Lot: ${data.lines[i].lotNumber}` : "", data.lines[i].expiryDate ? `Expiry: ${data.lines[i].expiryDate}` : "", data.lines[i].serialNumbers?.length ? `Serials: ${data.lines[i].serialNumbers.length}` : ""].filter(Boolean).join(" · ")}</div>}</td>
+                 <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.received} onChange={(e) => setLine(i, { received: e.target.value })} /></td>
+                 <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.rejected} onChange={(e) => setLine(i, { rejected: e.target.value })} /></td>
+               </tr>
+--- a/src/pages/stock/StockWorkspace.tsx
++++ b/src/pages/stock/StockWorkspace.tsx
+@@ -173,7 +173,11 @@
+ /* ───────────────────────── Quantity Adjustment ───────────────────────── */
+ 
+ function AdjustmentScreen() {
+-  const data = useQuery(api.inventory.stockRegisters, { startDate: monthStart(), endDate: today(), light: true });
++  const [start, setStart] = useState(monthStart());
++  const [end, setEnd] = useState(today());
++  const [appliedStart, setAppliedStart] = useState(monthStart());
++  const [appliedEnd, setAppliedEnd] = useState(today());
++  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
+   const adjust = useMutation(api.inventory.adjust);
+   const rights = useStockRights();
+   const [productId, setProductId] = useState("");
+@@ -187,7 +191,10 @@
+   const diff = product && counted !== "" ? round2(num(counted) - product.currentQty) : 0;
+   return (
+     <div className="space-y-5">
+-      <h1 className="text-2xl font-bold">{tr("Quantity Adjustment")}</h1>
++      <div className="flex flex-wrap items-end justify-between gap-3">
++        <h1 className="text-2xl font-bold">{tr("Quantity Adjustment")}</h1>
++        <DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} />
++      </div>
+       <section className="grid gap-4 rounded-xl border p-5 md:grid-cols-2">
+         <label className="grid gap-1 text-sm">{tr("Bidhaa")}
+           <select className={selectClass} value={productId} onChange={(e) => { setProductId(e.target.value); setCounted(""); }}>
+@@ -212,7 +219,7 @@
+           })()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi Adjustment")}</Button>
+         </div>
+       </section>
+-      <ReportTable title={tr("Adjustments za mwezi huu")} rows={data.adjustments.map((x) => ({ Tarehe: x.date, Code: x.itemCode, Bidhaa: x.productName, "Kabla": x.qtyBefore, "Baada": x.counted, Tofauti: x.difference, Sababu: x.reason }))} />
++      <ReportTable title={tr("Stock Adjustments Report")} note={tr("Inaonyesha marekebisho ya stock ndani ya kipindi ulichochagua hapo juu.")} rows={data.adjustments.map((x) => ({ Tarehe: x.date, Code: x.itemCode, Bidhaa: x.productName, "Kabla": x.qtyBefore, "Baada": x.counted, Tofauti: x.difference, Sababu: x.reason }))} sumCols={["Tofauti"]} />
+     </div>
+   );
+ }
+@@ -273,26 +280,35 @@
+ /* ───────────────────────── Quantity-based views and reports ───────────────────────── */
+ 
+ function QuantityScreen({ kind }: { kind: "item-quantity" | "quantity" | "prices" | "reorder" | "out-of-stock" }) {
+-  // Only the quantity screens compare stock with the whole movement history; the others stay light.
+-  const data = useQuery(api.inventory.stockRegisters, { light: !(kind === "item-quantity" || kind === "quantity") });
++  const hasPeriod = kind !== "prices";
++  const [start, setStart] = useState(monthStart());
++  const [end, setEnd] = useState(today());
++  const [appliedStart, setAppliedStart] = useState(monthStart());
++  const [appliedEnd, setAppliedEnd] = useState(today());
++  // Quantity/reorder/zero-stock reports are evaluated at the selected period end from the stock movement ledger.
++  // Prices remain a current master-data snapshot and therefore do not pretend to be historical.
++  const data = useQuery(api.inventory.stockRegisters, hasPeriod
++    ? { startDate: appliedStart, endDate: appliedEnd, light: true }
++    : { light: true });
+   const reconcile = useMutation(api.inventory.reconcileMovements);
+   const { canAdjust: canReconcile } = useStockRights();
+   const [group, setGroup] = useState("");
+   if (!data) return loading;
+   const titles = { "item-quantity": tr("Item Quantity"), quantity: tr("Quantity Report"), prices: tr("Selling Price Report"), reorder: tr("Stock Reorder Report"), "out-of-stock": tr("Out of Stock Report") };
+   let list = data.products.filter((p) => p.isActive && (!group || p.groupId === group));
+-  if (kind === "reorder") list = list.filter((p) => p.reorderLevel !== null && p.currentQty <= p.reorderLevel);
+-  if (kind === "out-of-stock") list = list.filter((p) => p.currentQty <= 0);
++  const reportQty = (p: (typeof list)[number]) => hasPeriod ? p.qtyEnd : p.currentQty;
++  if (kind === "reorder") list = list.filter((p) => p.reorderLevel !== null && reportQty(p) <= p.reorderLevel);
++  if (kind === "out-of-stock") list = list.filter((p) => reportQty(p) <= 0);
+   let rows: Row[];
+   let sumCols: string[] = [];
+   if (kind === "prices") {
+     rows = list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Unit: p.unitName, "Bei ya kuuzia": p.sellingPrice, Cost: p.cost, "Faida/kipande": round2(p.sellingPrice - p.cost), "Margin %": p.sellingPrice > 0 ? round2(((p.sellingPrice - p.cost) / p.sellingPrice) * 100) : 0 }));
+   } else if (kind === "reorder") {
+-    rows = list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Unit: p.unitName, "Stock iliyopo": p.currentQty, "Reorder Level": p.reorderLevel ?? 0, "Upungufu": round2((p.reorderLevel ?? 0) - p.currentQty), "Last Cost": p.lastPurchaseCost }));
++    rows = list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Unit: p.unitName, "Stock mwisho wa kipindi": reportQty(p), "Reorder Level": p.reorderLevel ?? 0, "Upungufu": round2((p.reorderLevel ?? 0) - reportQty(p)), "Last Cost": p.lastPurchaseCost }));
+   } else if (kind === "out-of-stock") {
+-    rows = list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Unit: p.unitName, "Stock iliyopo": p.currentQty, "Last Cost": p.lastPurchaseCost, "Last Purchase": p.lastPurchaseDate || "—" }));
++    rows = list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Unit: p.unitName, "Stock mwisho wa kipindi": reportQty(p), "Last Cost": p.lastPurchaseCost, "Last Purchase": p.lastPurchaseDate || "—" }));
+   } else {
+-    rows = list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Unit: p.unitName, Stock: p.currentQty, Cost: p.cost, "Thamani (cost)": p.stockValue, "Bei ya kuuzia": p.sellingPrice, "Thamani (bei)": p.retailValue }));
++    rows = list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Unit: p.unitName, "Stock mwisho wa kipindi": reportQty(p), Cost: p.cost, "Thamani (cost)": round2(reportQty(p) * p.cost), "Bei ya kuuzia": p.sellingPrice, "Thamani (bei)": round2(reportQty(p) * p.sellingPrice) }));
+     sumCols = [tr("Thamani (cost)"), tr("Thamani (bei)")];
+   }
+   const bad = data.products.filter((p) => Math.abs(p.difference) > 1e-6);
+@@ -300,13 +316,18 @@
+     <div className="space-y-5">
+       <div className="flex flex-wrap items-end justify-between gap-3">
+         <h1 className="text-2xl font-bold">{titles[kind]}</h1>
+-        <label className="grid gap-1 text-xs print:hidden">{tr("Group")}
++        <div className="flex flex-wrap items-end gap-3 print:hidden">
++          {hasPeriod && <DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} />}
++          <label className="grid gap-1 text-xs">{tr("Group")}
+           <select className={selectClass} value={group} onChange={(e) => setGroup(e.target.value)}><option value="">{tr("Zote")}</option>{data.groups.map((g) => <option key={g._id} value={g._id}>{g.name}</option>)}</select>
+-        </label>
++          </label>
++        </div>
+       </div>
+       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+-        <Stat label={tr("Bidhaa active")} value={data.totals.items} /><Stat label={tr("Thamani ya stock (cost)")} value={data.totals.stockValue} />
+-        <Stat label={tr("Chini ya reorder")} value={data.totals.belowReorder} /><Stat label={tr("Zimeisha stock")} value={data.totals.outOfStock} />
++        <Stat label={tr("Bidhaa active")} value={list.length} />
++        <Stat label={tr(hasPeriod ? "Thamani ya stock (cost) kwa tarehe ya mwisho" : "Thamani ya stock (cost)")} value={round2(list.reduce((n, p) => n + reportQty(p) * p.cost, 0))} />
++        <Stat label={tr("Chini ya reorder")} value={data.products.filter((p) => p.isActive && p.reorderLevel !== null && reportQty(p) <= p.reorderLevel).length} />
++        <Stat label={tr("Zimeisha stock")} value={data.products.filter((p) => p.isActive && reportQty(p) <= 0).length} />
+       </div>
+       {bad.length > 0 && (
+         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/50 bg-amber-500/10 p-4 text-sm">
+@@ -314,7 +335,10 @@
+           {canReconcile && <Button size="sm" onClick={() => void save(async () => { const r = await reconcile({}); if (!r.fixed) throw new Error(tr("Hakuna cha kusawazisha.")); }, tr("Historia ya movements imesawazishwa."))}>{tr("Sawazisha historia")}</Button>}
+         </div>
+       )}
+-      <ReportTable title={titles[kind]} rows={rows} sumCols={sumCols} />
++      <ReportTable title={titles[kind]} note={hasPeriod
++        ? tr("Kiasi kinaonyesha salio lililokadiriwa mwisho wa kipindi kutokana na stock movement ledger. Reorder level ni kiwango cha sasa kilichowekwa kwenye bidhaa; si historia ya reorder level.")
++        : tr("Hii ni snapshot ya bei za sasa za bidhaa. Mfumo hauhifadhi historia ya mabadiliko ya selling price na cost kwa kila tarehe.")}
++        rows={rows} sumCols={sumCols} />
+     </div>
+   );
+ }
+@@ -323,10 +347,11 @@
+ 
+ function TransactionsScreen() {
+   const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
+-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
+-  return (
+-    <div className="space-y-5">
+-      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Transaction Quantity")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
++  const [appliedStart, setAppliedStart] = useState(monthStart()); const [appliedEnd, setAppliedEnd] = useState(today());
++  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
++  return (
++    <div className="space-y-5">
++      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Transaction Quantity")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} /></div>
+       {!data ? loading : (
+         <>
+           <ReportTable title={tr("Muhtasari kwa bidhaa")} sumCols={[]} rows={data.products.filter((p) => p.qtyIn || p.qtyOut || p.qtyBefore).map((p) => ({ Code: p.itemCode, Bidhaa: p.name, "Mwanzo": p.qtyBefore, "Ingizo": p.qtyIn, "Matumizi": p.qtyOut, "Mwisho": p.qtyEnd }))} />
+@@ -339,19 +364,20 @@
+ 
+ function HistoryScreen() {
+   const [start, setStart] = useState("2000-01-01"); const [end, setEnd] = useState(today()); const [productId, setProductId] = useState("");
+-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
+-  return (
+-    <div className="space-y-5">
+-      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Item History")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
++  const [appliedStart, setAppliedStart] = useState("2000-01-01"); const [appliedEnd, setAppliedEnd] = useState(today());
++  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
++  return (
++    <div className="space-y-5">
++      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Item History")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} /></div>
+       {!data ? loading : (() => {
+         const p = data.products.find((x) => x._id === productId);
+         const rows: Row[] = p ? [{ Tarehe: "—", Aina: tr("Salio la kuanzia"), Reference: "", Ingizo: 0, Matumizi: 0, Balance: p.qtyBefore }, ...data.movements.filter((m) => m.productId === p._id).map((m) => ({ Tarehe: m.date, Aina: trValue(m.type), Reference: m.reference, Ingizo: m.qtyIn, Matumizi: m.qtyOut, Balance: m.balance }))] : [];
+         return (
+           <>
+             <label className="grid max-w-md gap-1 text-sm">{tr("Bidhaa")}
+-              <select className={selectClass} value={productId} onChange={(e) => setProductId(e.target.value)}><option value="">{tr("-- Chagua bidhaa --")}</option>{data.products.map((x) => <option key={x._id} value={x._id}>{x.name} ({x.itemCode})</option>)}</select>
++              <select className={selectClass} value={productId} onChange={(e) => { setProductId(e.target.value); setSerialLotId(""); }}><option value="">{tr("-- Chagua bidhaa --")}</option>{data.products.map((x) => <option key={x._id} value={x._id}>{x.name} ({x.itemCode})</option>)}</select>
+             </label>
+-            {p && <div className="grid gap-3 sm:grid-cols-3"><Stat label={tr("Stock iliyopo")} value={`${fmt(p.currentQty, 4)} ${p.unitName}`} /><Stat label={tr("Bei ya kuuzia")} value={p.sellingPrice} /><Stat label={tr("Cost")} value={p.cost} /></div>}
++            {p && <div className="grid gap-3 sm:grid-cols-3"><Stat label={tr("Stock mwisho wa kipindi")} value={`${fmt(p.qtyEnd, 4)} ${p.unitName}`} /><Stat label={tr("Bei ya sasa ya kuuzia")} value={p.sellingPrice} /><Stat label={tr("Cost ya sasa")} value={p.cost} /></div>}
+             {p ? <ReportTable title={tr("Historia — {0}", [p.name])} rows={rows} /> : <p className="text-sm text-muted-foreground">{tr("Chagua bidhaa kuona historia yake kamili.")}</p>}
+           </>
+         );
+@@ -362,10 +388,11 @@
+ 
+ function EarningsScreen() {
+   const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
+-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
+-  return (
+-    <div className="space-y-5">
+-      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Stock Earning Report")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
++  const [appliedStart, setAppliedStart] = useState(monthStart()); const [appliedEnd, setAppliedEnd] = useState(today());
++  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
++  return (
++    <div className="space-y-5">
++      <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Stock Earning Report")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} /></div>
+       {!data ? loading : <ReportTable title={tr("Faida kwa bidhaa")} sumCols={["Invoices", "Mauzo (bila tax)", "Cost ya mauzo", "Faida"]} note="Mauzo huchukuliwa kutoka invoices zilizopostiwa (discount ya invoice imegawanywa kwenye mistari, tax haihesabiwi). Cost ni gharama iliyorekodiwa wakati wa kuuza."
+         rows={data.earnings.map((e) => ({ Code: e.itemCode, Bidhaa: e.productName, "Qty iliyouzwa": e.qtySold, Invoices: e.invoices, "Mauzo (bila tax)": e.sales, "Cost ya mauzo": e.cost, Faida: e.profit, "Margin %": e.marginPct }))} />}
+     </div>
+@@ -373,15 +400,56 @@
+ }
+ 
+ function TrackingScreen({ kind }: { kind: "expiry" | "serials" }) {
+-  const data = useQuery(api.inventory.stockRegisters, { light: true });
+-  if (!data) return loading;
+-  const list = data.products.filter((p) => p.isActive && (kind === "expiry" ? p.trackExpiry : p.trackSerialNumbers));
+-  return (
+-    <div className="space-y-5">
+-      <h1 className="text-2xl font-bold">{kind === "expiry" ? tr("Expired Date Report") : tr("Serial Number Report")}</h1>
+-      <ReportTable title={kind === "expiry" ? tr("Bidhaa zinazofuatiliwa expiry") : tr("Bidhaa zinazofuatiliwa serial number")}
+-        note={kind === "expiry" ? tr("Mfumo bado haurekodi tarehe za expiry kwa kila batch wakati wa kupokea au kuuza; ripoti hii inaorodhesha bidhaa zilizowekwa 'Track expiry' pamoja na stock iliyopo. Ripoti kamili ya expiry itahitaji kurekodi batch/expiry kwenye Purchase/GRN.") : tr("Mfumo bado haurekodi serial number kwa kila kipande; ripoti hii inaorodhesha bidhaa zilizowekwa 'Track serial numbers' pamoja na stock iliyopo.")}
+-        rows={list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Stock: p.currentQty, "Last Purchase": p.lastPurchaseDate || "—" }))} />
++  const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
++  const [productId, setProductId] = useState(""); const [lot, setLot] = useState(""); const [received, setReceived] = useState(today());
++  const [expiry, setExpiry] = useState(""); const [qty, setQty] = useState("1"); const [cost, setCost] = useState("0");
++  const [reference, setReference] = useState(""); const [serialText, setSerialText] = useState(""); const [serialLotId, setSerialLotId] = useState("");
++  const products = useQuery(api.inventory.stockRegisters, { light: true });
++  const lots = useQuery(api.inventory.listTrackedLots, { startDate: start, endDate: end, productId: productId ? productId as Id<"products"> : undefined });
++  const serials = useQuery(api.inventory.listTrackedSerials, { startDate: start, endDate: end, productId: productId ? productId as Id<"products"> : undefined });
++  const productLots = useQuery(api.inventory.listTrackedLots, productId ? { productId: productId as Id<"products"> } : "skip");
++  const addLot = useMutation(api.inventory.registerStockLot); const addSerials = useMutation(api.inventory.registerStockSerials);
++  const changeSerial = useMutation(api.inventory.updateStockSerialStatus);
++  const { canAdjust } = useStockRights();
++  if (!products || (kind === "expiry" ? !lots : !serials)) return loading;
++  const tracked = products.products.filter((p) => p.isActive && (kind === "expiry" ? p.trackExpiry || p.trackBatchNumbers : p.trackSerialNumbers));
++  const chosen = tracked.find((p) => String(p._id) === productId);
++  const submit = async () => {
++    if (!productId) { toast.error(tr("Chagua bidhaa.")); return; }
++    if (kind === "expiry") {
++      if (!lot.trim() || !expiry) { toast.error(tr("Weka lot number na expiry date.")); return; }
++      const ok = await save(() => addLot({ productId: productId as Id<"products">, lotNumber: lot.trim(), receivedDate: received, expiryDate: expiry, quantity: num(qty), unitCost: num(cost), reference: reference || undefined }));
++      if (ok) { setLot(""); setExpiry(""); setQty("1"); }
++    } else {
++      const numbers = serialText.split(/[\n,;]+/).map((x) => x.trim()).filter(Boolean);
++      if (!numbers.length) { toast.error(tr("Weka angalau serial number moja.")); return; }
++      const ok = await save(async () => { await addSerials({ productId: productId as Id<"products">, serialNumbers: numbers, receivedDate: received, unitCost: num(cost), lotId: serialLotId ? serialLotId as Id<"stockLots"> : undefined, reference: reference || undefined }); }, tr("Serial numbers zimesajiliwa."));
++      if (ok) setSerialText("");
++    }
++  };
++  const expiryRows = (lots ?? []).map((x) => ({ "Lot No.": x.lotNumber, Code: x.itemCode, Bidhaa: x.productName, "Tarehe ya kupokea": x.receivedDate, "Expiry date": x.expiryDate ?? "—", "Qty received": x.quantityReceived, "Qty remaining": x.quantityRemaining, "Unit cost": x.unitCost, Hali: !x.expiryDate ? "Expiry haijawekwa" : x.expiryDate < today() ? "EXPIRED" : x.expiryDate <= new Date(Date.now()+30*86400000).toISOString().slice(0,10) ? "Inaisha ndani ya siku 30" : "Salama", Reference: x.reference ?? "—" }));
++  const serialRows = (serials ?? []).map((x) => ({ Serial: x.serialNumber, Code: x.itemCode, Bidhaa: x.productName, "Received date": x.receivedDate, Hali: x.status, Cost: x.unitCost, Reference: x.reference ?? "—" }));
++  return (
++    <div className="space-y-5">
++      <div className="flex flex-wrap items-end justify-between gap-3"><div><h1 className="text-2xl font-bold">{kind === "expiry" ? tr("Expiry & Batch Report") : tr("Serial Number Report")}</h1><p className="text-sm text-muted-foreground">{tr("Sajili batch/serial zilizopokelewa ili ripoti ionyeshe traceability. Usajili huu hauongezi stock quantity.")}</p></div><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
++      <section className="grid gap-3 rounded-xl border p-4 md:grid-cols-2">
++        <h2 className="font-semibold md:col-span-2">{kind === "expiry" ? tr("Sajili batch iliyopokelewa") : tr("Sajili serial numbers zilizopokelewa")}</h2>
++        <label className="grid gap-1 text-sm">{tr("Bidhaa")}<select className={selectClass} value={productId} onChange={(e) => setProductId(e.target.value)}><option value="">{tr("Chagua bidhaa")}</option>{tracked.map((p) => <option key={p._id} value={p._id}>{p.name} ({p.itemCode}) — {p.currentQty}</option>)}</select></label>
++        <label className="grid gap-1 text-sm">{tr("Tarehe ya kupokea")}<Input type="date" value={received} onChange={(e) => setReceived(e.target.value)} /></label>
++        {kind === "expiry" ? <>
++          <label className="grid gap-1 text-sm">{tr("Lot / Batch number")}<Input value={lot} onChange={(e) => setLot(e.target.value)} /></label>
++          <label className="grid gap-1 text-sm">{tr("Expiry date")}<Input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} /></label>
++          <label className="grid gap-1 text-sm">{tr("Quantity received")}<Input type="number" min="0.0001" step="any" value={qty} onChange={(e) => setQty(e.target.value)} /></label>
++        </> : <>
++          {(chosen?.trackExpiry || chosen?.trackBatchNumbers) && <label className="grid gap-1 text-sm md:col-span-2">{tr("Batch / Lot ya serial numbers")}<select className={selectClass} value={serialLotId} onChange={e=>setSerialLotId(e.target.value)}><option value="">{tr("Chagua batch")}</option>{(productLots??[]).filter(x=>x.quantityRemaining>0).map(x=><option key={x._id} value={x._id}>{x.lotNumber} — {x.expiryDate??tr("Expiry haijawekwa")} — {tr("salio")} {x.quantityRemaining}</option>)}</select></label>}
++          <label className="grid gap-1 text-sm md:col-span-2">{tr("Serial numbers — moja kwa kila mstari au tenganisha kwa comma")}<textarea className="min-h-24 rounded-md border bg-background p-2" value={serialText} onChange={(e) => setSerialText(e.target.value)} /></label>
++        </>}
++        <label className="grid gap-1 text-sm">{tr("Unit cost")}<Input type="number" min="0" step="any" value={cost} onChange={(e) => setCost(e.target.value)} /></label>
++        <label className="grid gap-1 text-sm">{tr("Purchase / GRN reference")}<Input value={reference} onChange={(e) => setReference(e.target.value)} /></label>
++        <div className="md:col-span-2"><Button disabled={!canAdjust} onClick={() => void submit()}>{kind === "expiry" ? tr("Hifadhi batch") : tr("Hifadhi serial numbers")}</Button></div>
++      </section>
++      {kind === "expiry" ? <ReportTable title={tr("Expiry / Batch register")} rows={expiryRows} /> : <ReportTable title={tr("Serial register")} rows={serialRows} />}
++      {kind === "serials" && canAdjust && <section className="rounded-xl border p-4"><h2 className="mb-2 font-semibold">{tr("Badilisha hali ya serial")}</h2><p className="text-xs text-muted-foreground">{tr("Weka hali ya serial baada ya mauzo, kurejeshwa au kuharibika. Mauzo ya kawaida yanaweka serial kuwa sold moja kwa moja.")}</p><div className="mt-3 space-y-2">{(serials ?? []).filter((x) => x.status === "in_stock").slice(0,30).map((x) => <div key={x._id} className="flex flex-wrap items-center justify-between gap-2 border-t pt-2 text-sm"><span>{x.serialNumber} — {x.productName}</span><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => void save(() => changeSerial({ serialId: x._id, status: "sold", soldDate: today() }), tr("Serial imewekwa sold."))}>{tr("Sold")}</Button><Button size="sm" variant="outline" onClick={() => void save(() => changeSerial({ serialId: x._id, status: "scrapped" }), tr("Serial imewekwa scrapped."))}>{tr("Scrapped")}</Button></div></div>)}</div></section>}
+     </div>
+   );
+ }
+--- a/src/pages/stock/StockTakeValue.tsx
++++ b/src/pages/stock/StockTakeValue.tsx
+@@ -25,7 +25,9 @@
+ export function StockTakeScreen() {
+   const [start, setStart] = useState(monthStart());
+   const [end, setEnd] = useState(today());
+-  const data = useQuery(api.inventory.stockRegisters, { startDate: start, endDate: end, light: true });
++  const [appliedStart, setAppliedStart] = useState(monthStart());
++  const [appliedEnd, setAppliedEnd] = useState(today());
++  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
+   const rights = useStockRights();
+   const stockTake = useMutation(api.inventory.stockTake);
+   const [counted, setCounted] = useState<Record<string, string>>({});
+@@ -129,7 +131,7 @@
+         <p className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm">{tr("Huna ruhusa ya kubadili stock, kwa hiyo unaona historia ya stock take tu. Muombe Super Admin akupe ruhusa hii ili uweze kuhesabu.")}</p>
+       )}
+ 
+-      <div className="flex flex-wrap items-end justify-between gap-3"><h2 className="text-lg font-semibold">{tr("Historia ya stock take")}</h2><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} /></div>
++      <div className="flex flex-wrap items-end justify-between gap-3"><h2 className="text-lg font-semibold">{tr("Historia ya stock take")}</h2><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} /></div>
+       <ReportTable title={tr("Hesabu (count) dhidi ya mfumo")} sumCols={[tr("Tofauti"), tr("Thamani ya tofauti")]} note={tr("Kila stock take na kila Quantity Adjustment inaonekana hapa: 'Mfumo' ni idadi kabla ya kurekebisha na 'Iliyohesabiwa' ni idadi mpya. Stock take moja ina namba moja (ST-…).")}
+         rows={data.adjustments.map((x) => ({ Tarehe: x.date, "Stock take": x.reference || "—", Code: x.itemCode, Bidhaa: x.productName, Mfumo: x.qtyBefore, Iliyohesabiwa: x.counted, Tofauti: x.difference, "Thamani ya tofauti": round2(x.difference * x.cost), Sababu: x.reason }))} />
+     </div>
+@@ -139,21 +141,30 @@
+ /* ───────────────────────── Stock Value Report ───────────────────────── */
+ 
+ export function StockValueScreen() {
+-  const data = useQuery(api.inventory.stockRegisters, { light: true });
++  const [start, setStart] = useState(monthStart());
++  const [end, setEnd] = useState(today());
++  const [appliedStart, setAppliedStart] = useState(monthStart());
++  const [appliedEnd, setAppliedEnd] = useState(today());
++  const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
+   const [group, setGroup] = useState("");
+   const [withStock, setWithStock] = useState(true);
++  const [asOfDate, setAsOfDate] = useState(today());
++  const historical = useQuery(api.inventory.historicalStockValue, { asOfDate, groupId: group ? group as Id<"productGroups"> : undefined });
+   if (!data) return loading;
+-  const list = data.products.filter((p) => p.isActive && (!group || p.groupId === group) && (!withStock || p.currentQty > 0)).sort((a, b) => b.stockValue - a.stockValue);
+-  const cost = round2(list.reduce((n, p) => n + p.stockValue, 0));
+-  const retail = round2(list.reduce((n, p) => n + p.retailValue, 0));
++  const list = data.products.filter((p) => p.isActive && (!group || p.groupId === group) && (!withStock || p.qtyEnd > 0))
++    .map((p) => ({ ...p, periodQty: p.qtyEnd, periodCostValue: round2(p.qtyEnd * p.cost), periodRetailValue: round2(p.qtyEnd * p.sellingPrice) }))
++    .sort((a, b) => b.periodCostValue - a.periodCostValue);
++  const cost = round2(list.reduce((n, p) => n + p.periodCostValue, 0));
++  const retail = round2(list.reduce((n, p) => n + p.periodRetailValue, 0));
+   const byGroup = new Map<string, { name: string; items: number; cost: number; retail: number }>();
+-  for (const p of list) { const g = byGroup.get(p.groupName) ?? { name: p.groupName, items: 0, cost: 0, retail: 0 }; g.items += 1; g.cost = round2(g.cost + p.stockValue); g.retail = round2(g.retail + p.retailValue); byGroup.set(p.groupName, g); }
++  for (const p of list) { const g = byGroup.get(p.groupName) ?? { name: p.groupName, items: 0, cost: 0, retail: 0 }; g.items += 1; g.cost = round2(g.cost + p.periodCostValue); g.retail = round2(g.retail + p.periodRetailValue); byGroup.set(p.groupName, g); }
+   const share = (n: number) => (cost > 0 ? round2((n / cost) * 100) : 0);
+   return (
+     <div className="space-y-5">
+       <div className="flex flex-wrap items-end justify-between gap-3">
+         <h1 className="text-2xl font-bold">{tr("Stock Value Report")}</h1>
+         <div className="flex flex-wrap items-end gap-3 print:hidden">
++          <DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} />
+           <label className="grid gap-1 text-xs">{tr("Group")}
+             <select className={selectClass} value={group} onChange={(e) => setGroup(e.target.value)}><option value="">{tr("Zote")}</option>{data.groups.map((g) => <option key={g._id} value={g._id}>{g.name}</option>)}</select>
+           </label>
+@@ -166,11 +177,21 @@
+         <Stat label={tr("Faida inayotarajiwa")} value={round2(retail - cost)} />
+         <Stat label={tr("Bidhaa zenye stock")} value={list.length} />
+       </div>
+-      <ReportTable title={tr("Thamani kwa group")} sumCols={[tr("Bidhaa"), tr("Thamani (cost)"), tr("Thamani (bei)")]}
++      <section className="space-y-3 rounded-xl border p-4">
++        <div className="flex flex-wrap items-end justify-between gap-3">
++          <div><h2 className="font-semibold">{tr("Historical Stock Valuation — FIFO")}</h2><p className="text-xs text-muted-foreground">{tr("Thamani ya stock iliyokuwepo kufikia tarehe uliyochagua, kwa FIFO na unit cost iliyoandikwa kwenye stock movements.")}</p></div>
++          <label className="grid gap-1 text-xs">{tr("Valuation date")}<Input type="date" value={asOfDate} onChange={(e) => setAsOfDate(e.target.value)} /></label>
++        </div>
++        {!historical ? loading : <>
++          <div className="grid gap-3 sm:grid-cols-3"><Stat label={tr("Stock quantity")} value={historical.totals.quantity} /><Stat label={tr("Historical cost value")} value={historical.totals.value} /><Stat label={tr("Quantity with unknown cost")} value={historical.totals.unknownCostQty} /></div>
++          <ReportTable title={tr("Historical stock by item")} sumCols={[tr("Quantity"), tr("Historical value")]} note={tr("FIFO valuation. Kiasi chenye cost sifuri kinaonyeshwa tofauti; si sahihi kukikadiria kwa bei za sasa.")} rows={historical.rows.map((r) => ({ Code: r.code, Bidhaa: r.name, Quantity: r.quantity, "Average FIFO cost": r.averageCost, "Historical value": r.value, "Unknown cost quantity": r.unknownCostQty }))} />
++        </>}
++      </section>
++      <ReportTable title={tr("Thamani kwa group")} note={tr("Salio la stock ni la mwisho wa kipindi lililokokotolewa kutoka stock movement ledger. Thamani imetumia weighted average cost na bei za sasa kwa sababu mfumo hauhifadhi historia ya mabadiliko ya cost/bei kwa kila tarehe; hii ni estimated valuation, si historical accounting valuation.")} sumCols={[tr("Bidhaa"), tr("Thamani (cost)"), tr("Thamani (bei)")]}
+         rows={[...byGroup.values()].sort((a, b) => b.cost - a.cost).map((g) => ({ Group: g.name, Bidhaa: g.items, "Thamani (cost)": g.cost, "Thamani (bei)": g.retail, "% ya jumla": share(g.cost) }))} />
+       <ReportTable title={tr("Thamani ya stock kwa bidhaa")} sumCols={[tr("Thamani (cost)"), tr("Thamani (bei)"), tr("Faida inayotarajiwa")]}
+-        note={tr("Thamani ya cost inatumia gharama ya wastani (weighted average) ya kila bidhaa; thamani ya bei inatumia bei ya kuuzia. Bidhaa zimepangwa kuanzia yenye thamani kubwa.")}
+-        rows={list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Unit: p.unitName, Stock: p.currentQty, Cost: p.cost, "Thamani (cost)": p.stockValue, "Bei ya kuuzia": p.sellingPrice, "Thamani (bei)": p.retailValue, "Faida inayotarajiwa": round2(p.retailValue - p.stockValue), "% ya jumla": share(p.stockValue) }))} />
++        note={tr("Hesabu ya kiasi ni ya mwisho wa kipindi; cost na bei ni thamani za sasa, si gharama/bei zilizokuwa zimetumika kihistoria. Bidhaa zimepangwa kuanzia yenye thamani kubwa.")}
++        rows={list.map((p) => ({ Code: p.itemCode, Bidhaa: p.name, Group: p.groupName, Unit: p.unitName, "Stock mwisho wa kipindi": p.periodQty, "Cost ya sasa": p.cost, "Thamani (cost)": p.periodCostValue, "Bei ya sasa": p.sellingPrice, "Thamani (bei)": p.periodRetailValue, "Faida inayotarajiwa": round2(p.periodRetailValue - p.periodCostValue), "% ya jumla": share(p.periodCostValue) }))} />
+     </div>
+   );
+ }
+--- a/src/pages/sales/SalesRegister.tsx
++++ b/src/pages/sales/SalesRegister.tsx
+@@ -63,14 +63,18 @@
+   const path = useLocation().pathname.split("/").filter(Boolean).slice(1).join("/");
+   const [start, setStart] = useState(monthStart());
+   const [end, setEnd] = useState(today());
++  const [appliedStart, setAppliedStart] = useState(monthStart());
++  const [appliedEnd, setAppliedEnd] = useState(today());
+   const [clientId, setClientId] = useState("");
++  const [clientFilter, setClientFilter] = useState("");
++  const [productFilter, setProductFilter] = useState("");
+   const [staffCode, setStaffCode] = useState("");
+   const [showItems, setShowItems] = useState(true);
+   const needsLines = [ "reports/analysis", "reports/by-product", "reports/client-product", "reports/product-client", "reports/sold-items", "reports/by-supplier" ].includes(path);
+   // Only the report screens read the report query (sales.reports.view). Everyday screens (payments, clients list, register totals)
+   // use the basic one (sales.view), which never carries cost, profit or supplier data.
+   const isReport = path.startsWith("reports/");
+-  const reportData = useQuery(api.sales.salesRegisters, isReport ? { startDate: start, endDate: end, withLines: needsLines } : "skip");
++  const reportData = useQuery(api.sales.salesRegisters, isReport ? { startDate: appliedStart, endDate: appliedEnd, withLines: needsLines } : "skip");
+   const basicData = useQuery(api.sales.salesRegisterBasic, isReport ? "skip" : { startDate: start, endDate: end });
+   const data = isReport ? reportData : basicData;
+   const recordPayment = useMutation(api.sales.recordPayment);
+@@ -84,7 +88,8 @@
+   const header = (
+     <div className="flex flex-wrap items-end justify-between gap-3 print:hidden">
+       <div><Button variant="outline" onClick={() => navigate("/sales")}>{tr("← Sales")}</Button><h1 className="mt-3 text-2xl font-bold">{title}</h1></div>
+-      <DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} />
++      <DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd}
++        onApply={isReport ? () => { setAppliedStart(start); setAppliedEnd(end); } : undefined} />
+     </div>
+   );
+   if (!data) return <div className="mx-auto max-w-7xl space-y-5 p-5">{header}<div className="p-6 text-sm text-muted-foreground">{tr("Inapakia taarifa za Sales…")}</div></div>;
+@@ -114,21 +119,29 @@
+     case "reports/payments":
+       rows = payments.map((p) => ({ Tarehe: p.date, Mteja: p.clientName, Invoice: p.invoiceNo, Kiasi: p.amount, Njia: trValue(p.method), Reference: p.reference || "—", Maelezo: p.notes || "—" }));
+       sumCols = [tr("Kiasi")]; break;
+-    case "reports/by-client":
+-      rows = groupRows(invoices, (x) => String(x.clientId), (x) => ({ Mteja: x.clientName, Invoices: 0, Jumla: 0, Imelipwa: 0, Deni: 0 }), (a, x) => { a.Invoices = num(a.Invoices) + 1; a.Jumla = round2(num(a.Jumla) + x.total); a.Imelipwa = round2(num(a.Imelipwa) + x.amountPaid); a.Deni = round2(num(a.Deni) + x.outstanding); }).sort((a, b) => num(b.Jumla) - num(a.Jumla));
++    case "reports/by-client": {
++      const selectedInvoices = clientFilter ? invoices.filter((x) => String(x.clientId) === clientFilter) : invoices;
++      rows = groupRows(selectedInvoices, (x) => String(x.clientId), (x) => ({ Mteja: x.clientName, Invoices: 0, Jumla: 0, Imelipwa: 0, Deni: 0 }), (a, x) => { a.Invoices = num(a.Invoices) + 1; a.Jumla = round2(num(a.Jumla) + x.total); a.Imelipwa = round2(num(a.Imelipwa) + x.amountPaid); a.Deni = round2(num(a.Deni) + x.outstanding); }).sort((a, b) => num(b.Jumla) - num(a.Jumla));
+       sumCols = [tr("Invoices"), tr("Jumla"), tr("Imelipwa"), tr("Deni")]; break;
+-    case "reports/by-product":
+-      rows = groupRows(lines, (l) => String(l.productId), (l) => ({ Code: l.itemCode, Bidhaa: l.productName, Unit: l.unit, Qty: 0, "Mauzo (bila tax)": 0, Cost: 0, Faida: 0 }), (a, l) => { a.Qty = round2(num(a.Qty) + l.qty); a["Mauzo (bila tax)"] = round2(num(a["Mauzo (bila tax)"]) + l.net); a.Cost = round2(num(a.Cost) + l.cost); a.Faida = round2(num(a.Faida) + l.profit); }).sort((a, b) => num(b["Mauzo (bila tax)"]) - num(a["Mauzo (bila tax)"]));
++    }
++    case "reports/by-product": {
++      const selectedLines = productFilter ? lines.filter((l) => String(l.productId) === productFilter) : lines;
++      rows = groupRows(selectedLines, (l) => String(l.productId), (l) => ({ Code: l.itemCode, Bidhaa: l.productName, Unit: l.unit, Qty: 0, "Mauzo (bila tax)": 0, Cost: 0, Faida: 0 }), (a, l) => { a.Qty = round2(num(a.Qty) + l.qty); a["Mauzo (bila tax)"] = round2(num(a["Mauzo (bila tax)"]) + l.net); a.Cost = round2(num(a.Cost) + l.cost); a.Faida = round2(num(a.Faida) + l.profit); }).sort((a, b) => num(b["Mauzo (bila tax)"]) - num(a["Mauzo (bila tax)"]));
+       sumCols = [tr("Mauzo (bila tax)"), tr("Cost"), tr("Faida")]; break;
++    }
+     case "reports/client-product":
+     case "reports/product-client": {
+       const byClientFirst = path === "reports/client-product";
+-      rows = groupRows(lines, (l) => `${l.clientId}|${l.productId}`, (l) => (byClientFirst ? { Mteja: l.clientName, Bidhaa: l.productName, Qty: 0, Mauzo: 0 } : { Bidhaa: l.productName, Mteja: l.clientName, Qty: 0, Mauzo: 0 }), (a, l) => { a.Qty = round2(num(a.Qty) + l.qty); a.Mauzo = round2(num(a.Mauzo) + l.net); }).sort((a, b) => String(byClientFirst ? a.Mteja : a.Bidhaa).localeCompare(String(byClientFirst ? b.Mteja : b.Bidhaa)));
++      const selectedLines = lines.filter((l) => (!productFilter || String(l.productId) === productFilter) && (!clientFilter || String(l.clientId) === clientFilter));
++      rows = groupRows(selectedLines, (l) => `${l.clientId}|${l.productId}`, (l) => (byClientFirst ? { Mteja: l.clientName, Bidhaa: l.productName, Qty: 0, Mauzo: 0 } : { Bidhaa: l.productName, Mteja: l.clientName, Qty: 0, Mauzo: 0 }), (a, l) => { a.Qty = round2(num(a.Qty) + l.qty); a.Mauzo = round2(num(a.Mauzo) + l.net); }).sort((a, b) => String(byClientFirst ? a.Mteja : a.Bidhaa).localeCompare(String(byClientFirst ? b.Mteja : b.Bidhaa)));
+       sumCols = [tr("Mauzo")]; break;
+     }
+-    case "reports/staff":
+-      rows = groupRows(invoices, (x) => x.staff, (x) => ({ Staff: x.staff, Invoices: 0, Jumla: 0, Imelipwa: 0, Deni: 0 }), (a, x) => { a.Invoices = num(a.Invoices) + 1; a.Jumla = round2(num(a.Jumla) + x.total); a.Imelipwa = round2(num(a.Imelipwa) + x.amountPaid); a.Deni = round2(num(a.Deni) + x.outstanding); }).sort((a, b) => num(b.Jumla) - num(a.Jumla));
++    case "reports/staff": {
++      const code = staffCode.trim().toUpperCase();
++      const selectedInvoices = code ? invoices.filter((x) => (x.staffCode ?? "").toUpperCase() === code) : invoices;
++      rows = groupRows(selectedInvoices, (x) => x.staff, (x) => ({ Staff: x.staff, Invoices: 0, Jumla: 0, Imelipwa: 0, Deni: 0 }), (a, x) => { a.Invoices = num(a.Invoices) + 1; a.Jumla = round2(num(a.Jumla) + x.total); a.Imelipwa = round2(num(a.Imelipwa) + x.amountPaid); a.Deni = round2(num(a.Deni) + x.outstanding); }).sort((a, b) => num(b.Jumla) - num(a.Jumla));
+       sumCols = [tr("Invoices"), tr("Jumla"), tr("Imelipwa"), tr("Deni")]; break;
++    }
+     case "reports/sold-items": {
+       const code = staffCode.trim().toUpperCase();
+       const staffLines = code ? lines.filter((l) => (l.staffCode ?? "").toUpperCase() === code) : lines;
+@@ -195,6 +208,10 @@
+   );
+ 
+   const listRows = path === "payments" ? payments.map((p) => ({ Tarehe: p.date, Mteja: p.clientName, Invoice: p.invoiceNo, Kiasi: p.amount, Njia: trValue(p.method), Reference: p.reference || "—" })) : rows;
++  const productChoices = [...new Map(lines.map((line) => [String(line.productId), { id: String(line.productId), name: line.productName, code: line.itemCode }])).values()].sort((a, b) => a.name.localeCompare(b.name));
++  const needsProductFilter = ["reports/by-product", "reports/client-product", "reports/product-client"].includes(path);
++  const needsClientFilter = ["reports/by-client", "reports/client-product", "reports/product-client"].includes(path);
++  const needsStaffFilter = ["reports/staff", "reports/sold-items"].includes(path);
+ 
+   return (
+     <div className="mx-auto max-w-7xl space-y-5 p-5">
+@@ -203,9 +220,15 @@
+       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+         <Stat label={tr("Invoices")} value={totals.invoices} /><Stat label={tr("Mauzo (jumla)")} value={totals.sales} /><Stat label={tr("Tax")} value={totals.tax} /><Stat label={tr("Malipo yaliyopokelewa")} value={totals.payments} /><Stat label={tr("Deni la invoices")} value={totals.outstanding} />{totals.waiterDebt > 0 && <Stat label={tr("Madeni ya wahudumu (yaliyotokea)")} value={totals.waiterDebt} />}{totals.waiterDebtOpen > 0 && <Stat label={tr("Madeni ya wahudumu (bado yamebaki)")} value={totals.waiterDebtOpen} />}
+       </div>
+-      <div className="print:break-inside-avoid"><DayEndSummary payments={[...payments, ...(data.spByMethod ?? [])]} sales={totals.sales} debt={totals.outstanding} waiterDebt={totals.waiterDebt} debtors={(data.openInvoices ?? []).reduce<Array<{ name: string; amount: number }>>((acc, i) => { const hit = acc.find((x) => x.name === i.clientName); if (hit) hit.amount = round2(hit.amount + i.outstanding); else acc.push({ name: i.clientName, amount: i.outstanding }); return acc; }, []).sort((x, y) => y.amount - x.amount)} /></div>
++      {(!isReport || path === "reports/summary") && <div className="print:break-inside-avoid"><DayEndSummary payments={[...payments, ...(data.spByMethod ?? [])]} sales={totals.sales} debt={totals.outstanding} waiterDebt={totals.waiterDebt} debtors={(data.openInvoices ?? []).reduce<Array<{ name: string; amount: number }>>((acc, i) => { const hit = acc.find((x) => x.name === i.clientName); if (hit) hit.amount = round2(hit.amount + i.outstanding); else acc.push({ name: i.clientName, amount: i.outstanding }); return acc; }, []).sort((x, y) => y.amount - x.amount)} /></div>}
+       {INVOICE_SEARCH_PATHS.includes(path) && <InvoiceFinder />}
+-      {path === "reports/sold-items" && <section className="flex flex-wrap items-end gap-3 rounded-xl border bg-card p-4 print:hidden"><label className="grid min-w-56 flex-1 gap-1 text-sm">{tr("Staff Code ya mhudumu")}<Input value={staffCode} onChange={(e) => setStaffCode(e.target.value.toUpperCase())} placeholder={tr("Weka Staff Code")}/></label><label className="flex h-10 items-center gap-2 rounded-lg border px-3 text-sm"><input type="checkbox" className="h-4 w-4 accent-primary" checked={showItems} onChange={(e) => setShowItems(e.target.checked)}/>{tr("Items Report")}</label><p className="w-full text-xs text-muted-foreground">{tr("Acha Staff Code wazi kuona wote; weka code kuona mauzo ya mhudumu mmoja. Zima Items Report kuona invoice za mhudumu.")}</p></section>}
++      {(needsStaffFilter || needsProductFilter || needsClientFilter) && <section className="flex flex-wrap items-end gap-3 rounded-xl border bg-card p-4 print:hidden">
++        {needsStaffFilter && <label className="grid min-w-56 flex-1 gap-1 text-sm">{tr("Staff Code ya mhudumu")}<Input value={staffCode} onChange={(e) => setStaffCode(e.target.value.toUpperCase())} placeholder={tr("Weka Staff Code")}/></label>}
++        {needsProductFilter && <label className="grid min-w-56 flex-1 gap-1 text-sm">{tr("Bidhaa")}<select className={selectClass} value={productFilter} onChange={(e) => setProductFilter(e.target.value)}><option value="">{tr("Bidhaa zote")}</option>{productChoices.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}</select></label>}
++        {needsClientFilter && <label className="grid min-w-56 flex-1 gap-1 text-sm">{tr("Mteja")}<select className={selectClass} value={clientFilter} onChange={(e) => setClientFilter(e.target.value)}><option value="">{tr("Wateja wote")}</option>{clients.map((c) => <option key={c._id} value={c._id}>{c.name} ({c.code})</option>)}</select></label>}
++        {path === "reports/sold-items" && <label className="flex h-10 items-center gap-2 rounded-lg border px-3 text-sm"><input type="checkbox" className="h-4 w-4 accent-primary" checked={showItems} onChange={(e) => setShowItems(e.target.checked)}/>{tr("Items Report")}</label>}
++        <p className="w-full text-xs text-muted-foreground">{tr("Chagua bidhaa, mteja au mhudumu kuchuja ripoti. Acha wazi kuona wote.")}</p>
++      </section>}
+       {paymentForm}
+       {lastReceipt && <TransactionReceipt title={tr("RISITI YA MALIPO YA MAUZO")} reference={lastReceipt.reference} date={lastReceipt.date} partyLabel={tr("Mteja")} party={lastReceipt.party} amount={lastReceipt.amount} method={lastReceipt.method} note={tr("Malipo yamepokelewa. Hifadhi risiti hii kwa kumbukumbu.")} />}
+       {statementPicker}
+--- a/src/pages/shared/report.tsx
++++ b/src/pages/shared/report.tsx
+@@ -1,4 +1,5 @@
+ import { useRef, useState } from "react";
++import ExcelJS from "exceljs";
+ import { useAction } from "convex/react";
+ import { toast } from "sonner";
+ import { api } from "@/convex/_generated/api";
+@@ -16,15 +17,17 @@
+   const csv = [cols.map((c) => esc(tr(c))).join(","), ...rows.map((r) => cols.map((c) => esc(r[c] ?? "")).join(","))].join("\r\n");
+   const url = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }));
+   const a = document.createElement("a");
+-  a.href = url; a.download = `${name.replace(/\s+/g, "-").toLowerCase()}-${today()}.csv`; a.click();
+-  URL.revokeObjectURL(url);
++  a.href = url; a.download = `${name.replace(/[^a-z0-9\-_]+/gi, "-").toLowerCase()}-${today()}.csv`; a.click();
++  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+ }
+ 
+-export function DateRange({ startDate, endDate, onStart, onEnd }: { startDate: string; endDate: string; onStart: (v: string) => void; onEnd: (v: string) => void }) {
++export function DateRange({ startDate, endDate, onStart, onEnd, onApply, busy = false }: { startDate: string; endDate: string; onStart: (v: string) => void; onEnd: (v: string) => void; onApply?: () => void; busy?: boolean }) {
+   return (
+     <div className="flex flex-wrap items-end gap-2 print:hidden">
+       <label className="grid gap-1 text-xs">{tr("Kuanzia")}<Input type="date" value={startDate} onChange={(e) => onStart(e.target.value)} /></label>
+       <label className="grid gap-1 text-xs">{tr("Mpaka")}<Input type="date" value={endDate} onChange={(e) => onEnd(e.target.value)} /></label>
++      {onApply && <Button type="button" disabled={busy || !startDate || !endDate || startDate > endDate} onClick={onApply}>{busy ? tr("Inatafuta…") : tr("View Report")}</Button>}
++      {onApply && startDate && endDate && startDate > endDate && <span className="pb-2 text-xs text-destructive">{tr("Tarehe ya mwanzo haiwezi kuwa baada ya tarehe ya mwisho.")}</span>}
+     </div>
+   );
+ }
+@@ -38,15 +41,54 @@
+   );
+ }
+ 
++async function downloadExcel(name: string, rows: Row[], sumCols: string[]) {
++  if (!rows.length) return;
++  const workbook = new ExcelJS.Workbook();
++  workbook.creator = "SmartHubPOS";
++  workbook.created = new Date();
++  const safeSheetName = tr(name).replace(/[\\/?*:[\]]/g, " ").slice(0, 31).trim() || "Report";
++  const sheet = workbook.addWorksheet(safeSheetName);
++  const cols = Object.keys(rows[0]);
++  sheet.addRow([tr(name)]);
++  sheet.mergeCells(1, 1, 1, Math.max(1, cols.length));
++  sheet.getRow(1).font = { bold: true, size: 16, color: { argb: "FF1E3A5F" } };
++  sheet.addRow([`${tr("Imeandaliwa")}: ${new Date().toLocaleString()}`]);
++  sheet.addRow([]);
++  sheet.addRow(cols.map((c) => tr(c)));
++  for (const row of rows) sheet.addRow(cols.map((c) => row[c] ?? ""));
++  if (sumCols.length) {
++    const total = sheet.addRow(cols.map((c, i) => sumCols.includes(c) || sumCols.includes(tr(c))
++      ? round2(rows.reduce((n, r) => n + num(r[c]), 0)) : i === 0 ? tr("JUMLA") : ""));
++    total.font = { bold: true };
++    total.eachCell((cell) => { cell.border = { top: { style: "thin", color: { argb: "FF64748B" } } }; });
++  }
++  sheet.views = [{ state: "frozen", ySplit: 4 }];
++  sheet.autoFilter = { from: { row: 4, column: 1 }, to: { row: Math.max(4, rows.length + 4), column: cols.length } };
++  sheet.getRow(4).font = { bold: true, color: { argb: "FFFFFFFF" } };
++  sheet.getRow(4).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E3A5F" } };
++  cols.forEach((key, index) => {
++    const lengths = [tr(key).length, ...rows.map((row) => String(row[key] ?? "").length)];
++    sheet.getColumn(index + 1).width = Math.min(40, Math.max(12, ...lengths.map((n) => n + 2)));
++  });
++  const buffer = await workbook.xlsx.writeBuffer();
++  const bytes = new Uint8Array(buffer);
++  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
++  const url = URL.createObjectURL(blob);
++  const a = document.createElement("a"); a.href = url; a.download = `${name.replace(/[^a-z0-9\-_]+/gi, "-").toLowerCase()}-${today()}.xlsx`; a.click();
++  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
++}
++
+ /** Report table with automatic number formatting, optional totals row, CSV export and print. */
+ export function ReportTable({ title, rows, sumCols = [], note, onPrintRow }: { title: string; rows: Row[]; sumCols?: string[]; note?: string; onPrintRow?: (row: Row, copies: number, paper: Paper) => void }) {
+   const cols = Object.keys(rows[0] ?? {});
+   const sendReport = useAction(api.reportEmails.sendReport);
+   const [sending, setSending] = useState(false);
++  const [exporting, setExporting] = useState(false);
+   const sectionRef = useRef<HTMLElement>(null);
+   const [picked, setPicked] = useState<number | null>(null);
+   const [copies, setCopies] = useState(1);
+   const [paper, setPaper] = useState<Paper>(readPaper());
++  const [viewOpen, setViewOpen] = useState(false);
+   const emailReport = async () => {
+     setSending(true);
+     try {
+@@ -77,11 +119,21 @@
+               <Button size="sm" disabled={picked === null || !rows[picked]} onClick={() => { if (picked !== null && rows[picked]) onPrintRow(rows[picked], copies, paper); }}>{tr("Chapisha item iliyochaguliwa")}</Button>
+             </>
+           )}
+-          <Button size="sm" variant="outline" disabled={!rows.length} onClick={() => downloadCsv(title, rows)}>{tr("Export CSV")}</Button>
+-          <Button size="sm" variant="outline" disabled={!rows.length || sending} onClick={() => void emailReport()}>{sending ? tr("Inatuma…") : tr("Tuma kwa Email")}</Button>
+-          <Button size="sm" variant="outline" onClick={() => printElement(sectionRef.current, "A4", { landscape: cols.length > 6 })}>{tr("Print")}</Button>
++          <Button size="sm" variant="outline" onClick={() => setViewOpen((v) => !v)}>{viewOpen ? tr("Hide Report") : tr("View Report")}</Button>
++          {viewOpen && <>
++            <Button size="sm" variant="outline" disabled={!rows.length} onClick={() => downloadCsv(title, rows)}>{tr("Export CSV")}</Button>
++            <Button size="sm" variant="outline" disabled={!rows.length || exporting} onClick={() => void (async () => {
++              setExporting(true);
++              try { await downloadExcel(title, rows, sumCols); toast.success(tr("Excel imepakuliwa.")); }
++              catch (error) { toast.error(errorText(error, tr("Imeshindikana kuandaa Excel."))); }
++              finally { setExporting(false); }
++            })()}>{exporting ? tr("Inaandaa…") : tr("Export Excel")}</Button>
++            <Button size="sm" variant="outline" disabled={!rows.length || sending} onClick={() => void emailReport()}>{sending ? tr("Inatuma…") : tr("Tuma kwa Email")}</Button>
++            <Button size="sm" variant="outline" disabled={!rows.length} onClick={() => printElement(sectionRef.current, "A4", { landscape: cols.length > 6 })}>{tr("Print / PDF")}</Button>
++          </>}
+         </div>
+       </div>
++      {viewOpen && <>
+       {note && <p className="border-b bg-muted/30 p-3 text-xs text-muted-foreground">{note}</p>}
+       <div className="max-w-full overflow-x-auto">
+         <table className="w-full min-w-full table-auto text-left text-sm">
+@@ -95,6 +147,7 @@
+         </table>
+         {!rows.length && <p className="p-5 text-sm text-muted-foreground">{tr("Hakuna taarifa kwa kipindi/chaguo hili.")}</p>}
+       </div>
++      </>}
+     </section>
+   );
+ }
