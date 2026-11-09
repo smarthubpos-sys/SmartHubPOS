@@ -374,7 +374,7 @@ export const cancel = mutation({
     if (order.status === "cancelled") return order._id;
     if (order.settledAt) throw new ConvexError("Oda hii tayari imelipwa kwa cashier; haiwezi kufutwa (mauzo na fedha vimeshahesabiwa).");
     if ((order.paidAmount ?? 0) > 0) throw new ConvexError("Oda hii imeshalipiwa kiasi kwa cashier; haiwezi kufutwa. Maliza deni lililobaki.");
-    if (order.assignedInvoiceId) throw new ConvexError("Bili hii imeelekezwa kwa mteja kama deni; haiwezi kufutwa. Ghairi deni la mteja kwanza.");
+    if (order.assignedInvoiceId) throw new ConvexError("Bili hii imeelekezwa kwa mteja kama deni; haiwezi kufutwa.");
     const now = new Date().toISOString();
     if (order.stockDeducted) {
       for (const line of order.lines) {
@@ -555,6 +555,8 @@ export const editBillFromFinder = mutation({
         throw new ConvexError("Bili haipatikani kwenye biashara au tawi lako.");
       }
       if (order.status === "cancelled") throw new ConvexError("Bili hii imebatilishwa.");
+      // A bill whose debt was given to a customer has no cashier receipt to give back; the customer's invoice already carries it. Editing it would break both.
+      if (order.assignedInvoiceId) throw new ConvexError("Bili hii imeelekezwa kwa mteja kama deni, kwa hiyo haiwezi kuhaririwa.");
       if (orderHasPayment(order) && !args.undoPayment) {
         throw new ConvexError("Bili hii ina malipo yaliyopokelewa. Thibitisha kurudisha malipo kwanza ili kuihariri.");
       }
@@ -655,7 +657,7 @@ export const cancelBillFromFinder = mutation({
         throw new ConvexError("Bili haipatikani kwenye biashara au tawi lako.");
       }
       if (order.status === "cancelled") return order._id;
-      if (order.assignedInvoiceId) throw new ConvexError("Bili hii imeelekezwa kwa mteja kama deni; haiwezi kubatilishwa. Ghairi deni la mteja kwanza.");
+      if (order.assignedInvoiceId) throw new ConvexError("Bili hii imeelekezwa kwa mteja kama deni; haiwezi kubatilishwa.");
       if (orderHasPayment(order) && !args.refundPayment) {
         throw new ConvexError("Bili hii ina malipo yaliyopokelewa. Thibitisha kurudisha malipo kabla ya kuifuta.");
       }

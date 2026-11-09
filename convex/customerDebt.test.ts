@@ -71,6 +71,13 @@ describe("cashier moves a waiter's credit sale to a registered customer", () => 
 });
 
 describe("repayments book", () => {
+  it("a bill moved to a customer cannot be edited from Invoice Finder: a clear reason, not a missing-receipt error", async () => {
+    const { asCashier, asBoss, orderId, clientId, productId } = await creditSale();
+    await asCashier.mutation(api.customerDebt.assignOrdersToCustomer, { orderIds: [orderId], clientId });
+    await expect(asBoss.mutation(api.waiterOrders.editBillFromFinder, { orderId, customerName: "x", undoPayment: true, lines: [{ productId, qty: 1, unitPrice: 2000 }] })).rejects.toThrow(/imeelekezwa kwa mteja/);
+    await expect(asBoss.mutation(api.waiterOrders.editBillFromFinder, { orderId, customerName: "x", undoPayment: true, lines: [{ productId, qty: 1, unitPrice: 2000 }] })).rejects.not.toThrow(/makusanyo ya cashier|risiti ya cashier/);
+  });
+
   it("the customer pays part of his debt: the invoice shrinks, the money is today's cash, and the report names the customer", async () => {
     const { asCashier, asBoss, orderId, clientId, today } = await creditSale();
     await asCashier.mutation(api.customerDebt.assignOrdersToCustomer, { orderIds: [orderId], clientId });

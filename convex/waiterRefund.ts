@@ -8,6 +8,7 @@ import { bumpStats } from "./stats";
 const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const eatDay = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10); // East Africa Time business day
 const same = (a: unknown, b: unknown) => String(a) === String(b);
+const dayBefore = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
 
 /** True when the cashier has received money (all or part) for this order. */
 export const orderHasPayment = (o: Doc<"waiterOrders">) => (o.paidAmount ?? 0) > 0.005 || !!o.settledAt || !!o.collectionId;
@@ -34,9 +35,9 @@ export async function reverseOrderPayments(ctx: MutationCtx, user: Doc<"users">,
   if (!orderHasPayment(order)) return { refunded: 0, receipts: 0 };
   const tenantId = order.tenantId;
   if (!tenantId) throw new ConvexError("Bili hii haina biashara; malipo hayawezi kurudishwa.");
-  const rows = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", eatDay(order.createdAt))).collect();
+  const rows = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", dayBefore(eatDay(order.createdAt)))).collect(); // one day earlier: old receipts of night sales were dated by the UTC day
   const mine = rows.filter((c) => c.orderIds.some((id) => same(id, order._id))).sort((x, y) => x.createdAt.localeCompare(y.createdAt));
-  if (!mine.length) throw new ConvexError("Malipo ya bili hii hayapatikani kwenye makusanyo ya cashier; wasiliana na msimamizi.");
+  if (!mine.length) throw new ConvexError("Bili hii inaonekana imelipwa lakini hakuna risiti ya cashier iliyoandikwa (huenda ni bili ya zamani). Malipo hayawezi kurudishwa kiotomatiki; wasiliana na msimamizi.");
 
   const orderScope = { tenantId, branchId: order.branchId };
   const today = eatDay(new Date().toISOString());

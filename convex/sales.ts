@@ -252,7 +252,7 @@ export const unpayInvoice = mutation({
     const user = await requireActiveUser(ctx, "sales");
     if (!(await roleHasPermission(ctx, user, "sales.edit")) && !(await roleHasPermission(ctx, user, "sales.void"))) throw new ConvexError("Forbidden: huna ruhusa ya kurejesha malipo ya invoice.");
     const invoice = await ctx.db.get("invoices", a.invoiceId);
-    if (!invoice || !canAccessRecord(user, invoice) || (isOwnDataOnly(user) && invoice.createdBy !== user._id)) throw new ConvexError("Invoice haipatikani.");
+    if (!invoice || !canAccessRecord(user, invoice) || (isOwnDataOnly(user) && invoice.createdBy !== user._id)) throw new ConvexError(invoiceHiddenReason(user, invoice));
     if (invoice.status !== "posted") throw new ConvexError("Invoice hii imebatilishwa; haiwezi kufanyiwa Unpay.");
     if (invoice.customerBillId) throw new ConvexError("Invoice hii ipo kwenye Customer Bill. Iondoe kwenye bill kwanza.");
     const lines = await ctx.db.query("invoiceLines").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect();
@@ -309,7 +309,7 @@ export const voidInvoice = mutation({
       !canAccessRecord(user, invoice) ||
       (isOwnDataOnly(user) && invoice.createdBy !== user._id)
     ) {
-      throw new ConvexError("Invoice haipatikani.");
+      throw new ConvexError(invoiceHiddenReason(user, invoice));
     }
 
     if (invoice.status !== "posted") {
@@ -853,6 +853,15 @@ async function invoiceRights(ctx: QueryCtx, user: UserLike) {
     canUnpay: (await roleHasPermission(ctx, user, "sales.edit")) || (await roleHasPermission(ctx, user, "sales.void")),
   };
 }
+/** The reason an invoice cannot be used by this person, in words he can act on (instead of a bare "not found"). */
+function invoiceHiddenReason(user: UserLike, inv: Doc<"invoices"> | null): string {
+  if (!inv || !user.tenantId || inv.tenantId !== user.tenantId) return "Invoice haipatikani.";
+  if (user.departmentsActive === true && !user.branchId && user.allDepartments !== true && inv.branchId) return "Invoice haipatikani: ni ya idara maalum, lakini akaunti yako haijaunganishwa na idara. Muombe msimamizi akuunganishe na idara (Users) au akupe ruhusa ya idara zote.";
+  if (user.branchId && inv.branchId !== user.branchId) return "Invoice haipatikani: ni ya idara nyingine. Fanya kazi kwenye idara yako, au muombe msimamizi.";
+  if (isOwnDataOnly(user) && inv.createdBy !== user._id) return "Invoice haipatikani: iliandikwa na mtumiaji mwingine; akaunti yako inaona zako tu.";
+  return "Invoice haipatikani.";
+}
+
 const canSeeInvoice = (user: UserLike, inv: Doc<"invoices"> | null): inv is Doc<"invoices"> => !!inv && canAccessRecord(user, inv) && !(isOwnDataOnly(user) && inv.createdBy !== user._id);
 
 /**
@@ -1002,7 +1011,7 @@ export const editInvoice = mutation({
     try {
       const user = await requirePermission(ctx, "sales.edit", "sales");
       const invoice = await ctx.db.get("invoices", a.invoiceId);
-      if (!canSeeInvoice(user, invoice)) throw new ConvexError("Invoice haipatikani.");
+      if (!canSeeInvoice(user, invoice)) throw new ConvexError(invoiceHiddenReason(user, invoice));
       if (invoice.status !== "posted") throw new ConvexError("Invoice hii imebatilishwa; haiwezi kuhaririwa.");
       if (invoice.customerBillId) throw new ConvexError("Invoice hii ipo kwenye Customer Bill. Iondoe kwenye bill kwanza kabla ya kuihariri.");
       const reason = a.reason.trim();
@@ -1035,8 +1044,9 @@ export const editInvoice = mutation({
         if (!Number.isFinite(line.qty) || line.qty <= 0 || !Number.isFinite(line.unitPrice) || line.unitPrice < 0) throw new ConvexError("Kiasi au bei si sahihi.");
         const product = await ctx.db.get("products", line.productId);
         // Same rule as selling: a product of this business, from THIS invoice's department or shared by all departments.
-        const allowed = !!product && product.isActive && product.tenantId === invoice.tenantId && (product.branchId === undefined || product.branchId === invoice.branchId);
-        if (!product || !allowed) throw new ConvexError("Bidhaa haipatikani kwenye idara ya invoice hii.");
+        const wasOnInvoice = oldQty.has(String(line.productId)); // already sold on this invoice: keep it editable even if the product was switched off or moved since
+        const allowed = !!product && (product.isActive || wasOnInvoice) && product.tenantId === invoice.tenantId && (product.branchId === undefined || product.branchId === invoice.branchId || wasOnInvoice);
+        if (!product || !allowed) throw new ConvexError(product ? `Bidhaa "${product.name}" haipatikani kwenye idara ya invoice hii (imezimwa au ni ya idara nyingine).` : "Bidhaa haipatikani.");
         const available = product.currentQty + (oldQty.get(String(line.productId)) ?? 0);
         if (!allowNegativeStock && available + 1e-8 < (newQty.get(String(line.productId)) ?? line.qty)) throw new ConvexError(`Stock haitoshi kwa ${product.name}. Iliyopo: ${available}, unayotaka: ${newQty.get(String(line.productId))}`);
         assertFinite(line.discount, "Discount"); const lineDiscount = money(line.discount ?? 0); const gross = money(line.qty * line.unitPrice);
