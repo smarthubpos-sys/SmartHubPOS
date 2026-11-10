@@ -1,7 +1,7 @@
 import { ConvexError } from "convex/values";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
-import { ALL_PERMISSION_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, effectiveModules, permissionsWithNewDefaults } from "./permissions";
+import { ALL_PERMISSION_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, effectiveModules, isKioskOnlyPermissions, permissionsWithNewDefaults } from "./permissions";
 import { planStatus, tzToday } from "./plans";
 
 /** The parts of a user the access helpers read. A real user (Doc<"users">) fits; tests may pass a lighter object. */
@@ -156,6 +156,11 @@ export async function effectivePermissionsOf(ctx: QueryCtx, user: MaybeUser): Pr
   if (isSuperAdmin(user)) return [...ALL_PERMISSION_KEYS];
   const extra = (user?.extraPermissions ?? []).filter((k) => ALL_PERMISSION_KEYS.includes(k));
   return [...new Set([...(await permissionsOfRole(ctx, user?.tenantId, String(user?.role ?? ""))), ...extra])];
+}
+
+/** True for the shared attendance device account (its only permission is the kiosk one). */
+export async function isKioskOnlyUser(ctx: QueryCtx, user: MaybeUser): Promise<boolean> {
+  return isKioskOnlyPermissions(await effectivePermissionsOf(ctx, user));
 }
 
 export async function roleHasPermission(ctx: QueryCtx, user: MaybeUser, permission: string) {

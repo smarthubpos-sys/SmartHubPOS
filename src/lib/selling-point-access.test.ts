@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isKioskOnlyPermissions } from "@/convex/permissions";
 import { isSellingStaffRole, isSuperAdminRole, normalizeRoleName, routeAccess, showSellingPointInMenu } from "./selling-point-access.ts";
 
 const WAITER_PERMS = ["sales.view", "waiterOrders.view", "waiterOrders.manage"];
@@ -82,5 +83,24 @@ describe("route guard", () => {
     expect(route({ pathname: "/stock", moduleKey: "stock", permissions: undefined })).toBe("allowed");
     expect(route({ pathname: "/selling-pointer", moduleKey: undefined, permissions: [] })).toBe("allowed");
     expect(route({ pathname: "/salesman", moduleKey: undefined, permissions: [] })).toBe("allowed");
+  });
+});
+
+describe("shared attendance device (kiosk)", () => {
+  const route = (o: Partial<Parameters<typeof routeAccess>[0]>) =>
+    routeAccess({ pathname: "/kiosk", role: "waiter", permissions: WAITER_PERMS, modules: null, moduleKey: undefined, ...o });
+
+  it("opens only for accounts that hold the kiosk permission, and waits for the permission list", () => {
+    expect(route({ role: "attendance", pathname: "/kiosk", permissions: ["attendance.kiosk"], moduleKey: undefined })).toBe("allowed");
+    expect(route({ role: "waiter", pathname: "/kiosk", permissions: WAITER_PERMS, moduleKey: undefined })).toBe("blocked");
+    expect(route({ role: "attendance", pathname: "/kiosk", permissions: undefined, moduleKey: undefined })).toBe("loading");
+  });
+
+  it("a kiosk-only account is recognised only when the kiosk is its one and only permission", () => {
+    expect(isKioskOnlyPermissions(["attendance.kiosk"])).toBe(true);
+    expect(isKioskOnlyPermissions(["attendance.kiosk", "payroll.view"])).toBe(false);
+    expect(isKioskOnlyPermissions(["sales.view"])).toBe(false);
+    expect(isKioskOnlyPermissions([])).toBe(false);
+    expect(isKioskOnlyPermissions(undefined)).toBe(false);
   });
 });

@@ -3,7 +3,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, scopedRows, requirePermission } from "./access";
-import { businessNow, dueOn, lateness, toMinutes } from "./attendanceMath";
+import { MAX_OPEN_SHIFT_HOURS, addDaysIso, businessNow, dueOn, hoursBetween, lateness, rowToSignOut } from "./attendanceMath";
 import { loadClosedDays, loadRule, loadSchedule } from "./schedules";
 
 /** Local date/time of the person signing, from the browser's timezone offset (minutes, as Date.getTimezoneOffset). */
@@ -33,11 +33,14 @@ export async function applyAttendance(ctx: MutationCtx, input: { employee: Doc<"
     });
     return { date: now.date, time: now.time, scheduledStart: due && due !== "off" ? due.startTime : undefined, lateMinutes: late.lateMinutes, lateDeduction: late.deduction };
   }
-  if (!rec?.signInTime) throw new ConvexError("Hajaingia kazini leo; ingia kwanza.");
-  if (rec.signOutTime) throw new ConvexError("Tayari ameshatoka kazini leo.");
-  const hours = Math.max(0, Math.round(((now.minutes - toMinutes(rec.signInTime)) / 60) * 100) / 100);
-  await ctx.db.patch("attendance", rec._id, { signOutTime: now.time, hoursWorked: hours, notes: `${rec.notes ?? ""}${rec.notes ? " / " : ""}${method}` });
-  return { date: now.date, time: now.time, hoursWorked: hours };
+  // A night shift signs out after midnight: with no row today, the still-open row of yesterday is the one to close.
+  const yesterdayRow = rec?.signInTime ? null : await ctx.db.query("attendance").withIndex("by_employee_date", (q) => q.eq("employeeId", employee._id).eq("date", addDaysIso(now.date, -1))).first();
+  const open = rowToSignOut(rec, yesterdayRow, now.date, now.minutes);
+  if (!open?.signInTime) throw new ConvexError("Hajaingia kazini leo; ingia kwanza.");
+  if (open.signOutTime) throw new ConvexError("Tayari ameshatoka kazini leo.");
+  const hours = hoursBetween(open.date, open.signInTime, now.date, now.minutes);
+  await ctx.db.patch("attendance", open._id, { signOutTime: now.time, hoursWorked: hours, notes: `${open.notes ?? ""}${open.notes ? " / " : ""}${method}` });
+  return { date: open.date, time: now.time, hoursWorked: hours, overnight: open.date !== now.date };
 }
 
 export const today = query({
@@ -47,13 +50,21 @@ export const today = query({
     const employees = (await scopedRows(ctx, user, "employees")).filter((e) => e.isActive);
     const records = filterScoped(user, await ctx.db.query("attendance").withIndex("by_date", (q) => q.eq("date", a.date)).collect());
     const byEmp = new Map(records.map((r) => [String(r.employeeId), r]));
+    // Viewing today: a night shift that signed in yesterday and has not signed out yet is still at work, not absent.
+    const clock = businessNow();
+    const carried = new Map<string, Doc<"attendance">>();
+    if (a.date === clock.date) {
+      const yesterday = filterScoped(user, await ctx.db.query("attendance").withIndex("by_date", (q) => q.eq("date", addDaysIso(a.date, -1))).collect());
+      for (const r of yesterday) if (r.signInTime && !r.signOutTime && !byEmp.has(String(r.employeeId)) && hoursBetween(r.date, r.signInTime, clock.date, clock.minutes) <= MAX_OPEN_SHIFT_HOURS) carried.set(String(r.employeeId), r);
+    }
     const closed = await loadClosedDays(ctx, user.tenantId);
     const schedules = new Map<string, { weekday: number; isOff: boolean; startTime?: string; endTime?: string }[]>();
     for (const row of await scopedRows(ctx, user, "workSchedules")) schedules.set(String(row.employeeId), [...(schedules.get(String(row.employeeId)) ?? []), { weekday: row.weekday, isOff: row.isOff, startTime: row.startTime, endTime: row.endTime }]);
     return employees.map((e) => {
-      const r = byEmp.get(String(e._id));
+      const own = byEmp.get(String(e._id));
+      const r = own ?? carried.get(String(e._id));
       const due = dueOn(schedules.get(String(e._id)) ?? [], a.date, closed);
-      return { employeeId: e._id, code: e.employeeCode, name: e.name, position: e.position, signInTime: r?.signInTime, signOutTime: r?.signOutTime, hoursWorked: r?.hoursWorked, status: r?.status ?? "absent", scheduledStart: due && due !== "off" ? due.startTime : undefined, scheduledEnd: due && due !== "off" ? due.endTime : undefined, dayOff: due === "off", attendanceId: r?._id, lateMinutes: r?.lateMinutes ?? 0, lateDeduction: r?.lateWaived ? 0 : r?.lateDeduction ?? 0, lateWaived: !!r?.lateWaived };
+      return { employeeId: e._id, carriedFrom: own ? undefined : r?.date, code: e.employeeCode, name: e.name, position: e.position, signInTime: r?.signInTime, signOutTime: r?.signOutTime, hoursWorked: r?.hoursWorked, status: r?.status ?? "absent", scheduledStart: due && due !== "off" ? due.startTime : undefined, scheduledEnd: due && due !== "off" ? due.endTime : undefined, dayOff: due === "off", attendanceId: r?._id, lateMinutes: r?.lateMinutes ?? 0, lateDeduction: r?.lateWaived ? 0 : r?.lateDeduction ?? 0, lateWaived: !!r?.lateWaived };
     }).sort((x, y) => x.name.localeCompare(y.name));
   },
 });

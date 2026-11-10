@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, scopedRows } from "./access";
+import { canAccessRecord, filterScoped, isKioskOnlyUser, logAudit, requireActiveUser, requireManager, scopedRows } from "./access";
 import { applyAttendance } from "./attendance";
 
 /**
@@ -47,7 +47,7 @@ async function verifySignature(cred: { publicKey: string; algorithm: number }, d
   throw new ConvexError("Aina ya ufunguo wa kifaa haitumiki.");
 }
 
-async function newChallenge(ctx: MutationCtx, userId: Id<"users">, purpose: string, employeeId?: Id<"employees">) {
+export async function newChallenge(ctx: MutationCtx, userId: Id<"users">, purpose: string, employeeId?: Id<"employees">) {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   const challenge = bytesToB64u(bytes);
   await ctx.db.insert("biometricChallenges", { challenge, purpose, employeeId, userId, expiresAt: Date.now() + 120000 });
@@ -133,6 +133,8 @@ export const authOptions = mutation({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
+    // The shared work device must name the employee first (PIN / number, see kiosk.identify): no open "pick any name" prompt there.
+    if (await isKioskOnlyUser(ctx, user)) throw new ConvexError("Weka namba yako kwanza, kisha thibitisha kwa alama.");
     const challenge = await newChallenge(ctx, user._id, "auth");
     return { challenge };
   },
@@ -142,11 +144,14 @@ export const authenticate = mutation({
   args: { challenge: v.string(), credentialId: v.string(), authenticatorData: v.string(), clientDataJSON: v.string(), signature: v.string(), kind: v.union(v.literal("in"), v.literal("out")), tzOffset: v.number() },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx);
-    await consumeChallenge(ctx, a.challenge, "auth", user._id);
+    const challengeRow = await consumeChallenge(ctx, a.challenge, "auth", user._id);
+    if (!challengeRow.employeeId && await isKioskOnlyUser(ctx, user)) throw new ConvexError("Weka namba yako kwanza, kisha thibitisha kwa alama.");
     const cd = parseClientData(a.clientDataJSON);
     checkClientData(cd, "webauthn.get", a.challenge);
     const cred = await ctx.db.query("biometricCredentials").withIndex("by_credential", (q) => q.eq("credentialId", a.credentialId)).first();
     if (!cred || !canAccessRecord(user, cred)) throw new ConvexError("Alama hii haijasajiliwa kwenye biashara hii.");
+    // When the employee was named first (PIN / number), the fingerprint must belong to exactly that employee: the server enforces it, not only the screen.
+    if (challengeRow.employeeId && String(cred.employeeId) !== String(challengeRow.employeeId)) throw new ConvexError("Alama hii si ya mfanyakazi aliyejitambulisha.");
     const authData = b64uToBytes(a.authenticatorData);
     if (authData.length < 37) throw new ConvexError("Taarifa za kifaa si sahihi.");
     // The assertion must be bound to the origin that asked for it.

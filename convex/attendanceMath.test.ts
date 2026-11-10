@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { absentDates, businessNow, dayRate, dueOn, lateness, leaveDates, monthBounds, scheduledDays, weekdayOf } from "./attendanceMath";
+import { absentDates, businessNow, dayRate, dueOn, hoursBetween, lateness, leaveDates, monthBounds, rowToSignOut, scheduledDays, weekdayOf } from "./attendanceMath";
 import type { DaySchedule, Rule } from "./attendanceMath";
 
 const fixed = (amount: number, grace = 0): Rule => ({ lateMode: "fixed", lateAmount: amount, graceMinutes: grace, absentEnabled: true });
@@ -70,5 +70,23 @@ describe("absence", () => {
   });
   it("expands leave ranges inside the period", () => {
     expect([...leaveDates([{ startDate: "2026-10-18", endDate: "2026-10-20" }], "2026-10-19", "2026-10-25")]).toEqual(["2026-10-19", "2026-10-20"]);
+  });
+});
+
+describe("night shift helpers", () => {
+  it("hoursBetween counts across midnight and never goes negative", () => {
+    expect(hoursBetween("2026-10-26", "20:00", "2026-10-27", 2 * 60)).toBe(6);
+    expect(hoursBetween("2026-10-26", "08:00", "2026-10-26", 17 * 60)).toBe(9);
+    expect(hoursBetween("2026-10-26", "08:00", "2026-10-26", 7 * 60)).toBe(0);
+    expect(hoursBetween("2026-10-26", "20:30", "2026-10-27", 2 * 60 + 15)).toBe(5.75);
+  });
+  it("rowToSignOut prefers today's row, else yesterday's open row within 18 hours, else nothing", () => {
+    const todayRow = { date: "2026-10-27", signInTime: "08:00" };
+    const open = { date: "2026-10-26", signInTime: "20:00" };
+    expect(rowToSignOut(todayRow, open, "2026-10-27", 9 * 60)).toBe(todayRow);
+    expect(rowToSignOut(null, open, "2026-10-27", 2 * 60)).toBe(open);
+    expect(rowToSignOut(null, open, "2026-10-27", 15 * 60)).toBeNull(); // 19 h later: a forgotten sign-out
+    expect(rowToSignOut(null, { ...open, signOutTime: "23:00" }, "2026-10-27", 2 * 60)).toBeNull();
+    expect(rowToSignOut(null, null, "2026-10-27", 2 * 60)).toBeNull();
   });
 });

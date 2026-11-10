@@ -24,6 +24,7 @@ import type * as customerBills from "../customerBills.js";
 import type * as customerDebt from "../customerDebt.js";
 import type * as dashboard from "../dashboard.js";
 import type * as hr from "../hr.js";
+import type * as kiosk from "../kiosk.js";
 import type * as http from "../http.js";
 import type * as inventory from "../inventory.js";
 import type * as leaveMath from "../leaveMath.js";
@@ -87,6 +88,7 @@ declare const fullApi: ApiFromModules<{
   customerDebt: typeof customerDebt;
   dashboard: typeof dashboard;
   hr: typeof hr;
+  kiosk: typeof kiosk;
   http: typeof http;
   inventory: typeof inventory;
   leaveMath: typeof leaveMath;

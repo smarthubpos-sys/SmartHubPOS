@@ -21,6 +21,7 @@ const HRPage = lazy(() => import("./pages/hr/page.tsx"));
 const LeavePage = lazy(() => import("./pages/leave/page.tsx"));
 const NotificationsPage = lazy(() => import("./pages/notifications/page.tsx"));
 const HelpPage = lazy(() => import("./pages/help/page.tsx"));
+const KioskPage = lazy(() => import("./pages/kiosk/page.tsx"));
 
 export default function App() {
   return (
@@ -47,6 +48,7 @@ export default function App() {
             <Route path="/leave" element={<LeavePage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/help" element={<HelpPage />} />
+            <Route path="/kiosk" element={<KioskPage />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>

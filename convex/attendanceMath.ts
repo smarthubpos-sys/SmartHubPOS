@@ -28,6 +28,29 @@ export function addDaysIso(date: string, n: number) {
   return new Date(Date.parse(`${date}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
 }
 
+/** A sign-in left open (no sign-out) is still treated as "a shift in progress" for this long. Longer than that it is a forgotten sign-out. */
+export const MAX_OPEN_SHIFT_HOURS = 18;
+
+/** Hours from a sign-in (its date + "HH:MM") to a sign-out at `outDate`/`outMinutes`. Crosses midnight when the dates differ (night shift). */
+export function hoursBetween(inDate: string, inTime: string, outDate: string, outMinutes: number): number {
+  const days = Math.round((Date.parse(`${outDate}T00:00:00Z`) - Date.parse(`${inDate}T00:00:00Z`)) / 86400000);
+  const minutes = days * 1440 + outMinutes - toMinutes(inTime);
+  return Math.max(0, Math.round((minutes / 60) * 100) / 100);
+}
+
+type OpenRow = { date: string; signInTime?: string; signOutTime?: string };
+
+/**
+ * Which attendance row does a sign-out belong to? Today's row when there is one (the caller then refuses a second sign-out).
+ * With no row today, yesterday's row that is still open: a night shift that started before midnight (e.g. in 20:00, out 02:00).
+ * A row older than MAX_OPEN_SHIFT_HOURS is a forgotten sign-out, never closed by a new day's sign-out.
+ */
+export function rowToSignOut<T extends OpenRow>(today: T | null | undefined, yesterday: T | null | undefined, nowDate: string, nowMinutes: number): T | null {
+  if (today?.signInTime) return today;
+  if (yesterday?.signInTime && !yesterday.signOutTime && hoursBetween(yesterday.date, yesterday.signInTime, nowDate, nowMinutes) <= MAX_OPEN_SHIFT_HOURS) return yesterday;
+  return null;
+}
+
 /** What was due on a date: undefined when the person has no timetable, "off" on a weekly day off or closed day. */
 export function dueOn(schedule: DaySchedule[], date: string, closedDays: ReadonlySet<string> = new Set()): { startTime: string; endTime?: string } | "off" | undefined {
   if (schedule.length === 0) return undefined;

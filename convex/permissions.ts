@@ -36,7 +36,7 @@ export const PERMISSION_GROUPS: { group: string; items: { key: string; label: st
       { key: "accounts.reports.delete", label: "Anaweza kufuta ripoti za kipindi (Period Reports)" },
     ],
   },
-  { group: "Payroll", items: [{ key: "payroll.view", label: "View payroll" }, { key: "payroll.manage", label: "Manage employees and payroll" }, { key: "payroll.approve", label: "Approve payroll" }, { key: "payroll.reports.view", label: "View payroll reports" }, { key: "payroll.print", label: "Print payroll reports" }, { key: "payroll.export", label: "Export payroll data" }] },
+  { group: "Payroll", items: [{ key: "attendance.kiosk", label: "Attendance kiosk: sign staff in / out on a shared work device only (nothing else is opened)" }, { key: "payroll.view", label: "View payroll" }, { key: "payroll.manage", label: "Manage employees and payroll" }, { key: "payroll.approve", label: "Approve payroll" }, { key: "payroll.reports.view", label: "View payroll reports" }, { key: "payroll.print", label: "Print payroll reports" }, { key: "payroll.export", label: "Export payroll data" }] },
   { group: "Leave", items: [{ key: "leave.request", label: "Request leave / permission and see own timetable" }, { key: "leave.review", label: "HR: receive, view and decide leave requests sent to HR" }] },
   { group: "Accounts", items: [{ key: "accounts.view", label: "View accounts and balances" }, { key: "accounts.manage", label: "Post journals and manage chart of accounts" }, { key: "accounts.approve", label: "Approve accounting entries" }, { key: "accounts.reports.view", label: "View financial reports" }, { key: "accounts.print", label: "Print financial reports" }, { key: "accounts.export", label: "Export financial data" }] },
   {
@@ -117,6 +117,8 @@ export const SYSTEM_ROLES: { name: string; displayName: string; permissions: str
   { name: "waiter", displayName: "Waiter", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage", "leave.request"] },
   { name: "waitress", displayName: "Waitress", permissions: ["sales.view", "sales.manage", "sales.print", "waiterOrders.view", "waiterOrders.manage", "leave.request"] },
   { name: "viewer", displayName: "Viewer", permissions: [] },
+  // The shared work device (office tablet / PC) where staff sign in and out with PIN or number + fingerprint. It opens that one screen and nothing else.
+  { name: "attendance", displayName: "Attendance Kiosk", permissions: ["attendance.kiosk"] },
 ];
 
 /**
@@ -237,3 +239,15 @@ export const MODULE_MANAGE_PERMISSION: Record<string, string> = {
   payroll: "payroll.manage",
   accounts: "accounts.manage",
 };
+
+/** The permission of the shared attendance device. */
+export const KIOSK_PERMISSION = "attendance.kiosk";
+
+/**
+ * A "kiosk only" account is one whose ONLY permission is the attendance kiosk: it opens the sign-in screen and nothing else,
+ * is never signed out for being idle, and must identify the employee (PIN / number) before the fingerprint.
+ * Any account with another permission (manager, admin, Super Admin ...) is an ordinary account and is not affected.
+ */
+export function isKioskOnlyPermissions(permissions: readonly string[] | undefined | null): boolean {
+  return !!permissions && permissions.length > 0 && permissions.every((p) => p === KIOSK_PERMISSION);
+}

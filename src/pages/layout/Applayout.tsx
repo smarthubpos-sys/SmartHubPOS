@@ -1,6 +1,6 @@
 import { useIsMobile } from "@/hooks/use-mobile.ts";
 import { Navigate, Outlet, useNavigate, useLocation } from "react-router-dom";
-import { MODULES } from "@/convex/permissions";
+import { MODULES, isKioskOnlyPermissions } from "@/convex/permissions";
 import { Suspense, useEffect, useState } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
@@ -91,7 +91,9 @@ export default function AppLayout() {
     ? securitySettings.sessionTimeoutMinutes
     : 15;
   const timeout = idleLimitMinutes(Number(timeoutValue ?? 15), user?.role === "super_admin");
-  useIdleSignOut(isAuthenticated && !!user, timeout);
+  // The shared attendance device stays signed in all day (it only opens the sign-in screen); every other account keeps the idle sign-out.
+  const kioskOnly = isKioskOnlyPermissions(permissions);
+  useIdleSignOut(isAuthenticated && !!user && permissions !== undefined && !kioskOnly, timeout);
   // ONE language for the whole system: the language saved for the business (default Kiswahili).
   useEffect(() => {
     if (!settings) return;
@@ -110,7 +112,7 @@ export default function AppLayout() {
   // <main> is the scroll container and stays mounted between pages, so it keeps its scroll offset: start every page at its top.
   useEffect(() => { scrollAppToTop(); }, [location.pathname]);
 
-  if (isLoading || (isAuthenticated && (user === undefined || business === undefined)) || resetting) return <LoadingScreen />;
+  if (isLoading || (isAuthenticated && (user === undefined || business === undefined || permissions === undefined)) || resetting) return <LoadingScreen />;
   if (!isAuthenticated) return <LoadingScreen />;
   if (user === null) return <div className="min-h-screen flex items-center justify-center bg-slate-950 p-5 text-white"><div className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 text-center shadow-2xl"><h1 className="text-xl font-bold">{tr("Tunamalizia akaunti yako…")}</h1><p className="mt-2 text-sm text-slate-300">{tr("Ikiwa ukurasa huu hautabadilika, jaribu kutoka na kuingia tena.")}</p><div className="mt-5"><SignInButton /></div></div></div>;
 
@@ -119,6 +121,10 @@ export default function AppLayout() {
   if (business?.suspended) return <div className="min-h-screen flex items-center justify-center bg-slate-950 p-5 text-white"><div className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 text-center shadow-2xl"><h1 className="text-xl font-bold">{tr("Biashara yako imesimamishwa")}</h1><p className="mt-2 text-sm text-slate-300">{tr("Wasiliana na Super Admin ili iwashwe tena.")}</p><div className="mt-5"><SignInButton /></div></div></div>;
   if (business?.expired) return <div className="min-h-screen flex items-center justify-center bg-slate-950 p-5 text-white"><div className="w-full max-w-md rounded-2xl border border-white/10 bg-slate-900 p-6 text-center shadow-2xl"><h1 className="text-xl font-bold">{business.subscription?.plan === "demo" ? tr("Muda wa demo umeisha") : tr("Usajili wa biashara yako umeisha")}</h1><p className="mt-2 text-sm text-slate-300">{tr("Wasiliana na SmartHub ili ulipie uendelee kutumia mfumo. Data yako yote iko salama.")}</p><div className="mt-5"><SignInButton /></div></div></div>;
   if (business?.needsPicker) return <BusinessPicker />;
+
+  // Shared attendance device: only the sign-in screen, with no menu, no top bar and nothing else to open.
+  if (kioskOnly && location.pathname !== "/kiosk") return <Navigate to="/kiosk" replace />;
+  if (kioskOnly) return <div className="app-bg min-h-dvh overflow-auto"><ErrorBoundary resetKey={location.pathname}><Suspense fallback={<div className="flex min-h-dvh items-center justify-center" role="status" aria-live="polite"><div className="h-8 w-8 animate-spin rounded-full border-4 border-muted border-t-primary" /></div>}><Outlet /></Suspense></ErrorBoundary></div>;
 
   // A screen whose module is not available to this business/user is never shown, even when its address is typed in by hand.
   // Selling Point staff (waiter / waitress) never open the Dashboard: they start at, and are sent back to, Selling Point.

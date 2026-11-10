@@ -25,8 +25,9 @@ import { SCHEDULE_DICT } from "./i18n-dict-schedule.ts";
 import { LEAVE_DICT } from "./i18n-dict-leave.ts";
 import { EDITDATE_DICT } from "./i18n-dict-editdate.ts";
 import { PAYDATE_DICT } from "./i18n-dict-paydate.ts";
+import { KIOSK_DICT } from "./i18n-dict-kiosk.ts";
 
-const DICT: Record<string, { sw: string; en: string }> = { ...SERVER_DICT, ...UI_DICT, ...EXTRA_DICT, ...ACCESS_DICT, ...SUPERADMIN_DICT, ...INVOICING_DICT, ...DEPT_DICT, ...PREPORT_DICT, ...PAYMENTS_DICT, ...PERIOD_REPORT_DICT, ...STOCKTAKE_DICT, ...IMPORT_DICT, ...SELLING_POINT_DICT, ...SCHEDULE_DICT, ...LEAVE_DICT, ...FRIENDLY_DICT, ...EDITDATE_DICT, ...PAYDATE_DICT };
+const DICT: Record<string, { sw: string; en: string }> = { ...SERVER_DICT, ...UI_DICT, ...EXTRA_DICT, ...ACCESS_DICT, ...SUPERADMIN_DICT, ...INVOICING_DICT, ...DEPT_DICT, ...PREPORT_DICT, ...PAYMENTS_DICT, ...PERIOD_REPORT_DICT, ...STOCKTAKE_DICT, ...IMPORT_DICT, ...SELLING_POINT_DICT, ...SCHEDULE_DICT, ...LEAVE_DICT, ...FRIENDLY_DICT, ...EDITDATE_DICT, ...PAYDATE_DICT, ...KIOSK_DICT };
 
 export type Lang = "sw" | "en";
 const STORAGE_KEY = "smarthub.lang";

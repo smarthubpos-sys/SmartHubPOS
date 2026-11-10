@@ -52,7 +52,8 @@ export function routeAccess({ pathname, role, permissions, modules, moduleKey }:
   if (moduleKey && modules && !modules.includes(moduleKey)) return "blocked";
   const cashierDesk = pathname === "/cashier" || pathname.startsWith("/cashier/");
   if (cashierDesk && isSuperAdminRole(role)) return "blocked"; // orders and waiter money belong to the cashier, not the Super Admin
-  const needed = cashierDesk ? "waiterOrders.manage" : sellingPoint ? "waiterOrders.view" : pathname === "/sales" || pathname.startsWith("/sales/") ? "sales.view" : pathname === "/dashboard" || pathname.startsWith("/dashboard/") ? "dashboard.view" : null;
+  const kioskScreen = pathname === "/kiosk" || pathname.startsWith("/kiosk/");
+  const needed = kioskScreen ? "attendance.kiosk" : cashierDesk ? "waiterOrders.manage" : sellingPoint ? "waiterOrders.view" : pathname === "/sales" || pathname.startsWith("/sales/") ? "sales.view" : pathname === "/dashboard" || pathname.startsWith("/dashboard/") ? "dashboard.view" : null;
   if (!needed) return "allowed";
   if (!permissions) return "loading";
   return permissions.includes(needed) ? "allowed" : "blocked";
