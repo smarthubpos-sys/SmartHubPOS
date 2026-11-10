@@ -9,6 +9,7 @@ import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, Table } from "@/c
 import { localDate, tzOffset } from "@/lib/format.ts";
 import { useMoney } from "@/hooks/use-money.ts";
 import { errorText, getLocale, tr } from "@/lib/i18n.ts";
+import AttendanceDevices from "./AttendanceDevices.tsx";
 import { biometricError, biometricSupported, getAssertion, platformBiometricAvailable } from "@/lib/webauthn.ts";
 
 type Result = { ok: boolean; text: string } | null;
@@ -98,6 +99,7 @@ export default function AttendancePage({ kind: initial }: { kind: "in" | "out" }
           </Table>
         )}
       </Panel>
+      <AttendanceDevices />
     </div>
   );
 }

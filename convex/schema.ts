@@ -1074,4 +1074,27 @@ export default defineSchema({
     invoiceId: v.optional(v.id("invoices")), waiterOrderId: v.optional(v.id("waiterOrders")), purchaseReturnId: v.optional(v.id("purchaseReturns")),
     productId: v.id("products"), lotId: v.id("stockLots"), quantity: v.number(), returnedQuantity: v.number(),
   }).index("by_invoice", ["invoiceId"]).index("by_waiter_order", ["waiterOrderId"]).index("by_purchase_return", ["purchaseReturnId"]).index("by_product", ["productId"]),
+  // ── FINGERPRINT ATTENDANCE MACHINES (ZKTeco and similar): the machine knows who touched it, the system only receives the punches ──
+  attendanceDevices: defineTable({
+    tenantId: v.id("tenants"),
+    branchId: v.optional(v.id("branches")),
+    name: v.string(),
+    secretHash: v.string(), // SHA-256 (hex) of the device secret; the secret itself is shown once and never stored
+    isActive: v.boolean(),
+    registeredBy: v.id("users"), // attendance rows made by this machine are recorded under this person
+    createdAt: v.string(),
+    lastSeenAt: v.optional(v.number()),
+  }).index("by_tenant", ["tenantId"]),
+
+  devicePunches: defineTable({
+    tenantId: v.id("tenants"),
+    deviceId: v.id("attendanceDevices"),
+    employeeCode: v.string(), // upper-case, as sent by the machine
+    punchedAt: v.number(), // real time of the touch (ms)
+    result: v.string(), // in | out | duplicate | unknown_employee | out_of_order | rejected | bad_time
+    message: v.optional(v.string()),
+    receivedAt: v.number(),
+  }).index("by_device_code_time", ["deviceId", "employeeCode", "punchedAt"])
+    .index("by_tenant_code_time", ["tenantId", "employeeCode", "punchedAt"])
+    .index("by_tenant_received", ["tenantId", "receivedAt"]),
 });

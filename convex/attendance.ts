@@ -15,10 +15,10 @@ export function localNow(tzOffsetMinutes: number) {
 }
 
 /** Records a sign-in or sign-out for an employee. Shared by manual and biometric flows. */
-export async function applyAttendance(ctx: MutationCtx, input: { employee: Doc<"employees">; kind: "in" | "out"; userId: Id<"users">; method: string; tzOffset: number }) {
+export async function applyAttendance(ctx: MutationCtx, input: { employee: Doc<"employees">; kind: "in" | "out"; userId: Id<"users">; method: string; tzOffset: number; /** The real moment of the punch (ms). A fingerprint machine may deliver it later; default is "now". */ atMs?: number }) {
   const { employee, kind, userId, method } = input;
   // Timetables and lateness money are judged on the business clock (server time), never on the device's own clock/time zone.
-  const now = businessNow();
+  const now = businessNow(input.atMs);
   if (!employee.isActive) throw new ConvexError("Mfanyakazi huyu hafanyi kazi tena.");
   const rec = await ctx.db.query("attendance").withIndex("by_employee_date", (q) => q.eq("employeeId", employee._id).eq("date", now.date)).first();
   if (kind === "in") {

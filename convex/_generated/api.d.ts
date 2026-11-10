@@ -12,6 +12,7 @@ import type * as access from "../access.js";
 import type * as accounting from "../accounting.js";
 import type * as announcements from "../announcements.js";
 import type * as attendance from "../attendance.js";
+import type * as attendanceDevices from "../attendanceDevices.js";
 import type * as attendanceMath from "../attendanceMath.js";
 import type * as auth from "../auth.js";
 import type * as autoProduce from "../autoProduce.js";
@@ -76,6 +77,7 @@ declare const fullApi: ApiFromModules<{
   accounting: typeof accounting;
   announcements: typeof announcements;
   attendance: typeof attendance;
+  attendanceDevices: typeof attendanceDevices;
   attendanceMath: typeof attendanceMath;
   auth: typeof auth;
   autoProduce: typeof autoProduce;
