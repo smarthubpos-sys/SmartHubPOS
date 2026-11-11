@@ -15,7 +15,7 @@ vi.mock("@/hooks/use-stock-rights.ts", () => ({ useStockRights: () => ({ canAdju
 
 import StockImport from "./StockImport.tsx";
 
-const HEAD = ["Jina la bidhaa *", "Msimbo wa bidhaa", "Barcode", "Kundi", "Kipimo", "Bei ya kuuzia *", "Bei ya manunuzi", "Idadi"];
+const HEAD = ["Jina la bidhaa *", "Msimbo wa bidhaa", "Barcode", "Kundi", "Kipimo", "Bei ya kuuzia", "Bei ya manunuzi", "Idadi"];
 async function xlsx(name: string, rows: unknown[][]) {
   const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet("Bidhaa"); ws.addRow(HEAD); rows.forEach((r) => ws.addRow(r));
   const buf = await wb.xlsx.writeBuffer();
@@ -42,20 +42,32 @@ describe("Excel import page", () => {
 
   it("reports a missing required header by name", async () => {
     show();
-    const wb = new ExcelJS.Workbook(); wb.addWorksheet("a").addRow(["Jina la bidhaa", "Idadi"]);
+    const wb = new ExcelJS.Workbook(); wb.addWorksheet("a").addRow(["Bei ya kuuzia", "Idadi"]);
     const buf = await wb.xlsx.writeBuffer();
     choose({ name: "x.xlsx", size: 100, arrayBuffer: async () => buf } as unknown as File);
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
-    expect(String(toast.error.mock.calls[0][0])).toContain("Bei ya kuuzia");
+    expect(String(toast.error.mock.calls[0][0])).toContain("Jina la bidhaa");
     expect(importBatch).not.toHaveBeenCalled();
+  });
+
+  it("accepts a file with no price column: the row goes to the server without a selling price", async () => {
+    importBatch.mockImplementation(serverEcho(() => false));
+    show();
+    const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet("a"); ws.addRow(["Jina la bidhaa", "Idadi"]); ws.addRow(["Unga", 5]);
+    const buf = await wb.xlsx.writeBuffer();
+    choose({ name: "x.xlsx", size: 100, arrayBuffer: async () => buf } as unknown as File);
+    await screen.findByText("Unga");
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(importBatch.mock.calls[0][0].rows).toEqual([expect.objectContaining({ name: "Unga", quantity: 5 })]);
+    expect(importBatch.mock.calls[0][0].rows[0].sellingPrice).toBeUndefined();
   });
 
   it("previews valid and invalid rows, then imports only the valid ones and reports the outcome", async () => {
     importBatch.mockImplementation(serverEcho(() => false));
     show();
-    choose(await xlsx("ok.xlsx", [["Sukari", "", "", "", "", 3000, 2400, 5], [], ["Hakuna bei"], ["Mafuta", "", "", "", "", 5000]]));
+    choose(await xlsx("ok.xlsx", [["Sukari", "", "", "", "", 3000, 2400, 5], [], ["Hasi", "", "", "", "", -5], ["Mafuta", "", "", "", "", 5000]]));
     await screen.findByText("Sukari");
-    expect(screen.getByText("Hakuna bei")).toBeInTheDocument(); // the invalid row is shown, not hidden
+    expect(screen.getByText("Hasi")).toBeInTheDocument(); // the invalid row is shown, not hidden
     expect(importBatch).toHaveBeenCalledTimes(1);               // preview only sent the 2 valid rows (dry run)
     expect(importBatch.mock.calls[0][0]).toMatchObject({ dryRun: true });
     expect(importBatch.mock.calls[0][0].rows).toHaveLength(2);
