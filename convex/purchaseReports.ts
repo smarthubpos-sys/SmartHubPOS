@@ -139,3 +139,44 @@ export const supplierLedger = query({
     };
   },
 });
+
+/**
+ * The cards on top of the Purchasing page: what we owe suppliers today, what is overdue, what was bought and paid this month,
+ * who we owe most and the latest payments. Same scope and same arithmetic as the Supplier Balances report (opening + purchases - payments - returns).
+ */
+export const supplierSummary = query({
+  args: { today: v.string(), monthStart: v.string() },
+  handler: async (ctx, a) => {
+    const u = await requirePermission(ctx, "purchasing.reports.view", "purchasing");
+    const { by, suppliers } = await movementsOf(ctx, u);
+    let payable = 0, owedCount = 0, boughtMonth = 0, paidMonth = 0, paidCount = 0;
+    const owed: { supplierId: Id<"suppliers">; name: string; balance: number }[] = [];
+    const payments: { supplierId: Id<"suppliers">; supplierName: string; date: string; amount: number; reference: string; description: string }[] = [];
+    for (const s of suppliers) {
+      let balance = s.openingBalance ?? 0;
+      for (const m of by.get(String(s._id)) ?? []) {
+        if (m.date > a.today) continue;
+        balance += m.charge - m.credit;
+        if (m.type === "payment") payments.push({ supplierId: s._id, supplierName: s.name, date: m.date, amount: m.credit, reference: m.reference, description: m.description });
+        if (m.date >= a.monthStart) {
+          if (m.type === "purchase") boughtMonth += m.charge;
+          else if (m.type === "payment") { paidMonth += m.credit; paidCount++; }
+        }
+      }
+      if (balance > 0.004) { payable += balance; owedCount++; owed.push({ supplierId: s._id, name: s.name, balance: round(balance) }); }
+    }
+    // Overdue = open invoices whose due date (invoice date + the supplier's payment terms) is before today.
+    const byId = new Map(suppliers.map((s) => [String(s._id), s]));
+    let overdue = 0, overdueCount = 0;
+    for (const p of filterScoped(u, await scopedRows(ctx, u, "purchases")).filter((x) => x.status === "posted" && x.outstanding > 0.004 && x.purchaseDate <= a.today)) {
+      if (toDay(a.today) - toDay(addDays(p.purchaseDate, termsDays(byId.get(String(p.supplierId))))) > 0) { overdue += p.outstanding; overdueCount++; }
+    }
+    return {
+      header: await letterhead(ctx, u),
+      payable: round(payable), owedCount, overdue: round(overdue), overdueCount,
+      boughtMonth: round(boughtMonth), paidMonth: round(paidMonth), paidCount,
+      topOwed: owed.sort((x, y) => y.balance - x.balance).slice(0, 5),
+      recentPayments: payments.sort((x, y) => y.date.localeCompare(x.date)).slice(0, 5).map((p) => ({ ...p, amount: round(p.amount) })),
+    };
+  },
+});

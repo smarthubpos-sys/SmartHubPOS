@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils.ts";
 import { tr } from "@/lib/i18n.ts";
 
@@ -21,9 +22,11 @@ type Props = {
   sections: MenuSection[];
   onClose: () => void;
   variant?: "default" | "accounts";
+  /** Shown between the header and the menu sections (for example summary cards). */
+  children?: ReactNode;
 };
 
-export default function ModuleMenu({ title, sections, onClose, variant = "default" }: Props) {
+export default function ModuleMenu({ title, sections, onClose, variant = "default", children }: Props) {
   const navigate = useNavigate();
 
   return (
@@ -40,6 +43,8 @@ export default function ModuleMenu({ title, sections, onClose, variant = "defaul
           {tr("Close")}
         </button>
       </div>
+
+      {children}
 
       {/* Sections */}
       <div className="space-y-6">

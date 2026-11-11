@@ -4,6 +4,7 @@ import { FileText, List, User, BarChart2, Package, CreditCard, Receipt, Trending
 import ModuleWorkspace from "@/pages/layout/_components/ModuleWorkspace.tsx";
 import SupplierWorkspace from "@/pages/purchasing/SupplierWorkspace.tsx";
 import RegisterWorkspace from "@/pages/purchasing/RegisterWorkspace.tsx";
+import SupplierCards from "@/pages/purchasing/SupplierCards.tsx";
 import { tr } from "@/lib/i18n.ts";
 
 const purchasingMenuItems = [
@@ -45,7 +46,9 @@ export default function PurchasingPage() {
             title={tr("Purchasing")}
             sections={purchasingMenuItems}
             onClose={() => navigate("/dashboard")}
-          />
+          >
+            <SupplierCards />
+          </ModuleMenu>
         }
       />
       <Route path="suppliers" element={<SupplierWorkspace />} />

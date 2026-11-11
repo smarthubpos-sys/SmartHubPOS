@@ -62,6 +62,13 @@ export default function InvoiceFinder() {
   const [openId, setOpenId] = useState<Id<"invoices"> | null>(null);
   const results = useQuery(api.sales.searchInvoices, term ? { invoiceNo: term } : "skip");
   const sellingPointResults = useQuery(api.waiterOrders.searchBillsForFinder, term ? { search: term } : "skip");
+  const nothingFound = !!term && !!results && results.length === 0 && !!sellingPointResults && sellingPointResults.length === 0;
+  const hint = useQuery(api.sales.invoiceSearchHint, nothingFound ? { invoiceNo: term } : "skip");
+  const hintText = !hint ? null
+    : hint.reason === "other_department" ? tr(hint.canSwitch ? "Invoice {0} ipo, lakini ni ya idara \"{1}\" na wewe uko idara \"{2}\". Badilisha idara kwenye menyu ya juu kisha utafute tena." : "Invoice {0} ipo, lakini ni ya idara \"{1}\" na wewe uko idara \"{2}\". Akaunti yako inaona idara yako tu; muombe msimamizi.", [hint.invoiceNo, hint.department, hint.myDepartment])
+    : hint.reason === "no_department" ? tr("Invoice {0} ipo, lakini haina idara (iliandikwa kabla idara hazijawekwa). Akaunti ya idara moja haiioni; msimamizi mwenye idara zote ndiye anaweza kuifungua.", [hint.invoiceNo])
+    : hint.reason === "not_linked" ? tr("Invoice {0} ipo, lakini akaunti yako haijaunganishwa na idara. Muombe msimamizi akuunganishe na idara (Users) au akupe ruhusa ya idara zote.", [hint.invoiceNo])
+    : tr("Invoice {0} ipo, lakini iliandikwa na mtumiaji mwingine; akaunti yako inaona invoice zako tu.", [hint.invoiceNo]);
   const settings = useQuery(api.maintenance.getSettings, {});
   const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
   const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
@@ -82,7 +89,7 @@ export default function InvoiceFinder() {
       {noBusiness && <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">{tr("Hujachagua biashara. Chagua biashara kwanza (Super Admin), kisha tafuta invoice; Edit na Cancel/Delete zitaonekana.")}</p>}
       {!term && <p className="text-sm text-muted-foreground">{tr("Hakuna historia inayoonyeshwa mpaka utafute. Andika namba ya invoice au jina la mteja; Sales invoices zinaweza kufunguliwa, na Selling Point bills zinaweza kuchapishwa tena.")}</p>}
       {term && results === undefined && <p className="text-sm text-muted-foreground">{tr("Inatafuta…")}</p>}
-      {term && results && sellingPointResults && results.length === 0 && sellingPointResults.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna invoice iliyopatikana kwenye biashara/idara yako.")}</p>}
+      {term && results && sellingPointResults && results.length === 0 && sellingPointResults.length === 0 && <p className={hintText ? "rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm" : "text-sm text-muted-foreground"}>{hintText ?? tr("Hakuna invoice iliyopatikana kwenye biashara/idara yako.")}</p>}
       {results && results.length > 0 && (
         <div className="overflow-x-auto"><table className="w-full text-sm">
           <thead><tr className="border-b text-left">{[tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Idara"), tr("Jumla"), tr("Deni"), tr("Hali"), ""].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>

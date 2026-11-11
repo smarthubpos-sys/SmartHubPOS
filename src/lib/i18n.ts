@@ -27,8 +27,10 @@ import { EDITDATE_DICT } from "./i18n-dict-editdate.ts";
 import { PAYDATE_DICT } from "./i18n-dict-paydate.ts";
 import { KIOSK_DICT } from "./i18n-dict-kiosk.ts";
 import { DEVICES_DICT } from "./i18n-dict-devices.ts";
+import { FINDER_DICT } from "./i18n-dict-finder.ts";
+import { SUPPLIER_CARDS_DICT } from "./i18n-dict-supplier-cards.ts";
 
-const DICT: Record<string, { sw: string; en: string }> = { ...SERVER_DICT, ...UI_DICT, ...EXTRA_DICT, ...ACCESS_DICT, ...SUPERADMIN_DICT, ...INVOICING_DICT, ...DEPT_DICT, ...PREPORT_DICT, ...PAYMENTS_DICT, ...PERIOD_REPORT_DICT, ...STOCKTAKE_DICT, ...IMPORT_DICT, ...SELLING_POINT_DICT, ...SCHEDULE_DICT, ...LEAVE_DICT, ...FRIENDLY_DICT, ...EDITDATE_DICT, ...PAYDATE_DICT, ...KIOSK_DICT, ...DEVICES_DICT };
+const DICT: Record<string, { sw: string; en: string }> = { ...SERVER_DICT, ...UI_DICT, ...EXTRA_DICT, ...ACCESS_DICT, ...SUPERADMIN_DICT, ...INVOICING_DICT, ...DEPT_DICT, ...PREPORT_DICT, ...PAYMENTS_DICT, ...PERIOD_REPORT_DICT, ...STOCKTAKE_DICT, ...IMPORT_DICT, ...SELLING_POINT_DICT, ...SCHEDULE_DICT, ...LEAVE_DICT, ...FRIENDLY_DICT, ...EDITDATE_DICT, ...PAYDATE_DICT, ...KIOSK_DICT, ...DEVICES_DICT, ...FINDER_DICT, ...SUPPLIER_CARDS_DICT };
 
 export type Lang = "sw" | "en";
 const STORAGE_KEY = "smarthub.lang";

@@ -901,6 +901,39 @@ export const searchInvoices = query({
   },
 });
 
+/**
+ * Why a search found nothing although the invoice exists in this business: it is hidden by department or by staff mode.
+ * Only the reason is returned (never the invoice's content), so the screen can tell the cashier what to do instead of a bare "not found".
+ */
+export const invoiceSearchHint = query({
+  args: { invoiceNo: v.string() },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "sales.view", "sales");
+    if (!user.tenantId) return null;
+    const tenantId = user.tenantId;
+    const raw = a.invoiceNo.trim().replace(/^#/, "");
+    if (!raw || raw.length > 40) return null;
+    const prefix = (await getCompanySettings(ctx, user))?.invoicePrefix ?? "INV-";
+    const wanted = new Set<string>([raw, raw.toUpperCase()]);
+    if (/^\d+$/.test(raw)) { const padded = raw.padStart(5, "0"); wanted.add(padded); wanted.add(`${prefix}${padded}`); }
+    for (const no of wanted) {
+      for (const inv of await ctx.db.query("invoices").withIndex("by_tenant_no", (q) => q.eq("tenantId", tenantId).eq("invoiceNo", no)).take(5)) {
+        if (canAccessRecord(user, inv) && !(isOwnDataOnly(user) && inv.createdBy !== user._id)) return null; // visible: the normal search already shows it
+        const invDept = inv.branchId ? (await ctx.db.get("branches", inv.branchId))?.name ?? "" : "";
+        const myDept = user.branchId ? (await ctx.db.get("branches", user.branchId))?.name ?? "" : "";
+        const base = { invoiceNo: inv.invoiceNo, department: invDept, myDepartment: myDept };
+        if (!canAccessRecord(user, inv)) {
+          if (user.departmentsActive === true && !user.branchId && user.allDepartments !== true) return { ...base, reason: "not_linked" as const, canSwitch: false };
+          if (user.branchId && !inv.branchId) return { ...base, reason: "no_department" as const, canSwitch: false };
+          return { ...base, reason: "other_department" as const, canSwitch: !!inv.branchId && (user.branchIds ?? []).includes(inv.branchId) };
+        }
+        return { ...base, reason: "own_only" as const, canSwitch: false };
+      }
+    }
+    return null;
+  },
+});
+
 /** One invoice opened for viewing / printing / editing: lines with product names, stock that could still be used, payments and the user's rights. */
 export const invoiceFull = query({
   args: { invoiceId: v.id("invoices") },
