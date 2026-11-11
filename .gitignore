@@ -38,3 +38,6 @@ tsconfig.tsbuildinfo
 fix-backup/
 .vercel
 .env*
+
+# Fingerprint bridge: local progress file
+tools/attendance-bridge/state.json
