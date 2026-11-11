@@ -14,7 +14,7 @@ describe("product Excel parsing", () => {
   it("reads Kiswahili headers, text numbers, formulas and skips empty rows", async () => {
     const file = await fileFrom((wb) => {
       const ws = wb.addWorksheet("Bidhaa");
-      ws.addRow(["Jina la bidhaa *", "Msimbo wa bidhaa", "Barcode", "Kundi", "Kipimo", "Bei ya kuuzia *", "Bei ya manunuzi", "Idadi", "Kiwango cha kuagiza upya"]);
+      ws.addRow(["Jina la bidhaa *", "Msimbo wa bidhaa", "Barcode", "Kundi", "Kipimo", "Bei ya kuuzia", "Bei ya manunuzi", "Idadi", "Kiwango cha kuagiza upya"]);
       ws.addRow(["Sukari 1kg", "", "6001", "Chakula", "Kg", 3000, "2,400", 50, 10]);
       ws.addRow([]);
       ws.addRow(["Mafuta", null, null, null, null, { formula: "2500+2500", result: 5000 }, 4000, 20]);
@@ -39,7 +39,7 @@ describe("product Excel parsing", () => {
   });
 });
 
-const HEAD = ["Jina la bidhaa *", "Msimbo wa bidhaa", "Barcode", "Kundi", "Kipimo", "Bei ya kuuzia *", "Bei ya manunuzi", "Idadi", "Kiwango cha kuagiza upya"];
+const HEAD = ["Jina la bidhaa *", "Msimbo wa bidhaa", "Barcode", "Kundi", "Kipimo", "Bei ya kuuzia", "Bei ya manunuzi", "Idadi", "Kiwango cha kuagiza upya"];
 
 describe("product Excel validation (regression)", () => {
   it("rejects unsupported file types and empty files before reading them", () => {
@@ -54,15 +54,15 @@ describe("product Excel validation (regression)", () => {
 
   it("names only the required headers that are really missing", async () => {
     const noPrice = await parseProductFile(await fileFrom((wb) => { const ws = wb.addWorksheet("a"); ws.addRow(["Jina la bidhaa", "Idadi"]); ws.addRow(["x", 1]); }));
-    expect(noPrice.rows).toHaveLength(0);
-    expect(noPrice.missing).toEqual(["Bei ya kuuzia"]);
+    expect(noPrice.missing).toEqual([]);
+    expect(noPrice.rows[0]).toMatchObject({ error: undefined, row: { name: "x", quantity: 1 } });
     const noName = await parseProductFile(await fileFrom((wb) => { const ws = wb.addWorksheet("a"); ws.addRow(["Bei ya kuuzia", "Idadi"]); ws.addRow([5, 1]); }));
     expect(noName.missing).toEqual(["Jina la bidhaa"]);
     const neither = await parseProductFile(await fileFrom((wb) => { wb.addWorksheet("a").addRow(["foo", "bar"]); }));
-    expect(neither.missing).toEqual(["Jina la bidhaa", "Bei ya kuuzia"]);
+    expect(neither.missing).toEqual(["Jina la bidhaa"]);
   });
 
-  it("flags a blank selling price, negative numbers and date cells; whitespace-only rows are ignored", async () => {
+  it("accepts a blank selling price, flags negative numbers and date cells; whitespace-only rows are ignored", async () => {
     const { rows } = await parseProductFile(await fileFrom((wb) => {
       const ws = wb.addWorksheet("a");
       ws.addRow(HEAD);
@@ -73,8 +73,8 @@ describe("product Excel validation (regression)", () => {
       ws.addRow(["Sawa", null, null, null, null, 100, 80, 3]);    // line 6: valid
     }));
     expect(rows.map((r) => r.line)).toEqual([2, 3, 4, 6]);
-    expect(rows.map((r) => Boolean(r.error))).toEqual([true, true, true, false]);
-    expect(rows[0].error).toMatch(/Bei ya kuuzia/);
+    expect(rows.map((r) => Boolean(r.error))).toEqual([false, true, true, false]);
+    expect(rows[0].row.sellingPrice).toBeUndefined();
     expect(rows[1].error).toMatch(/hasi/i);
     expect(rows[3].row).toMatchObject({ name: "Sawa", sellingPrice: 100, buyingPrice: 80, quantity: 3 });
   });

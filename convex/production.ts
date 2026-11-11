@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
+import { applyRecipePrice, recipeUnitPrices } from "./recipePricing";
 import { logAudit, requireActiveUser, requireManagerOrPermission, resolveWriteScope } from "./access";
 
 type Scope = { tenantId?: Id<"tenants">; branchId?: Id<"branches"> };
@@ -22,9 +23,10 @@ export const listRecipes = query({
       const output = await ctx.db.get("products", r.outputProductId);
       const ingredients = await Promise.all(r.ingredients.map(async line => {
         const product = await ctx.db.get("products", line.productId);
-        return { ...line, productName: product?.name ?? "Bidhaa haipo", unitCost: product?.weightedAvgCost ?? product?.lastPurchaseCost ?? 0, currentQty: product?.currentQty ?? 0 };
+        return { ...line, productName: product?.name ?? "Bidhaa haipo", unitCost: product?.weightedAvgCost ?? product?.lastPurchaseCost ?? 0, sellingPrice: product?.sellingPrice ?? 0, currentQty: product?.currentQty ?? 0 };
       }));
-      return { ...r, outputName: output?.name ?? "Bidhaa haipo", ingredients };
+      const unit = await recipeUnitPrices(ctx, r);
+      return { ...r, outputName: output?.name ?? "Bidhaa haipo", outputSellingPrice: output?.sellingPrice ?? 0, computedPrice: unit.price, computedCost: unit.cost, ingredients };
     }));
   },
 });
@@ -36,6 +38,7 @@ export const saveRecipe = mutation({
     ingredients: v.array(v.object({ productId: v.id("products"), qty: v.number() })),
     active: v.boolean(),
     autoOnSale: v.optional(v.boolean()),
+    priceFromIngredients: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const user = await requireManagerOrPermission(ctx, "stock.manage", "stock");
@@ -56,9 +59,11 @@ export const saveRecipe = mutation({
     }
     const existing = await ctx.db.query("productionRecipes").withIndex("by_output", q => q.eq("outputProductId", output._id)).collect();
     const prior = existing.find(r => r.tenantId === scope.tenantId && r.branchId === scope.branchId);
-    const record = { ...scope, outputProductId: output._id, outputQty: args.outputQty, ingredients: args.ingredients, active: args.active, autoOnSale: args.autoOnSale === true, updatedAt: now(), updatedBy: user._id };
+    const record = { ...scope, outputProductId: output._id, outputQty: args.outputQty, ingredients: args.ingredients, active: args.active, autoOnSale: args.autoOnSale === true, priceFromIngredients: args.priceFromIngredients === true, updatedAt: now(), updatedBy: user._id };
+    const recipeId = prior ? prior._id : await ctx.db.insert("productionRecipes", record);
     if (prior) await ctx.db.patch("productionRecipes", prior._id, record);
-    else await ctx.db.insert("productionRecipes", record);
+    const saved = await ctx.db.get("productionRecipes", recipeId);
+    if (saved) await applyRecipePrice(ctx, saved);
     return { ok: true };
   },
 });

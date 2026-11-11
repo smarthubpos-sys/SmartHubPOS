@@ -1,6 +1,7 @@
 import { ingredientOnlyIds, onSalesMenu } from "./menuVisibility";
 import { query, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
+import { syncRecipePrices } from "./recipePricing";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { requireActiveUser, requireManagerOrPermission, requirePermission, roleHasPermission, canAccessRecord, isSuperAdmin, resolveWriteScope, scopedRows } from "./access";
@@ -126,6 +127,7 @@ export const upsert = mutation({
       const existingRecord = editing;
       if (!existingRecord) throw new ConvexError("Forbidden: record is outside your office/branch");
       await ctx.db.patch("products", id, clean); // never touches currentQty / openingQty / cost
+      if (existingRecord.sellingPrice !== clean.sellingPrice) await syncRecipePrices(ctx, existingRecord.tenantId, [id]);
       const changes: string[] = [];
       if (existingRecord.sellingPrice !== clean.sellingPrice) changes.push(`bei ${existingRecord.sellingPrice} -> ${clean.sellingPrice}`);
       if (existingRecord.name !== clean.name) changes.push(`jina ${existingRecord.name} -> ${clean.name}`);
@@ -275,6 +277,7 @@ export const importBatch = mutation({
     const results: { row: number; status: "new" | "update" | "error"; itemCode?: string; message?: string }[] = [];
     let openingValue = 0;
     let created = 0, updated = 0;
+    const priceChanged: Id<"products">[] = [];
 
     for (let i = 0; i < args.rows.length; i++) {
       const r = args.rows[i];
@@ -295,8 +298,7 @@ export const importBatch = mutation({
       if (barcodeOwner && existing && barcodeOwner._id !== existing._id) { fail(`Barcode ${barcode} tayari inatumika na bidhaa nyingine.`); continue; }
       if (!existing && barcodeOwner) { fail(`Barcode ${barcode} tayari inatumika na bidhaa nyingine.`); continue; }
       if (!existing && code && byCode.has(norm(code))) { fail(`Item code ${code} tayari ipo.`); continue; }
-      // A new product needs a selling price (the template marks it required), and must not repeat the name of one that already exists under another code.
-      if (!existing && r.sellingPrice === undefined) { fail("Bei ya kuuzia inahitajika."); continue; }
+      // Selling price is optional: a new product without one (an ingredient / back-office item) is saved at 0 and kept off the sales menu. It must not repeat the name of one that already exists under another code.
       if (!existing) { const sameName = byName.get(norm(name)); if (sameName) { fail(`Jina ${name} tayari lipo (msimbo ${sameName.itemCode}). Tumia msimbo huo kuboresha bidhaa hiyo.`); continue; } }
 
       // resolve / create group and unit by name
@@ -324,19 +326,21 @@ export const importBatch = mutation({
           if (groupId) patch.groupId = groupId;
           if (unitId) patch.unitId = unitId;
           if (Object.keys(patch).length) await ctx.db.patch("products", existing._id, patch);
+          if (patch.sellingPrice !== undefined && patch.sellingPrice !== existing.sellingPrice) priceChanged.push(existing._id);
         }
         continue;
       }
 
       const itemCode = code ?? `ITM-${String(++nextNo).padStart(4, "0")}`;
       if (!code) while (byCode.has(norm(itemCode))) { /* sequence already past existing codes */ break; }
-      results.push({ row: i, status: "new", itemCode });
+      results.push({ row: i, status: "new", itemCode, message: r.sellingPrice === undefined ? "Haina bei ya kuuzia: imehifadhiwa kwa bei 0 na haitaonekana kwenye menu ya mauzo hadi uiwekee bei na kuiwasha." : undefined });
       created++;
       if (args.dryRun) continue;
       const qty = r.quantity ?? 0, cost = r.buyingPrice ?? 0;
       const productId = await ctx.db.insert("products", {
         ...scope, itemCode, name, barcode, groupId, unitId,
         sellingPrice: r.sellingPrice ?? 0, reorderLevel: r.reorderLevel,
+        ...(r.sellingPrice === undefined ? { showInSales: false } : {}),
         openingQty: qty, currentQty: qty, weightedAvgCost: cost, lastPurchaseCost: cost > 0 ? cost : undefined, isActive: true,
       });
       byCode.set(norm(itemCode), { _id: productId, itemCode });
@@ -348,6 +352,7 @@ export const importBatch = mutation({
       }
     }
 
+    if (!args.dryRun) await syncRecipePrices(ctx, scope.tenantId, priceChanged);
     if (!args.dryRun && roundMoney(openingValue) > 0) {
       const inventory = await getSystemAccount(ctx, scope, "1200", "Inventory", "asset");
       const equity = await getSystemAccount(ctx, scope, "3000", "Opening balance equity", "equity");

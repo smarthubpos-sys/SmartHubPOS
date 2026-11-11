@@ -8,7 +8,7 @@ export const PRODUCT_COLUMNS: readonly (Col & { key: Key })[] = [
   { key: "barcode", width: 18, label: () => tr("Barcode"), aliases: ["barcode", "bar code"] },
   { key: "group", width: 18, label: () => tr("Kundi"), aliases: ["kundi", "group", "category", "kategoria"] },
   { key: "unit", width: 14, label: () => tr("Kipimo"), aliases: ["kipimo", "unit", "uom"] },
-  { key: "sellingPrice", required: true, width: 18, label: () => tr("Bei ya kuuzia"), aliases: ["bei ya kuuzia", "selling price", "sale price", "price", "bei"] },
+  { key: "sellingPrice", width: 18, label: () => tr("Bei ya kuuzia"), aliases: ["bei ya kuuzia", "selling price", "sale price", "price", "bei"] },
   { key: "buyingPrice", width: 18, label: () => tr("Bei ya manunuzi"), aliases: ["bei ya manunuzi", "buying price", "purchase price", "cost", "cost price"] },
   { key: "quantity", width: 12, label: () => tr("Idadi"), aliases: ["idadi", "quantity", "qty", "stock", "opening quantity"] },
   { key: "reorderLevel", width: 20, label: () => tr("Kiwango cha kuagiza upya"), aliases: ["kiwango cha kuagiza upya", "reorder level", "reorder"] },
@@ -78,7 +78,7 @@ export async function downloadProductTemplate(groups: string[], units: string[])
     [tr("Barcode"), tr("Hiari. Isijirudie kwa bidhaa nyingine.")],
     [tr("Kundi"), tr("Hiari. Jina la kundi (mf. Vinywaji). Likikosekana kwenye mfumo, litatengenezwa.")],
     [tr("Kipimo"), tr("Hiari. Mf. Kipande, Kg, Lita. Kikikosekana kwenye mfumo, kitatengenezwa.")],
-    [tr("Bei ya kuuzia") + " *", tr("Lazima. Bei ambayo mteja analipa kwa kipimo kimoja.")],
+    [tr("Bei ya kuuzia"), tr("Hiari. Bei ambayo mteja analipa kwa kipimo kimoja. Ukiiacha wazi, bidhaa mpya huhifadhiwa kwa bei 0 na haionekani kwenye menu ya mauzo (inafaa kwa malighafi).")],
     [tr("Bei ya manunuzi"), tr("Hiari. Bei uliyonunulia kwa kipimo kimoja; hutumika kuhesabu thamani ya stoo na faida.")],
     [tr("Idadi"), tr("Hiari. Idadi uliyonayo sasa; huingia stoo kama stoo ya kuanzia.")],
     [tr("Kiwango cha kuagiza upya"), tr("Hiari. Ukifika kiwango hiki utapewa taarifa ya stoo kuisha.")],
@@ -120,7 +120,7 @@ export async function parseProductFile(file: File): Promise<{ rows: ParsedRow[];
       const found = new Map<Key, number>();
       row.eachCell((cell, col) => { const k = aliasToKey.get(norm(cellValue(cell.value))); if (k && !found.has(k)) found.set(k, col); });
       if (found.size > bestMatch.size) bestMatch = new Set(found.keys());
-      if (found.has("name") && found.has("sellingPrice")) { headerRow = rowNumber; found.forEach((c, k) => colOf.set(k, c)); }
+      if (found.has("name")) { headerRow = rowNumber; found.forEach((c, k) => colOf.set(k, c)); }
     });
     if (!headerRow) continue;
     const rows: ParsedRow[] = [];
@@ -139,7 +139,6 @@ export async function parseProductFile(file: File): Promise<{ rows: ParsedRow[];
         else if (n !== undefined && n < 0) error = tr("Namba hasi haikubaliki kwenye safu ya {0}.", [label]);
         else if (n !== undefined) item[k] = n;
       }
-      if (item.sellingPrice === undefined && !error) error = tr("Bei ya kuuzia inahitajika.");
       if (!name) error = tr("Jina la bidhaa linahitajika.");
       rows.push({ line: r, row: item, error });
     }

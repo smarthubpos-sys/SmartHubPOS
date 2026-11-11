@@ -1,7 +1,8 @@
 /* Texts for the Excel product import and the Waiter / Waitress switches (Kiswahili is the source text; English alongside). */
 export const IMPORT_DICT: Record<string, { sw: string; en: string }> = {
   "Namba hasi haikubaliki kwenye safu ya {0}.": { sw: "Namba hasi haikubaliki kwenye safu ya {0}.", en: "Negative numbers are not allowed in the {0} column." },
-  "Bei ya kuuzia inahitajika.": { sw: "Bei ya kuuzia inahitajika.", en: "Selling price is required." },
+  "Hiari. Bei ambayo mteja analipa kwa kipimo kimoja. Ukiiacha wazi, bidhaa mpya huhifadhiwa kwa bei 0 na haionekani kwenye menu ya mauzo (inafaa kwa malighafi).": { sw: "Hiari. Bei ambayo mteja analipa kwa kipimo kimoja. Ukiiacha wazi, bidhaa mpya huhifadhiwa kwa bei 0 na haionekani kwenye menu ya mauzo (inafaa kwa malighafi).", en: "Optional. The price a customer pays per unit. If left blank, a new product is saved at price 0 and kept off the sales menu (suited to ingredients)." },
+  "Haina bei ya kuuzia: imehifadhiwa kwa bei 0 na haitaonekana kwenye menu ya mauzo hadi uiwekee bei na kuiwasha.": { sw: "Haina bei ya kuuzia: imehifadhiwa kwa bei 0 na haitaonekana kwenye menu ya mauzo hadi uiwekee bei na kuiwasha.", en: "No selling price: saved at price 0 and hidden from the sales menu until you set a price and switch it on." },
   "Faili la .xls la zamani halitumiki. Lifungue kwenye Excel, kisha Save As .xlsx.": { sw: "Faili la .xls la zamani halitumiki. Lifungue kwenye Excel, kisha Save As .xlsx.", en: "The old .xls format is not supported. Open it in Excel and use Save As .xlsx." },
   "Faili ni tupu.": { sw: "Faili ni tupu.", en: "The file is empty." },
   "Faili ni kubwa mno (kikomo 10 MB).": { sw: "Faili ni kubwa mno (kikomo 10 MB).", en: "The file is too large (limit 10 MB)." },

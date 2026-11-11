@@ -23,14 +23,17 @@ const run = (as: Awaited<ReturnType<typeof setup>>["asA"], rows: { name: string;
   as.mutation(api.products.importBatch, { rows, dryRun: opts.dryRun ?? false, updateExisting: opts.updateExisting ?? true });
 
 describe("Excel product import (regression)", () => {
-  it("a new product needs a selling price - it is reported, not saved at price 0", async () => {
+  it("a new product without a selling price is saved at 0 and kept off the sales menu", async () => {
     const { asA } = await setup();
     const dry = await run(asA, [{ name: "Bila bei" }, { name: "Na bei", sellingPrice: 100 }], { dryRun: true });
-    expect(dry.results.map((r) => r.status)).toEqual(["error", "new"]);
-    expect(dry.results[0].message).toMatch(/Bei ya kuuzia/);
+    expect(dry.results.map((r) => r.status)).toEqual(["new", "new"]);
+    expect(dry.results[0].message).toMatch(/bei 0/);
     const real = await run(asA, [{ name: "Bila bei" }, { name: "Na bei", sellingPrice: 100 }]);
-    expect([real.created, real.errors]).toEqual([1, 1]);
-    expect((await asA.query(api.products.list, {})).map((p) => p.name)).toEqual(["Na bei"]);
+    expect([real.created, real.errors]).toEqual([2, 0]);
+    const list = await asA.query(api.products.list, {});
+    const bila = list.find((p) => p.name === "Bila bei")!, na = list.find((p) => p.name === "Na bei")!;
+    expect([bila.sellingPrice, bila.showInSales]).toEqual([0, false]);
+    expect([na.sellingPrice, na.showInSales]).toEqual([100, undefined]);
   });
 
   it("an existing product may be updated without resending a price", async () => {

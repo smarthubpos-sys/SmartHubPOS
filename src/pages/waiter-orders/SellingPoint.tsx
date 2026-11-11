@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -67,7 +67,9 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
   const total = lines.reduce((s, l) => s + l.qty * (l.p?.sellingPrice ?? 0), 0);
   const locked = busy;
 
-  const add = (id: string, d: number) => { if (locked) return; setCart((c) => { const q = Math.max(0, (c[id] ?? 0) + d); const { [id]: _drop, ...rest } = c; return q > 0 ? { ...c, [id]: q } : rest; }); };
+  const add = (id: string, d: number) => { if (locked) return; setCart((c) => { const q = Math.max(0, Math.round(((c[id] ?? 0) + d) * 1000) / 1000); const { [id]: _drop, ...rest } = c; return q > 0 ? { ...c, [id]: q } : rest; }); };
+  // Typed quantity (e.g. 0.5 or 2.5). Tapping a product still adds exactly 1; this is only for when someone wants a half or other fraction.
+  const setQty = (id: string, q: number) => { if (locked || !(q > 0)) return; setCart((c) => ({ ...c, [id]: Math.round(q * 1000) / 1000 })); };
 
   async function finish(mode: "send" | "print") {
     if (locked || lines.length === 0) return;
@@ -162,7 +164,7 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
               <div className="min-w-0"><div className="truncate text-sm font-medium">{l.p!.name}</div><div className="text-xs text-muted-foreground">{money(l.p!.sellingPrice)} × {l.qty} = {money(l.p!.sellingPrice * l.qty)}</div></div>
               <div className="flex shrink-0 items-center gap-1">
                 <Button type="button" size="icon" variant="outline" className="h-10 w-10" disabled={locked} aria-label={tr("Punguza")} onClick={() => add(l.id, -1)}>−</Button>
-                <span className="w-8 text-center font-bold tabular-nums">{l.qty}</span>
+                <QtyBox value={l.qty} disabled={locked} onCommit={(q) => setQty(l.id, q)} />
                 <Button type="button" size="icon" variant="outline" className="h-10 w-10" disabled={locked} aria-label={tr("Ongeza")} onClick={() => add(l.id, 1)}>+</Button>
               </div>
             </li>
@@ -194,5 +196,26 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
         </>}
       </aside>
     </section>
+  );
+}
+
+/** Quantity field for one cart line: shows the number, lets the cashier type a fraction such as 0.5 or 2.5 (a comma also works). */
+function QtyBox({ value, disabled, onCommit }: { value: number; disabled?: boolean; onCommit: (q: number) => void }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => { setText(String(value)); }, [value]);
+  return (
+    <Input
+      className="h-10 w-16 px-1 text-center font-bold tabular-nums"
+      type="text" inputMode="decimal" value={text} disabled={disabled} aria-label={tr("Idadi")}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => {
+        const raw = e.target.value.replace(",", ".");
+        if (!/^\d*\.?\d{0,3}$/.test(raw)) return;
+        setText(raw);
+        const n = Number(raw);
+        if (raw !== "" && Number.isFinite(n) && n > 0) onCommit(n);
+      }}
+      onBlur={() => setText(String(value))}
+    />
   );
 }
