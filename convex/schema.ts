@@ -9,7 +9,9 @@ export default defineSchema({
     // Subscription: "demo" (3 days) or "paid". planEndsAt = last usable day (YYYY-MM-DD). Missing = legacy business, never expires.
     plan: v.optional(v.string()), planStartsAt: v.optional(v.string()), planEndsAt: v.optional(v.string()), planMonths: v.optional(v.number()), planAmount: v.optional(v.number()),
     // Sidebar modules this business paid for (see MODULES in permissions.ts). Missing = every module (legacy / full plan).
-    modules: v.optional(v.array(v.string())) }).index("by_code", ["code"]).index("by_active", ["isActive"]),
+    modules: v.optional(v.array(v.string())),
+    // Most people (users) this business may have. Missing = no limit. Only the Super Admin changes it; a business administrator cannot add more once it is reached.
+    maxUsers: v.optional(v.number()) }).index("by_code", ["code"]).index("by_active", ["isActive"]),
   subscriptionPayments: defineTable({ tenantId: v.id("tenants"), amount: v.number(), months: v.number(), startsAt: v.string(), endsAt: v.string(), note: v.optional(v.string()), createdBy: v.optional(v.id("users")), createdAt: v.string() }).index("by_tenant", ["tenantId"]),
   // Ads (banner) and broadcast messages from the Super Admin. tenantId empty = every business.
   announcements: defineTable({

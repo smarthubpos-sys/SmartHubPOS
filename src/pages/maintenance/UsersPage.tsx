@@ -25,6 +25,8 @@ export default function UsersPage() {
   // Needs only user-management permission (listRoles also needs Role Management, so a staff member given only "add users" could not open this page).
   const roles = useQuery(api.maintenance.listAssignableRoles, {});
   const offices = useQuery(api.maintenance.listOffices, {});
+  const quota = useQuery(api.maintenance.userQuota, {});
+  const seatsFull = !!quota && quota.max !== null && quota.used >= quota.max; // the Super Admin sets the limit; a business administrator cannot go past it
   const create = useAction(api.maintenance.createUser);
   const reset = useAction(api.maintenance.resetUserPassword);
   const setStaffPin = useAction(api.maintenance.setStaffPin);
@@ -180,7 +182,7 @@ export default function UsersPage() {
 
   return (
     <PageShell title={tr("User Settings")} subtitle={tr("Ongeza na badilisha watumiaji")}>
-      <div><Button onClick={() => setF({ ...empty, tenantId: me?.tenantId ?? "", branchIds: myLimit && myLimit.length === 1 ? myLimit : [] })}>{tr("＋ Add User")}</Button></div>
+      <div className="flex flex-wrap items-center gap-3"><Button disabled={seatsFull && !isSuper} onClick={() => setF({ ...empty, tenantId: me?.tenantId ?? "", branchIds: myLimit && myLimit.length === 1 ? myLimit : [] })}>{tr("＋ Add User")}</Button>{quota && quota.max !== null && <span className="text-sm text-muted-foreground">{tr("Watumiaji: {0} / {1}", [quota.used, quota.max])}{seatsFull ? ` · ${tr("Kikomo kimefikiwa. Wasiliana na Super Admin akuongezee.")}` : ""}</span>}</div>
       <section className="overflow-x-auto rounded-xl border">
         {!users ? <div className="p-4"><Loading /></div> : (
           <table className="w-full text-sm">

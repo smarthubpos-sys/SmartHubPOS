@@ -5,6 +5,7 @@ import { internal } from "./_generated/api";
 import { v, ConvexError } from "convex/values";
 import { hashStaffPin, PIN_PATTERN, pinLookupKey } from "./pinCrypto";
 import { surfaceError } from "./surfaceError";
+import { assertUserSeatFree, businessUserQuota } from "./userQuota";
 import { createAccount, invalidateSessions, modifyAccountCredentials, retrieveAccount } from "@convex-dev/auth/server";
 import {
   activeDepartments, findRoleRow, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
@@ -442,11 +443,21 @@ export const listUsers = query({
   handler: async (ctx) => {
     const user = await requirePermission(ctx, "maintenance.users");
     const rows = (await ctx.db.query("users").collect()).filter((r) => r.tokenIdentifier === undefined && (r.username !== undefined || r.email !== undefined));
-    const tenantRows = isSuperAdmin(user) ? rows : rows.filter((r) => r.tenantId && r.tenantId === user.tenantId);
+    // Super Admin who has entered a business sees only that business's users; outside any business he sees everyone.
+    const tenantRows = isSuperAdmin(user) && !user.tenantId ? rows : rows.filter((r) => r.tenantId && r.tenantId === user.tenantId);
     // A user tied to one department only manages (and sees) the users of that department.
     const limit = departmentLimit(user);
     const visible = limit ? tenantRows.filter((r) => insideLimit(departmentScope(r), limit)) : tenantRows;
     return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], ownDataOnly: r.ownDataOnly === true, pinLoginEnabled: r.pinLoginEnabled === true, hasPin: !!r.pinHash, staffCode: r.staffCode ?? "" }));
+  },
+});
+
+/** How many user places this business uses and how many it may have (max null = no limit). Shown on the Users page. */
+export const userQuota = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await requirePermission(ctx, "maintenance.users");
+    return await businessUserQuota(ctx, user.tenantId);
   },
 });
 
@@ -711,6 +722,7 @@ export const updateUser = mutation({
       const owners = await ctx.db.query("users").withIndex("by_pin_lookup", (q) => q.eq("pinLookup", target.pinLookup)).take(300);
       if (owners.some((u) => u._id !== target._id && u.tenantId === target.tenantId && u.tokenIdentifier === undefined && u.isActive !== false)) throw new ConvexError("PIN ya mtumiaji huyu sasa inatumiwa na mtu mwingine. Mwekee PIN mpya kabla ya kumwasha.");
     }
+    if (a.isActive === true && target.isActive === false && !isSuperAdmin(actor) && !isSuperAdmin(target)) await assertUserSeatFree(ctx, target.tenantId); // switching a user back on takes a place again
     if (a.isActive !== undefined) patch.isActive = a.isActive;
     if (a.requirePasswordChange !== undefined) patch.requirePasswordChange = a.requirePasswordChange;
     if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined || a.extraPermissions !== undefined) {
@@ -821,6 +833,8 @@ export const authorizeUserAdmin = internalQuery({
     await assertCanAssign(ctx, actor, { role: a.role, tenantId: a.tenantId ?? target?.tenantId, branchId: a.branchId }, target);
     if (target) await assertCanManageTarget(ctx, actor, target, a.role); // password reset, rename, PIN: never on an account stronger than the actor's own
     if (!target) await assertNoEscalation(ctx, actor, { role: a.role, tenantId: a.tenantId ?? actor.tenantId, extraPermissions: a.extraPermissions }); // creating: never hand out more than he has
+    // The Super Admin sets how many users a business may have; its administrators cannot go past it.
+    if (!target && !isSuperAdmin(actor) && !["super_admin", "superadmin"].includes(normalizeRole(a.role))) await assertUserSeatFree(ctx, a.tenantId ?? actor.tenantId);
     if (target) await assertDepartmentRules(ctx, actor, { tenantId: target.tenantId, role: target.role, scope: departmentScope(target) }, target, false); // e.g. password reset
     else if (!["super_admin", "superadmin"].includes(normalizeRole(a.role))) {
       const acc = resolveDepartmentAccess({ branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments });

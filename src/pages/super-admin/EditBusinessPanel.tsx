@@ -41,6 +41,7 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [currency, setCurrency] = useState("TZS");
+  const [maxUsers, setMaxUsers] = useState(""); // blank = no limit
   const [modules, setModules] = useState<string[]>(ALL_MODULE_KEYS);
   const [waiterEnabled, setWaiterEnabled] = useState(false);
   const [waitressEnabled, setWaitressEnabled] = useState(false);
@@ -55,6 +56,7 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
     setName(data.name);
     setCode(data.code);
     setCurrency(data.currency);
+    setMaxUsers(data.maxUsers === null ? "" : String(data.maxUsers));
     setModules(data.modules ?? ALL_MODULE_KEYS);
     setWaiterEnabled(data.waiterEnabled ?? false);
     setWaitressEnabled(data.waitressEnabled ?? false);
@@ -67,7 +69,7 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
     setBusy(true);
     try {
       const everything = ALL_MODULE_KEYS.every((k) => modules.includes(k));
-      await update({ tenantId, name, code, currency, waiterEnabled, waitressEnabled, waiterOrderMode, ...(everything ? { allModules: true } : { modules }) });
+      await update({ tenantId, name, code, currency, maxUsers: maxUsers.trim() === "" ? null : Number(maxUsers), waiterEnabled, waitressEnabled, waiterOrderMode, ...(everything ? { allModules: true } : { modules }) });
       toast.success(tr("Biashara imesasishwa."));
       onDone?.();
     } catch (err) {
@@ -88,6 +90,11 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
         <label className="grid gap-1">{tr("Jina la biashara")}<Input required value={name} onChange={(e) => setName(e.target.value)} className="bg-white text-slate-900" /></label>
         <label className="grid gap-1">{tr("Msimbo wa biashara (code)")}<Input required value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} className="bg-white text-slate-900" /></label>
         <label className="grid gap-1">{tr("Sarafu")}<Input required value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} className="bg-white text-slate-900" /></label>
+      </div>
+
+      <div className="grid gap-1 rounded-lg border border-white/20 p-3">
+        <label className="grid gap-1">{tr("Idadi ya juu ya watumiaji")}<Input type="number" min="1" step="1" inputMode="numeric" value={maxUsers} placeholder={tr("Acha wazi = bila kikomo")} onChange={(e) => setMaxUsers(e.target.value)} className="bg-white text-slate-900" /></label>
+        <p className="text-xs opacity-80">{tr("Watumiaji wa sasa: {0}", [data.usedUsers])}{maxUsers.trim() !== "" && Number(maxUsers) <= data.usedUsers ? ` · ${tr("Kikomo kimefikiwa: msimamizi wa biashara hataweza kuongeza mtumiaji mwingine hadi uongeze idadi hapa.")}` : ""}</p>
       </div>
 
       <div className="space-y-2">
