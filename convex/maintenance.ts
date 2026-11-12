@@ -1215,7 +1215,7 @@ export const CLEAR_CATEGORIES: Record<string, ClearCategory> = {
     label: "Bills (gharama)", description: "Bili za gharama (umeme, kodi, usafiri...), malipo yake, journals zake na ripoti za kipindi zilizohifadhiwa. Zinazodaiwa kwenye dashibodi zinakuwa 0. (Bili za wateja zinafutwa na Sales Invoices.)",
     steps: [
       { table: "billPayments" }, { table: "bills" },
-      { table: "journalEntries", journalSources: ["bill", "bill_payment", "bill_void"] },
+      { table: "journalEntries", journalSources: ["bill", "bill_payment", "bill_void", "bill_edit"] },
       { table: "reportRuns", index: "by_tenant" },
     ],
     rebuildStats: true,

@@ -31,7 +31,7 @@ export function cashSource(sourceType?: string): string {
   if (s === "sale" || s === "waiter_sale" || s === "payment") return "customer_receipts";
   if (s === "sale_void" || s === "sale_return" || s === "sale_unpay" || s === "waiter_sale_void") return "customer_refunds";
   if (s === "purchase" || s === "supplier_payment" || s === "purchase_return") return "suppliers";
-  if (s === "bill" || s === "bill_payment" || s === "bill_void") return "bills";
+  if (s === "bill" || s === "bill_payment" || s === "bill_void" || s === "bill_edit") return "bills";
   if (s === "payroll") return "payroll";
   if (CAPITAL_SOURCES.has(s)) return "capital";
   return "other";

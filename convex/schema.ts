@@ -916,6 +916,13 @@ export default defineSchema({
     .index("by_due", ["dueDate"])
     .index("by_status", ["status"]),
 
+  // Expense types a business wrote for itself; the Expense Payments dropdown shows them next to the built-in ones.
+  expenseCategories: defineTable({
+    tenantId: v.optional(v.id("tenants")),
+    name: v.string(),
+    createdBy: v.id("users"),
+  }).index("by_tenant", ["tenantId"]),
+
   billPayments: defineTable({
     tenantId: v.optional(v.id("tenants")),
     branchId: v.optional(v.id("branches")),
