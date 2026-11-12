@@ -2,7 +2,8 @@ import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
-import { businessRows, canAccessBusinessRecord, canAccessRecord, filterBusiness, filterScoped, requireActiveUser, resolveWriteScope, requireManagerOrPermission, scopedRows, requirePermission } from "./access";
+import { businessRows, canAccessBusinessRecord, canAccessRecord, filterBusiness, filterScoped, requireActiveUser, resolveWriteScope, requireManager, requireManagerOrPermission, scopedRows, requirePermission } from "./access";
+import { postCapitalReceipt } from "./capital";
 import { assertDate, assertFinite, getSystemAccount, methodAccount, postSystemJournal } from "./ledger";
 import { bumpStats } from "./stats";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
@@ -84,13 +85,19 @@ export const supplierStatement = query({
 
 /** Record supplier payment and allocate it to oldest outstanding purchases; any excess remains supplier credit. */
 export const recordSupplierPayment = mutation({
-  args: { supplierId:v.id("suppliers"), paymentDate:v.string(), amount:v.optional(v.number()), paymentMethod:v.optional(v.string()), splits:v.optional(v.array(splitValidator)), reference:v.optional(v.string()), notes:v.optional(v.string()) },
+  args: { supplierId:v.id("suppliers"), paymentDate:v.string(), amount:v.optional(v.number()), paymentMethod:v.optional(v.string()), splits:v.optional(v.array(splitValidator)), reference:v.optional(v.string()), notes:v.optional(v.string()), fundedBy:v.optional(v.object({ sourceType:v.string(), sourceName:v.string() })) },
   handler: async (ctx,a) => {
     const u=await requireManagerOrPermission(ctx, "purchasing.manage", "purchasing"), scope=await resolveWriteScope(ctx, u); const supplier=await ctx.db.get("suppliers", a.supplierId);
     if(!canAccessBusinessRecord(u,supplier)) throw new ConvexError("Supplier hayupo kwenye scope yako.");
     assertDate(a.paymentDate,"Tarehe ya malipo");
     const {splits,total:amount}=await normaliseSplits(ctx,u,a.splits??[{method:a.paymentMethod??"cash",amount:a.amount??NaN,reference:a.reference}]);
     if(amount<=0) throw new ConvexError("Kiasi cha malipo lazima kiwe zaidi ya sifuri.");
+    // Paid with new capital / a loan (e.g. money a director put in): the money is first received into the payment method used (capital or loan on the books),
+    // then paid out of it, so the capital / loan list, the cash book and the supplier balance all stay correct. Needs manager rights, like the Capital page.
+    if(a.fundedBy){
+      await requireManager(ctx, "purchasing");
+      for(const sp of splits) await postCapitalReceipt(ctx, u, scope, { receiptDate:a.paymentDate, amount:sp.amount, sourceType:a.fundedBy.sourceType, sourceName:a.fundedBy.sourceName, depositMethod:sp.method, depositMethodId:sp.methodId, notes:`Imetumika kulipa deni la msambazaji ${supplier?.name ?? ""}`.trim() });
+    }
     const receiptNo=`RC-${Date.now().toString(36).toUpperCase()}`; const paymentIds=[] as Id<"supplierPayments">[];
     for(const sp of splits) paymentIds.push(await ctx.db.insert("supplierPayments",{...scope,supplierId:a.supplierId,paymentDate:a.paymentDate,amount:sp.amount,paymentMethod:sp.method,paymentMethodId:sp.methodId,receiptNo,reference:sp.reference,notes:a.notes,createdBy:u._id}));
     const paymentId=paymentIds[0];
@@ -99,7 +106,7 @@ export const recordSupplierPayment = mutation({
     for(const bill of bills){if(remaining<=0)break;const applied=Math.min(remaining,bill.outstanding);const paid=Math.round((bill.amountPaid+applied)*100)/100;const outstanding=Math.round((bill.outstanding-applied)*100)/100;await ctx.db.patch("purchases", bill._id,{amountPaid:paid,outstanding,paymentStatus:outstanding<=0?"paid":"partial"});await bumpStats(ctx,{tenantId:bill.tenantId,branchId:bill.branchId},{payable:-applied});remaining=Math.round((remaining-applied)*100)/100;}
     const payable=await getSystemAccount(ctx,scope,"2000","Accounts payable","liability");
     for(let i=0;i<splits.length;i++){const cash=await methodAccount(ctx,scope,{methodId:splits[i].methodId,method:splits[i].method});await postSystemJournal(ctx,{scope,userId:u._id,date:a.paymentDate,reference:`SUPPAY-${String(paymentIds[i])}`,description:`Supplier payment: ${supplier?.name ?? "Supplier"} (${splits[i].method})`,sourceType:"supplier_payment",sourceId:String(paymentIds[i]),lines:[{accountId:payable,debit:splits[i].amount,credit:0,description:"Settle supplier payable / advance"},{accountId:cash,debit:0,credit:splits[i].amount,description:`Supplier payment - ${splits[i].method}`}]});}
-    await ctx.db.insert("auditLogs",{userId:u._id,userName:u.name??u.email??"user",action:"supplier_payment",module:"purchasing",referenceId:String(paymentId),referenceType:"supplierPayment",details:`supplier=${supplier?.name}; amount=${amount}; advance=${remaining}`,timestamp:new Date().toISOString(),result:"success"});
+    await ctx.db.insert("auditLogs",{userId:u._id,userName:u.name??u.email??"user",action:"supplier_payment",module:"purchasing",referenceId:String(paymentId),referenceType:"supplierPayment",details:`supplier=${supplier?.name}; amount=${amount}; advance=${remaining}${a.fundedBy?`; funded by ${a.fundedBy.sourceType} (${a.fundedBy.sourceName})`:""}`,timestamp:new Date().toISOString(),result:"success"});
     return {paymentId,receiptNo,amount,splits:splits.map(x=>({method:x.method,amount:x.amount})),allocated:Math.round((amount-remaining)*100)/100,supplierCredit:remaining};
   }
 });

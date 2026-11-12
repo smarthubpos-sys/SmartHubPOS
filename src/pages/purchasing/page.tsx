@@ -15,6 +15,7 @@ const purchasingMenuItems = [
       { label: tr("Purchase Orders"), icon: ShoppingBag, path: "/purchasing/orders", description: tr("Create and manage POs") },
       { label: tr("Goods Received Notes"), icon: ClipboardCheck, path: "/purchasing/grn", description: tr("Record goods received") },
       { label: tr("Purchase Returns"), icon: ArrowLeftRight, path: "/purchasing/returns", description: tr("Return goods to suppliers") },
+      { label: tr("Supplier Payments"), icon: CreditCard, path: "/purchasing/payments", description: tr("Pay supplier debts (cash, bank, capital or loan)") },
       { label: tr("Supplier Management"), icon: User, path: "/purchasing/suppliers", description: tr("Manage supplier accounts") },
     ],
   },
@@ -52,6 +53,7 @@ export default function PurchasingPage() {
         }
       />
       <Route path="suppliers" element={<SupplierWorkspace />} />
+      <Route path="payments" element={<SupplierWorkspace initialMode="payment" />} />
       <Route path="entry" element={<ModuleWorkspace module="purchasing" />} />
       <Route path="*" element={<RegisterWorkspace />} />
     </Routes>

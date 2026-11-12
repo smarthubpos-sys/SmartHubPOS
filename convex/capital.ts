@@ -1,4 +1,6 @@
 import { mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { filterScoped, logAudit, requireActiveUser, requireManager, resolveWriteScope, scopedRows, requirePermission } from "./access";
 import { getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
@@ -32,6 +34,35 @@ export const list = query({
   },
 });
 
+export type CapitalArgs = {
+  receiptDate: string; amount: number; sourceType: string; sourceName: string; depositMethod: string;
+  depositMethodId?: Id<"paymentMethods">; reference?: string; interestRate?: number; termMonths?: number; notes?: string;
+};
+
+/** Records capital / a loan received into a payment method's account (receipt + journal). Used by the Capital page and by "pay a supplier from capital / loan". */
+export async function postCapitalReceipt(ctx: MutationCtx, user: Awaited<ReturnType<typeof requireManager>>, scope: Awaited<ReturnType<typeof resolveWriteScope>>, a: CapitalArgs) {
+  const source = SOURCES[a.sourceType];
+  if (!source) throw new ConvexError("Chanzo cha mtaji si sahihi.");
+  if (!a.depositMethodId && !DEPOSIT[a.depositMethod]) throw new ConvexError("Njia ya kuweka fedha si sahihi.");
+  const chosen = a.depositMethodId ? (await normaliseSplits(ctx, user, [{ method: a.depositMethod, methodId: a.depositMethodId, amount: 1 }])).splits[0] : null;
+  if (!Number.isFinite(a.amount) || a.amount <= 0) throw new ConvexError("Kiasi lazima kiwe zaidi ya sifuri.");
+  if (!a.sourceName.trim()) throw new ConvexError("Andika mtaji umetoka kwa nani au wapi.");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(a.receiptDate)) throw new ConvexError("Tarehe si sahihi.");
+  for (const n of [a.interestRate, a.termMonths]) if (n !== undefined && (!Number.isFinite(n) || n < 0)) throw new ConvexError("Riba au muda si sahihi.");
+  const amount = roundMoney(a.amount);
+  const id = await ctx.db.insert("capitalReceipts", { ...scope, ...a, depositMethod: chosen?.method ?? a.depositMethod, sourceName: a.sourceName.trim(), amount, createdBy: user._id });
+  const dep = await methodAccount(ctx, scope, { methodId: chosen?.methodId, method: a.depositMethod }); // funds go into the chosen method's own account
+  const src = await getSystemAccount(ctx, scope, source.code, source.name, source.type);
+  const journalId = await postSystemJournal(ctx, {
+    scope, userId: user._id, date: a.receiptDate, reference: `CAP-${String(id)}`,
+    description: `Capital received: ${source.name} - ${a.sourceName.trim()}`, sourceType: "capital", sourceId: String(id),
+    lines: [{ accountId: dep, debit: amount, credit: 0, description: "Funds received" }, { accountId: src, debit: 0, credit: amount, description: a.sourceName.trim() }],
+  });
+  await ctx.db.patch("capitalReceipts", id, { journalId });
+  await logAudit(ctx, user, { action: "receive_capital", module: "accounts", referenceId: String(id), details: `${a.sourceType} ${amount} (${a.sourceName.trim()})` });
+  return id;
+}
+
 export const receive = mutation({
   args: {
     receiptDate: v.string(),
@@ -48,25 +79,6 @@ export const receive = mutation({
   handler: async (ctx, a) => {
     const user = await requireManager(ctx, "accounts");
     const scope = await resolveWriteScope(ctx, user);
-    const source = SOURCES[a.sourceType];
-    if (!source) throw new ConvexError("Chanzo cha mtaji si sahihi.");
-    if (!a.depositMethodId && !DEPOSIT[a.depositMethod]) throw new ConvexError("Njia ya kuweka fedha si sahihi.");
-    const chosen = a.depositMethodId ? (await normaliseSplits(ctx, user, [{ method: a.depositMethod, methodId: a.depositMethodId, amount: 1 }])).splits[0] : null;
-    if (!Number.isFinite(a.amount) || a.amount <= 0) throw new ConvexError("Kiasi lazima kiwe zaidi ya sifuri.");
-    if (!a.sourceName.trim()) throw new ConvexError("Andika mtaji umetoka kwa nani au wapi.");
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(a.receiptDate)) throw new ConvexError("Tarehe si sahihi.");
-    for (const n of [a.interestRate, a.termMonths]) if (n !== undefined && (!Number.isFinite(n) || n < 0)) throw new ConvexError("Riba au muda si sahihi.");
-    const amount = roundMoney(a.amount);
-    const id = await ctx.db.insert("capitalReceipts", { ...scope, ...a, depositMethod: chosen?.method ?? a.depositMethod, sourceName: a.sourceName.trim(), amount, createdBy: user._id });
-    const dep = await methodAccount(ctx, scope, { methodId: chosen?.methodId, method: a.depositMethod }); // funds go into the chosen method's own account
-    const src = await getSystemAccount(ctx, scope, source.code, source.name, source.type);
-    const journalId = await postSystemJournal(ctx, {
-      scope, userId: user._id, date: a.receiptDate, reference: `CAP-${String(id)}`,
-      description: `Capital received: ${source.name} - ${a.sourceName.trim()}`, sourceType: "capital", sourceId: String(id),
-      lines: [{ accountId: dep, debit: amount, credit: 0, description: "Funds received" }, { accountId: src, debit: 0, credit: amount, description: a.sourceName.trim() }],
-    });
-    await ctx.db.patch("capitalReceipts", id, { journalId });
-    await logAudit(ctx, user, { action: "receive_capital", module: "accounts", referenceId: String(id), details: `${a.sourceType} ${amount} (${a.sourceName.trim()})` });
-    return id;
+    return await postCapitalReceipt(ctx, user, scope, a);
   },
 });
