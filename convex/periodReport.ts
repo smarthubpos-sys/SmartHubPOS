@@ -1,5 +1,5 @@
 import { mutation, query } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { waiterOwes } from "./waiterMath";
@@ -195,10 +195,33 @@ export const save = mutation({
       netProfit: all.profitAfter, netSales: all.sales, totalExpenses: all.expenses, data,
       createdBy: user._id, createdByName: user.name ?? user.username ?? user.email ?? "user", createdAt: new Date().toISOString(),
     });
+    // CLOSING THE DAY: the waiters' unpaid orders of this day report are listed in the report as debts, so they leave the cashier's normal
+    // "Receive waiters' money" list and wait under "Closed debts", where the cashier can still receive them later. Nothing is deleted or settled.
+    if (a.period === "day") await closeDayDebts(ctx, user.tenantId, sc, a.startDate, a.endDate, id);
     await logAudit(ctx, user, { action: "generate_period_report", module: "accounts", referenceId: String(id), referenceType: "reportRun", details: `${a.period} ${a.startDate}..${a.endDate} ${a.scopeLabel}` });
     return id;
   },
 });
+
+const eatDayOf = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10);
+async function closeDayDebts(ctx: MutationCtx, tenantId: Doc<"users">["tenantId"] & {}, sc: { only?: string | null; departments: Array<{ id: string }> }, from: string, to: string, reportId: Doc<"reportRuns">["_id"]) {
+  const branchIds = sc.only ? [ctx.db.normalizeId("branches", sc.only)] : [...sc.departments.map((d) => ctx.db.normalizeId("branches", d.id)), undefined];
+  const now = new Date().toISOString();
+  let seen = 0;
+  for (const branchId of branchIds) {
+    if (branchId === null) continue;
+    for (const status of ["pending", "accepted", "printed"]) {
+      const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId).eq("branchId", branchId).eq("status", status)).take(MAX_DEBT_ORDERS + 1);
+      for (const o of rows) {
+        if (o.settledAt || o.cancelledAt || o.closedAt) continue;
+        const day = eatDayOf(o.createdAt);
+        if (day < from || day > to || waiterOwes(o) <= 0) continue;
+        if (++seen > MAX_DEBT_ORDERS) return;
+        await ctx.db.patch("waiterOrders", o._id, { closedAt: now, closedReportId: reportId });
+      }
+    }
+  }
+}
 
 /** Newest saved reports first (a user tied to one department sees only that department's reports). */
 export const history = query({
@@ -250,6 +273,9 @@ export const deleteRun = mutation({
       details: `${report.title} ${report.startDate}..${report.endDate}`,
     });
 
+    // Debts that this report closed go back to the cashier's normal list (the report no longer exists to record them).
+    const closed = await ctx.db.query("waiterOrders").withIndex("by_closed_report", (q) => q.eq("closedReportId", report._id)).collect();
+    for (const o of closed) await ctx.db.patch("waiterOrders", o._id, { closedAt: undefined, closedReportId: undefined });
     await ctx.db.delete("reportRuns", report._id);
     return { success: true };
   },

@@ -88,11 +88,9 @@ async function postCollectionJournal(
 }
 
 /** Waiters who still owe money to the cashier: their unsettled orders and the total. Read-only. */
-export const owing = query({
-  args: {},
-  handler: async (ctx) => {
+async function owingList(ctx: Parameters<typeof cashierScope>[0], closed: boolean) {
     const { tenantId, branchId } = await cashierScope(ctx).catch((e) => { throw surfaceError(e); });
-    const rows = (await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId)).collect()).filter((o) => inScope(branchId, o) && collectable(o));
+    const rows = (await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId)).collect()).filter((o) => inScope(branchId, o) && collectable(o) && !!o.closedAt === closed);
     const byWaiter = new Map<string, { staffId: Id<"users">; staffName: string; total: number; orders: Array<{ _id: Id<"waiterOrders">; createdAt: string; tableNumber?: string; total: number; orderTotal: number; paid: number; lines: string }> }>();
     for (const o of rows) {
       const k = String(o.waiterId);
@@ -105,8 +103,13 @@ export const owing = query({
     }
     const list = [...byWaiter.values()].map((w) => ({ ...w, orders: w.orders.sort((a, b) => a.createdAt.localeCompare(b.createdAt)) })).sort((a, b) => a.staffName.localeCompare(b.staffName));
     return list;
-  },
-});
+}
+
+/** Debts still owed by waiters that were NOT yet closed in a day report: the cashier's normal list. */
+export const owing = query({ args: {}, handler: async (ctx) => await owingList(ctx, false) });
+
+/** Debts moved here when the day report was closed. The cashier can still receive them (same receive screen). */
+export const closedOwing = query({ args: {}, handler: async (ctx) => await owingList(ctx, true) });
 
 /**
  * Receive money of the chosen orders from one waiter. The amount may be LESS than what is due (the waiter hands over only what he has in hand):

@@ -30,6 +30,9 @@ export function StockTakeScreen() {
   const data = useQuery(api.inventory.stockRegisters, { startDate: appliedStart, endDate: appliedEnd, light: true });
   const rights = useStockRights();
   const stockTake = useMutation(api.inventory.stockTake);
+  const staff = useQuery(api.inventory.sellableStaff, {});
+  const [sell, setSell] = useState(false);
+  const [sellTo, setSellTo] = useState("");
   const [counted, setCounted] = useState<Record<string, string>>({});
   const [group, setGroup] = useState("");
   const [search, setSearch] = useState("");
@@ -56,6 +59,8 @@ export function StockTakeScreen() {
   const different = entered.filter((l) => Math.abs(l.diff) > 1e-9);
   const shortage = round2(different.filter((l) => l.diff < 0).reduce((n, l) => n + l.value, 0));
   const overage = round2(different.filter((l) => l.diff > 0).reduce((n, l) => n + l.value, 0));
+  const sellValue = round2(different.filter((l) => l.diff < 0).reduce((n, l) => n + Math.abs(l.diff) * l.p.sellingPrice, 0));
+  const hasShortage = different.some((l) => l.diff < 0);
   const invalid = entered.some((l) => !(num(counted[l.p._id]) >= 0));
 
   const submit = async () => {
@@ -63,12 +68,19 @@ export function StockTakeScreen() {
     if (invalid) { toast.error(tr("Kuna kiasi kisicho sahihi; kiasi lazima kiwe sifuri au zaidi.")); return; }
     if (!title.trim()) { toast.error(tr("Weka jina au sababu ya stock take.")); return; }
     if (!different.length) { toast.info(tr("Hakuna tofauti: stock yote iliyohesabiwa inalingana na mfumo.")); return; }
-    if (!window.confirm(tr("Bidhaa {0} zitarekebishwa (upungufu {1}, ziada {2}). Hatua hii haiwezi kutenguliwa. Endelea?", [different.length, fmt(shortage), fmt(overage)]))) return;
+    const sellName = staff?.find((u) => u._id === sellTo)?.name ?? "";
+    if (sell && !sellTo) { toast.error(tr("Chagua mtumiaji atakayeuziwa upungufu.")); return; }
+    if (sell && !hasShortage) { toast.error(tr("Hakuna upungufu wa kuuza: hakuna bidhaa iliyohesabiwa chini ya kiasi cha mfumo.")); return; }
+    const confirmText = sell
+      ? tr("Bidhaa {0} zitarekebishwa (upungufu {1}, ziada {2}). Upungufu wa {3} utauzwa kwa {4} kwa bei ya kuuzia; deni litaingia kwenye akaunti yake. Hatua hii haiwezi kutenguliwa. Endelea?", [different.length, fmt(shortage), fmt(overage), fmt(sellValue), sellName])
+      : tr("Bidhaa {0} zitarekebishwa (upungufu {1}, ziada {2}). Hatua hii haiwezi kutenguliwa. Endelea?", [different.length, fmt(shortage), fmt(overage)]);
+    if (!window.confirm(confirmText)) return;
     setBusy(true);
     try {
-      const r = await stockTake({ adjustmentDate: date, reason: title.trim(), lines: entered.map((l) => ({ productId: l.p._id as Id<"products">, counted: num(counted[l.p._id]) })) });
+      const r = await stockTake({ adjustmentDate: date, reason: title.trim(), lines: entered.map((l) => ({ productId: l.p._id as Id<"products">, counted: num(counted[l.p._id]) })), ...(sell && sellTo ? { sellShortageTo: sellTo as Id<"users"> } : {}) });
       toast.success(tr("Stock take {0} imehifadhiwa: bidhaa {1} zimerekebishwa.", [r.reference, r.adjusted]));
-      setCounted({});
+      if (r.soldInvoiceNo) toast.success(tr("Upungufu umeuzwa: {0}, jumla {1}, kwa {2}.", [r.soldInvoiceNo, fmt(r.soldTotal), sellName]));
+      setCounted({}); setSell(false); setSellTo("");
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuhifadhi stock take.")); }
     finally { setBusy(false); }
   };
@@ -125,6 +137,18 @@ export function StockTakeScreen() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="space-y-3 rounded-lg border bg-muted/30 p-3 print:hidden">
+            <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={sell} onChange={(e) => setSell(e.target.checked)} />{tr("Uza upungufu (bei ya kuuzia)")}</label>
+            <p className="text-xs text-muted-foreground">{tr("Bidhaa zenye upungufu zinauzwa kwa mtumiaji utakayemchagua, kwa bei ya kuuzia. Deni linaingia kwenye akaunti yake; cashier analipokea kupitia \"Pokea fedha za wahudumu\". Ziada haiuzwi: inaongezwa kwenye stock tu.")}</p>
+            {sell && (
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="grid gap-1 text-xs">{tr("Chagua mtumiaji")}
+                  <select className={selectClass} value={sellTo} onChange={(e) => setSellTo(e.target.value)}><option value="">{tr("Chagua mtumiaji")}</option>{(staff ?? []).map((u) => <option key={u._id} value={u._id}>{u.name}{u.role ? ` (${u.role})` : ""}</option>)}</select>
+                </label>
+                <div className="pb-1 text-sm">{tr("Thamani ya upungufu kwa bei ya kuuzia")}: <span className="font-semibold tabular-nums">{fmt(sellValue)}</span></div>
+              </div>
+            )}
           </div>
         </section>
       ) : (

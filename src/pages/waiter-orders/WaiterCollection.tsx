@@ -22,7 +22,10 @@ const orderDay = (iso: string) => new Date(Date.parse(iso) + EAT_OFFSET_MS).toIS
 /** Cashier: pick a waiter, tick the orders whose money was handed over, record how it was paid. Orders are marked settled, never deleted. */
 export default function WaiterCollection() {
   const methods = usePaymentMethods();
-  const owing = useQuery(api.waiterCollections.owing);
+  const owingNormal = useQuery(api.waiterCollections.owing);
+  const owingClosed = useQuery(api.waiterCollections.closedOwing);
+  const [showClosed, setShowClosed] = useState(false); // "Closed debts": unpaid orders of days whose report was already closed; still receivable
+  const owing = showClosed ? owingClosed : owingNormal;
   const [viewDate, setViewDate] = useState(() => localDate()); // day of the "received" list below
   const receipts = useQuery(api.waiterCollections.receipts, { date: viewDate });
   const collect = useMutation(api.waiterCollections.collect);
@@ -115,7 +118,12 @@ export default function WaiterCollection() {
   return (
     <section className="space-y-3 rounded-2xl border p-4">
       <h2 className="text-lg font-semibold">{tr("Pokea fedha za wahudumu")}</h2>
-      {owing && owing.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna mhudumu anayedaiwa kwa sasa.")}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" size="sm" variant={showClosed ? "outline" : "default"} onClick={() => { setShowClosed(false); setStaffId(""); setPicked([]); }}>{tr("Madeni ya kawaida")} ({owingNormal?.length ?? 0})</Button>
+        <Button type="button" size="sm" variant={showClosed ? "default" : "outline"} onClick={() => { setShowClosed(true); setStaffId(""); setPicked([]); }}>{tr("Madeni yaliyofungwa")} ({owingClosed?.length ?? 0})</Button>
+      </div>
+      {showClosed && <p className="text-xs text-muted-foreground">{tr("Haya ni madeni ya siku ambazo ripoti yake ilishafungwa. Bado unaweza kuyapokea hapa.")}</p>}
+      {owing && owing.length === 0 && <p className="text-sm text-muted-foreground">{showClosed ? tr("Hakuna deni lililofungwa.") : tr("Hakuna mhudumu anayedaiwa kwa sasa.")}</p>}
       {owing && owing.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {owing.map((w) => (

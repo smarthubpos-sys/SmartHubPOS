@@ -1016,6 +1016,8 @@ export default defineSchema({
     assignedClientId: v.optional(v.id("clients")),
     assignedInvoiceId: v.optional(v.id("invoices")), // the customer invoice that now carries that debt
     collectionId: v.optional(v.id("waiterCollections")),
+    closedAt: v.optional(v.string()), // the day report that listed this unpaid order was saved: the debt moved from the cashier's normal list to "Closed debts" (it can still be received there)
+    closedReportId: v.optional(v.id("reportRuns")),
     billPrintedAt: v.optional(v.string()), // set only after a Bills-screen print succeeded; the order itself is never deleted
     billSentAt: v.optional(v.string()), // the waiter generated his bill and SENT it to the cashier: only then does the cashier see it on the Bills screen
     billSentBy: v.optional(v.id("users")),
@@ -1041,7 +1043,8 @@ export default defineSchema({
     .index("by_client_key", ["waiterId", "clientKey"])
     .index("by_tenant_invoice_no", ["tenantId", "invoiceNo"])
     .index("by_created", ["createdAt"])
-    .index("by_tenant_created", ["tenantId", "createdAt"]),
+    .index("by_tenant_created", ["tenantId", "createdAt"])
+    .index("by_closed_report", ["closedReportId"]),
 
   // Money a cashier received from a waiter for sent / printed Selling Point orders. Orders are kept; they are only marked settled.
   waiterCollections: defineTable({

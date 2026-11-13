@@ -1,8 +1,9 @@
 import { ingredientOnlyIds, onSalesMenu } from "./menuVisibility";
 import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
-import type { Doc } from "./_generated/dataModel";
-import { canAccessRecord, filterScoped, requireActiveUser, resolveWriteScope, requirePermission, scopedRows } from "./access";
+import type { Doc, Id } from "./_generated/dataModel";
+import { canAccessRecord, filterScoped, logAudit, normalizeRole, requireActiveUser, resolveWriteScope, requirePermission, scopedRows } from "./access";
+import { allocateSellingPointInvoiceNo, deductStockOnce } from "./waiterOrders";
 import { assertDate, assertFinite, getSystemAccount, postSystemJournal, roundMoney } from "./ledger";
 const validQty = (n: number) => Number.isFinite(n) && n >= 0;
 export const listMovements = query({ args: { productId: v.optional(v.id("products")) }, handler: async (ctx, args) => { const user = await requirePermission(ctx, "stock.view", "stock"); const all = args.productId ? await ctx.db.query("stockMovements").withIndex("by_product", q => q.eq("productId", args.productId!)).collect() : await scopedRows(ctx, user, "stockMovements"); return filterScoped(user, all).sort((a,b)=>b.movementDate.localeCompare(a.movementDate)); } });
@@ -50,7 +51,7 @@ const MAX_TAKE_LINES = 400; // each line writes ~5 documents; stays far below th
  * The whole take is refused (nothing saved) when any line is invalid, so a take is never half applied.
  */
 export const stockTake = mutation({
-  args: { adjustmentDate: v.string(), reason: v.string(), lines: v.array(v.object({ productId: v.id("products"), counted: v.number() })) },
+  args: { adjustmentDate: v.string(), reason: v.string(), lines: v.array(v.object({ productId: v.id("products"), counted: v.number() })), sellShortageTo: v.optional(v.id("users")) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "stock.adjust", "stock");
     const scope = await resolveWriteScope(ctx, user);
@@ -68,15 +69,48 @@ export const stockTake = mutation({
     }
     const reference = `ST-${a.adjustmentDate.replace(/-/g, "")}-${Date.now().toString(36).toUpperCase().slice(-4)}`;
     let adjusted = 0, unchanged = 0, shortageValue = 0, overageValue = 0;
+    // SELL THE SHORTAGE: what is missing on the shelf (counted < system) is sold, at the SELLING price, to the chosen staff member.
+    // It becomes one Selling Point order on his account, so the cashier receives the money through "Receive waiters' money".
+    // Overages are never sold: they are only added to stock as a normal adjustment.
+    const soldLines: Array<{ productId: Id<"products">; productName: string; qty: number; unitPrice: number; lineTotal: number }> = [];
+    let seller: Doc<"users"> | null = null;
+    if (a.sellShortageTo) {
+      await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
+      seller = await ctx.db.get("users", a.sellShortageTo);
+      if (!seller || seller.tenantId !== scope.tenantId || seller.isActive === false || ["super_admin", "superadmin"].includes(normalizeRole(seller.role))) throw new ConvexError("Mtumiaji aliyechaguliwa hayupo kwenye biashara hii.");
+    }
     for (const l of a.lines) {
       const p = await ctx.db.get("products", l.productId);
       if (!p || !canAccessRecord(user, p)) throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");
       if (Math.round((l.counted - p.currentQty) * 1e8) === 0) { unchanged++; continue; }
+      if (seller && l.counted < p.currentQty) {
+        const qty = Math.round((p.currentQty - l.counted) * 1e8) / 1e8;
+        if (!Number.isFinite(p.sellingPrice) || p.sellingPrice <= 0) throw new ConvexError(`Bei ya kuuzia ya ${p.name} haijawekwa; weka bei kwanza kabla ya kuuza upungufu.`);
+        soldLines.push({ productId: p._id, productName: p.name, qty, unitPrice: p.sellingPrice, lineTotal: roundMoney(qty * p.sellingPrice) });
+        adjusted++;
+        shortageValue += roundMoney(qty * (p.weightedAvgCost ?? p.lastPurchaseCost ?? 0));
+        continue;
+      }
       const r = await applyAdjustment(ctx, user, scope, { productId: l.productId, newQty: l.counted, reason: `${reason} (${reference})`, adjustmentDate: a.adjustmentDate, reference });
       adjusted++;
       if (r.delta < 0) shortageValue += r.value; else overageValue += r.value;
     }
-    return { reference, adjusted, unchanged, shortageValue: roundMoney(shortageValue), overageValue: roundMoney(overageValue) };
+    let soldInvoiceNo: string | undefined, soldTotal = 0;
+    if (seller && soldLines.length) {
+      const now = new Date().toISOString();
+      soldInvoiceNo = await allocateSellingPointInvoiceNo(ctx, user, scope.tenantId!);
+      soldTotal = roundMoney(soldLines.reduce((n, x) => n + x.lineTotal, 0));
+      const orderId = await ctx.db.insert("waiterOrders", {
+        tenantId: scope.tenantId!, branchId: scope.branchId, invoiceNo: soldInvoiceNo,
+        customerName: `Stock take ${reference}`, waiterId: seller._id, waiterName: seller.name || seller.username || "Staff",
+        status: "pending", sentAt: now, stockDeducted: false, lines: soldLines, total: soldTotal,
+        notes: `${reason} (${reference})`, createdAt: now, updatedAt: now,
+      });
+      const order = (await ctx.db.get("waiterOrders", orderId))!;
+      await deductStockOnce(ctx, order, user, { tenantId: scope.tenantId, branchId: scope.branchId }); // takes the shortage out of stock; a failure rolls back the whole take
+      await logAudit(ctx, user, { action: "stock_take_sell_shortage", module: "stock", referenceId: String(orderId), referenceType: "waiterOrder", details: `${reference}; ${soldInvoiceNo}; jumla ${soldTotal}; mhudumu ${seller.name || seller.username || ""}` });
+    }
+    return { reference, adjusted, unchanged, shortageValue: roundMoney(shortageValue), overageValue: roundMoney(overageValue), soldInvoiceNo, soldTotal, soldCount: soldLines.length };
   },
 });
 
@@ -389,5 +423,17 @@ export const reconcileMovements = mutation({
     }
     await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "reconcile_stock_movements", module: "inventory", details: `${fixed} product(s) reconciled`, timestamp: new Date().toISOString(), result: "success" });
     return { fixed };
+  },
+});
+
+/** Staff the stock-taker can charge the missing stock to (active users of the business, never the Super Admin). */
+export const sellableStaff = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await requirePermission(ctx, "stock.adjust", "stock");
+    const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
+    if (!scope.tenantId) return [];
+    const rows = await ctx.db.query("users").withIndex("by_scope", (q) => q.eq("tenantId", scope.tenantId!)).collect();
+    return rows.filter((u) => u.isActive !== false && !["super_admin", "superadmin"].includes(normalizeRole(u.role))).map((u) => ({ _id: u._id, name: u.name ?? u.username ?? "", role: u.role ?? "" })).sort((x, y) => x.name.localeCompare(y.name));
   },
 });
