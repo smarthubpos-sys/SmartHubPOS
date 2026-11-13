@@ -321,6 +321,50 @@ function QuantityScreen({ kind }: { kind: "item-quantity" | "quantity" | "prices
 
 /* ───────────────────────── Movements, history, earnings, stock take ───────────────────────── */
 
+function ClosingStockScreen() {
+  const [date, setDate] = useState(today());
+  const [applied, setApplied] = useState(today());
+  const [group, setGroup] = useState("");
+  const groups = useQuery(api.inventory.stockRegisters, { light: true });
+  const data = useQuery(api.stockDaily.closingStock, { date: applied, groupId: group ? (group as Id<"productGroups">) : undefined });
+  const yesterday = new Date(Date.parse(`${today()}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+  const show = (d: string) => { setDate(d); setApplied(d); };
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <h1 className="text-2xl font-bold">{tr("Closing Stock (kwa tarehe)")}</h1>
+        <div className="flex flex-wrap items-end gap-2 print:hidden">
+          <label className="grid gap-1 text-xs">{tr("Tarehe")}<Input type="date" className="h-10 w-44" value={date} max={today()} onChange={(e) => setDate(e.target.value)} /></label>
+          <label className="grid gap-1 text-xs">{tr("Group")}
+            <select className={selectClass} value={group} onChange={(e) => setGroup(e.target.value)}><option value="">{tr("Zote")}</option>{(groups?.groups ?? []).map((g) => <option key={g._id} value={g._id}>{g.name}</option>)}</select>
+          </label>
+          <Button type="button" disabled={!/^\d{4}-\d{2}-\d{2}$/.test(date)} onClick={() => setApplied(date)}>{tr("View Report")}</Button>
+          <Button type="button" variant="outline" onClick={() => show(today())}>{tr("Leo")}</Button>
+          <Button type="button" variant="outline" onClick={() => show(yesterday)}>{tr("Jana")}</Button>
+        </div>
+      </div>
+      {!data ? loading : (
+        <>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Stat label={tr("Bidhaa zenye stock/movement")} value={data.totals.items} />
+            <Stat label={tr("Thamani ya closing stock (cost)")} value={data.totals.value} />
+            <Stat label={tr("Kiasi kilichouzwa siku hiyo")} value={data.totals.soldQty} />
+          </div>
+          <ReportTable
+            title={`${tr("Closing Stock")} ${data.date}`}
+            sumCols={[tr("Thamani (cost)")]}
+            note={tr("Mwanzo = stock aliyoanza nayo siku hiyo. Manunuzi, Marejesho (bili zilizorudishwa/kufutwa), Adjustment na Production/Transfer ni vilivyoongezeka au kubadilika. Mauzo ni vilivyotoka. Mwisho = Mwanzo + vilivyoongezeka - Mauzo. Thamani inatumia cost ya sasa ya bidhaa.")}
+            rows={data.rows.map((r) => ({
+              Code: r.code, Bidhaa: r.name, Group: r.groupName, Mwanzo: r.opening, Manunuzi: r.purchases, Marejesho: r.returns, Adjustment: r.adjust,
+              "Production/Transfer": round2(r.production + r.transfer + r.other), Mauzo: r.sold, Mwisho: r.closing, Cost: r.cost, "Thamani (cost)": r.value,
+            }))}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
 function TransactionsScreen() {
   const [start, setStart] = useState(monthStart()); const [end, setEnd] = useState(today());
   const [appliedStart, setAppliedStart] = useState(monthStart()); const [appliedEnd, setAppliedEnd] = useState(today());
@@ -439,6 +483,7 @@ export default function StockWorkspace() {
     case "groups": screen = <GroupsScreen />; break;
     case "item-quantity": screen = <QuantityScreen kind="item-quantity" />; break;
     case "transactions": screen = <TransactionsScreen />; break;
+    case "reports/closing-stock": screen = <ClosingStockScreen />; break;
     case "item-history": screen = <HistoryScreen />; break;
     case "reports/quantity": screen = <QuantityScreen kind="quantity" />; break;
     case "reports/prices": screen = <QuantityScreen kind="prices" />; break;

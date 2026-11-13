@@ -26,6 +26,7 @@ const stockMenuItems = [
   {
     section: tr("Stock Reports"),
     items: [
+      { label: tr("Closing Stock (kwa tarehe)"), icon: ClipboardList, path: "/stock/reports/closing-stock", description: tr("Stock ya mwanzo, vilivyoongezeka, vilivyouzwa na closing ya siku yoyote") },
       { label: tr("Quantity Report"), icon: BarChart2, path: "/stock/reports/quantity", description: tr("Stock quantity report") },
       { label: tr("Selling Price Report"), icon: Tag, path: "/stock/reports/prices", description: tr("Product price list") },
       { label: tr("Stock Earning Report"), icon: TrendingUp, path: "/stock/reports/earnings", description: tr("Profit by item") },

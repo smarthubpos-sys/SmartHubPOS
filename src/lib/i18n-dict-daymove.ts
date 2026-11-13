@@ -15,4 +15,12 @@ export const DAYMOVE_DICT: Record<string, { sw: string; en: string }> = {
   "Bili iliyofutwa au ambayo haijatumwa haiwezi kuhamishwa.": { sw: "Bili iliyofutwa au ambayo haijatumwa haiwezi kuhamishwa.", en: "A cancelled bill, or one that was not sent, cannot be moved." },
   "Bili hii imeelekezwa kwa mteja kama deni; haiwezi kuhamishwa.": { sw: "Bili hii imeelekezwa kwa mteja kama deni; haiwezi kuhamishwa.", en: "This bill was assigned to a customer as debt; it cannot be moved." },
   "Siku ya bili hii ilishafungwa kwenye ripoti (Unda Ripoti ya Siku); haiwezi kuhamishwa.": { sw: "Siku ya bili hii ilishafungwa kwenye ripoti (Unda Ripoti ya Siku); haiwezi kuhamishwa.", en: "The day of this bill was already closed in a report (Create Day Report); it cannot be moved." },
+  "Closing Stock (kwa tarehe)": { sw: "Closing Stock (kwa tarehe)", en: "Closing Stock (by date)" },
+  "Stock ya mwanzo, vilivyoongezeka, vilivyouzwa na closing ya siku yoyote": { sw: "Stock ya mwanzo, vilivyoongezeka, vilivyouzwa na closing ya siku yoyote", en: "Opening, additions, sales and closing stock of any day" },
+  "Bidhaa zenye stock/movement": { sw: "Bidhaa zenye stock/movement", en: "Items with stock/movements" },
+  "Thamani ya closing stock (cost)": { sw: "Thamani ya closing stock (cost)", en: "Closing stock value (cost)" },
+  "Kiasi kilichouzwa siku hiyo": { sw: "Kiasi kilichouzwa siku hiyo", en: "Quantity sold that day" },
+  "Closing Stock": { sw: "Closing Stock", en: "Closing Stock" },
+  "Mwanzo = stock aliyoanza nayo siku hiyo. Manunuzi, Marejesho (bili zilizorudishwa/kufutwa), Adjustment na Production/Transfer ni vilivyoongezeka au kubadilika. Mauzo ni vilivyotoka. Mwisho = Mwanzo + vilivyoongezeka - Mauzo. Thamani inatumia cost ya sasa ya bidhaa.": { sw: "Mwanzo = stock aliyoanza nayo siku hiyo. Manunuzi, Marejesho (bili zilizorudishwa/kufutwa), Adjustment na Production/Transfer ni vilivyoongezeka au kubadilika. Mauzo ni vilivyotoka. Mwisho = Mwanzo + vilivyoongezeka - Mauzo. Thamani inatumia cost ya sasa ya bidhaa.", en: "Opening = stock the day started with. Purchases, Returns (returned/cancelled bills), Adjustment and Production/Transfer are what was added or changed. Sales is what went out. Closing = Opening + additions - Sales. Value uses the item's current cost." },
+  "Tarehe ya ripoti si sahihi (tumia mwaka-mwezi-siku, mfano 2026-10-15).": { sw: "Tarehe ya ripoti si sahihi (tumia mwaka-mwezi-siku, mfano 2026-10-15).", en: "The report date is not valid (use year-month-day, e.g. 2026-10-15)." },
 };
