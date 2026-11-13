@@ -261,7 +261,7 @@ export const receipts = query({
   handler: async (ctx, args) => {
     const { tenantId, branchId } = await cashierScope(ctx).catch((e) => { throw surfaceError(e); });
     const rows = (await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).eq("date", args.date)).collect()).filter((c) => !branchId || c.branchId === branchId);
-    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ _id: c._id, staffName: c.staffName, cashierName: c.cashierName, total: c.total, debt: c.shortfall ?? 0, orders: c.orderIds.length, createdAt: c.createdAt, methods: c.splits.map((s) => `${s.method} ${s.amount}`).join(" + "), splits: c.splits.map((s) => ({ method: s.method, amount: s.amount })) }));
+    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ _id: c._id, orderIds: c.orderIds, date: c.date, staffName: c.staffName, cashierName: c.cashierName, total: c.total, debt: c.shortfall ?? 0, orders: c.orderIds.length, createdAt: c.createdAt, methods: c.splits.map((s) => `${s.method} ${s.amount}`).join(" + "), splits: c.splits.map((s) => ({ method: s.method, amount: s.amount })) }));
   },
 });
 

@@ -825,7 +825,7 @@ async function buildSalesRegister(ctx: QueryCtx, user: Doc<"users">, a: Register
       spByMethod: [...spMethods.entries()].map(([method, amount]) => ({ method, amount })),
       openInvoices: openInvoicesRaw.sort((x, y) => x.invoiceDate.localeCompare(y.invoiceDate)).map(i => ({ _id: i._id, invoiceNo: i.invoiceNo, clientId: i.clientId, clientName: clientName.get(String(i.clientId)) ?? "Mteja", total: i.total, outstanding: i.outstanding, date: i.invoiceDate })),
       truncated: truncated || spTruncated,
-      totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0) + spSales), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0) + spReceived), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), invoices: invoices.length + spCount, waiterDebt: spDebt, waiterDebtOpen: spDebtOpen },
+      totals: { sales: money(invoices.reduce((n, i) => n + i.total, 0) + spSales), tax: money(invoices.reduce((n, i) => n + i.taxAmount, 0)), paid: money(invoices.reduce((n, i) => n + i.amountPaid, 0) + spReceived), outstanding: money(invoices.reduce((n, i) => n + i.outstanding, 0)), payments: money(payments.reduce((n, p) => n + p.amount, 0)), received: money(payments.reduce((n, p) => n + p.amount, 0) + [...spMethods.values()].reduce((n, x) => n + x, 0)), invoices: invoices.length + spCount, waiterDebt: spDebt, waiterDebtOpen: spDebtOpen },
     };
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -202,7 +202,8 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
 /** Quantity field for one cart line: shows the number, lets the cashier type a fraction such as 0.5 or 2.5 (a comma also works). */
 function QtyBox({ value, disabled, onCommit }: { value: number; disabled?: boolean; onCommit: (q: number) => void }) {
   const [text, setText] = useState(String(value));
-  useEffect(() => { setText(String(value)); }, [value]);
+  const [seen, setSeen] = useState(value);
+  if (seen !== value) { setSeen(value); setText(String(value)); }
   return (
     <Input
       className="h-10 w-16 px-1 text-center font-bold tabular-nums"

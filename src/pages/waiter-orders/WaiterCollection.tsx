@@ -18,6 +18,7 @@ import { PRINT_RECEIPT_KEY, readPrintReceiptChoice } from "@/lib/print-receipt-c
 const money = (n: number) => Number(n).toLocaleString();
 /** Business day (East Africa Time) of an order timestamp. */
 const orderDay = (iso: string) => new Date(Date.parse(iso) + EAT_OFFSET_MS).toISOString().slice(0, 10);
+const dayBefore = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
 
 /** Cashier: pick a waiter, tick the orders whose money was handed over, record how it was paid. Orders are marked settled, never deleted. */
 export default function WaiterCollection() {
@@ -29,6 +30,10 @@ export default function WaiterCollection() {
   const [viewDate, setViewDate] = useState(() => localDate()); // day of the "received" list below
   const receipts = useQuery(api.waiterCollections.receipts, { date: viewDate });
   const collect = useMutation(api.waiterCollections.collect);
+  const moveDay = useMutation(api.waiterDayMove.moveToDay); // night sales: move bills AND their cash to the real business day
+  const [nightDay, setNightDay] = useState(""); // day chosen for the ticked bills
+  const [moveRow, setMoveRow] = useState(""); // receipt being moved (id) and the day chosen for it
+  const [moveRowDay, setMoveRowDay] = useState("");
   const assign = useMutation(api.customerDebt.assignOrdersToCustomer);
   const customers = useQuery(api.customerDebt.customersForCashier);
   const [clientId, setClientId] = useState("");
@@ -111,6 +116,19 @@ export default function WaiterCollection() {
     } finally { setBusy(false); }
   }
 
+  // Sales made after midnight (bar still open) belong to the day before: the bills and the money already received move TOGETHER.
+  async function moveBills(orderIds: Id<"waiterOrders">[], day: string) {
+    if (!orderIds.length || !/^\d{4}-\d{2}-\d{2}$/.test(day) || day > today) return;
+    setBusy(true);
+    try {
+      const res = await moveDay({ orderIds, day });
+      toast.success(tr("Bili {0} na risiti {1} zimehamia siku {2}. Fedha zimehamia pamoja nazo.", [String(res.orders), String(res.receipts), res.day]));
+      setNightDay(""); setMoveRow(""); setChangeDate(false); setViewDate(res.day);
+    } catch (e) {
+      toast.error(errorText(e, tr("Imeshindikana kuhamisha siku. Hakuna kilichobadilishwa; jaribu tena.")));
+    } finally { setBusy(false); }
+  }
+
   // Reprint a receipt taken earlier today. Only prints what was already saved; money and stock are untouched.
   async function reprint(r: NonNullable<typeof receipts>[number]) {
     if (settings === undefined) { toast.message(tr("Mipangilio ya printer bado inapakia. Jaribu tena baada ya sekunde chache.")); return; }
@@ -159,6 +177,16 @@ export default function WaiterCollection() {
             {!repayment && changeDate && <Input type="date" className="max-w-xs" value={payDate} min={oldestDay} max={today} disabled={busy} onChange={(e) => setPayDate(e.target.value)} />}
             {!repayment && changeDate && !dateOk && <p className="text-xs text-destructive">{tr("Tarehe ya malipo lazima iwe kati ya {0} na {1}.", [oldestDay, today])}</p>}
           </div>
+          {!repayment && (
+            <details className="rounded-lg border p-3 text-sm">
+              <summary className="cursor-pointer font-medium">{tr("Mauzo ya usiku (baada ya saa 6 usiku)? Yarudishe siku iliyopita")}</summary>
+              <p className="mt-2 text-xs text-muted-foreground">{tr("Bili zilizotiki zitahamia siku utakayochagua, na fedha zake (cash, mobile, bank) zitahesabiwa siku hiyo hiyo kwenye ripoti zote.")}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Input type="date" className="h-10 w-44" value={nightDay || (chosen.length ? dayBefore(oldestDay) : "")} max={today} disabled={busy} onChange={(e) => setNightDay(e.target.value)} />
+                <Button type="button" variant="outline" disabled={busy || chosen.length === 0} onClick={() => void moveBills(chosen.map((o) => o._id), nightDay || dayBefore(oldestDay))}>{tr("Hamisha bili zilizotiki")}</Button>
+              </div>
+            </details>
+          )}
           <PaymentSplit methods={methods} lines={lines} onChange={setLines} due={due} disabled={busy} />
           <p className="text-xs text-muted-foreground">{tr("Unaweza kupokea kiasi kidogo kuliko jumla (kile alichonacho mhudumu mkononi). Kinachobaki kinabaki kama deni lake.")}</p>
           {debtLeft > 0.005 && paying > 0.005 && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-sm font-semibold">{tr("Deni litakalobaki kwa mhudumu")}: {money(debtLeft)}</p>}
@@ -187,7 +215,14 @@ export default function WaiterCollection() {
           {receipts.map((r) => (
             <div key={String(r._id)} className="flex flex-wrap justify-between gap-2 text-sm">
               <span>{new Date(r.createdAt).toLocaleTimeString()} · {r.staffName} · {r.orders} {tr("oda")} · {r.methods}{r.debt > 0 && <b className="ml-1 text-amber-600">· {tr("Deni")}: {money(r.debt)}</b>}</span>
-              <span className="flex items-center gap-2"><strong className="tabular-nums">{money(r.total)}</strong><Button type="button" size="sm" variant="outline" onClick={() => void reprint(r)}>{tr("Chapisha risiti")}</Button></span>
+              <span className="flex items-center gap-2"><strong className="tabular-nums">{money(r.total)}</strong><Button type="button" size="sm" variant="outline" onClick={() => void reprint(r)}>{tr("Chapisha risiti")}</Button><Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { setMoveRow(String(r._id)); setMoveRowDay(dayBefore(r.date)); }}>{tr("Hamisha siku")}</Button></span>
+              {moveRow === String(r._id) && (
+                <span className="flex w-full flex-wrap items-center justify-end gap-2">
+                  <Input type="date" className="h-9 w-40" value={moveRowDay} max={today} disabled={busy} onChange={(e) => setMoveRowDay(e.target.value)} />
+                  <Button type="button" size="sm" disabled={busy || !moveRowDay} onClick={() => void moveBills(r.orderIds, moveRowDay)}>{tr("Hamisha na fedha")}</Button>
+                  <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setMoveRow("")}>{tr("Ghairi")}</Button>
+                </span>
+              )}
             </div>
           ))}
         </div>

@@ -61,6 +61,7 @@ import type * as tenants from "../tenants.js";
 import type * as userQuota from "../userQuota.js";
 import type * as users from "../users.js";
 import type * as waiterCollections from "../waiterCollections.js";
+import type * as waiterDayMove from "../waiterDayMove.js";
 import type * as waiterDirectory from "../waiterDirectory.js";
 import type * as waiterMath from "../waiterMath.js";
 import type * as waiterOrders from "../waiterOrders.js";
@@ -128,6 +129,7 @@ declare const fullApi: ApiFromModules<{
   userQuota: typeof userQuota;
   users: typeof users;
   waiterCollections: typeof waiterCollections;
+  waiterDayMove: typeof waiterDayMove;
   waiterDirectory: typeof waiterDirectory;
   waiterMath: typeof waiterMath;
   waiterOrders: typeof waiterOrders;
