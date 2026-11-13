@@ -53,9 +53,11 @@ export default function WaiterCollection() {
   const today = localDate();
   const days = [...new Set(chosen.map((o) => orderDay(o.createdAt)))].sort();
   const oldestDay = days[0] ?? today; // money cannot belong to a day before the sale
-  const mixedDays = days.length > 1;
-  const effectiveDate = changeDate ? payDate : oldestDay; // the day the money is counted on
-  const dateOk = changeDate ? /^\d{4}-\d{2}-\d{2}$/.test(payDate) && payDate <= today && payDate >= oldestDay : !mixedDays;
+  // Closed debts (the day report was already closed): the money is a REPAYMENT, counted today. Bills of open days keep their sale day.
+  const repayment = showClosed;
+  const mixedDays = !repayment && days.length > 1;
+  const effectiveDate = repayment ? today : changeDate ? payDate : oldestDay; // the day the money is counted on
+  const dateOk = repayment ? true : changeDate ? /^\d{4}-\d{2}-\d{2}$/.test(payDate) && payDate <= today && payDate >= oldestDay : !mixedDays;
   const canSave = !busy && chosen.length > 0 && paying > 0.005 && debtLeft > -0.005 && dateOk;
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
@@ -73,7 +75,7 @@ export default function WaiterCollection() {
     setBusy(true);
     try {
       const splits = toSplits(lines, methods);
-      const res = await collect({ staffId: waiter.staffId as Id<"users">, orderIds: chosen.map((o) => o._id), splits: splits as never, paymentDate: changeDate ? payDate : undefined }); // no date = the day of the sale
+      const res = await collect({ staffId: waiter.staffId as Id<"users">, orderIds: chosen.map((o) => o._id), splits: splits as never, paymentDate: !repayment && changeDate ? payDate : undefined }); // no date = the day of the sale
       toast.success(res.debt > 0 ? tr("Fedha zimepokelewa. Deni lililobaki kwa mhudumu: {0}", [money(res.debt)]) : tr("Fedha zimepokelewa na kuhifadhiwa."));
       const receipt = {
         receiptNo: String(res.collectionId).slice(-6).toUpperCase(),
@@ -150,11 +152,12 @@ export default function WaiterCollection() {
           </ul>
           <p className="text-base font-bold">{tr("Jumla ya kupokea")}: {money(due)}</p>
           <div className="space-y-2 rounded-lg border p-3 text-sm">
-            <p>{tr("Fedha zitahesabiwa kwenye siku ya mauzo")}: <strong>{mixedDays && !changeDate ? "—" : effectiveDate}</strong></p>
+            {repayment && <p className="text-xs text-amber-700">{tr("Hii ni marejesho ya deni la siku iliyofungwa: fedha zitahesabiwa leo kama marejesho, haziingii kwenye mauzo ya siku iliyofungwa.")}</p>}
+            <p>{repayment ? tr("Fedha zitahesabiwa leo (marejesho)") : tr("Fedha zitahesabiwa kwenye siku ya mauzo")}: <strong>{mixedDays && !changeDate ? "—" : effectiveDate}</strong></p>
             {mixedDays && !changeDate && <p className="text-xs text-destructive">{tr("Oda ni za siku tofauti ({0}). Pokea siku moja moja, au badilisha tarehe mwenyewe.", [days.join(", ")])}</p>}
-            <label className="flex items-center gap-2 text-xs"><input type="checkbox" className="h-4 w-4" checked={changeDate} disabled={busy} onChange={(e) => { setChangeDate(e.target.checked); if (e.target.checked) setPayDate(oldestDay); }} />{tr("Badilisha tarehe ya malipo")}</label>
-            {changeDate && <Input type="date" className="max-w-xs" value={payDate} min={oldestDay} max={today} disabled={busy} onChange={(e) => setPayDate(e.target.value)} />}
-            {changeDate && !dateOk && <p className="text-xs text-destructive">{tr("Tarehe ya malipo lazima iwe kati ya {0} na {1}.", [oldestDay, today])}</p>}
+            {!repayment && <label className="flex items-center gap-2 text-xs"><input type="checkbox" className="h-4 w-4" checked={changeDate} disabled={busy} onChange={(e) => { setChangeDate(e.target.checked); if (e.target.checked) setPayDate(oldestDay); }} />{tr("Badilisha tarehe ya malipo")}</label>}
+            {!repayment && changeDate && <Input type="date" className="max-w-xs" value={payDate} min={oldestDay} max={today} disabled={busy} onChange={(e) => setPayDate(e.target.value)} />}
+            {!repayment && changeDate && !dateOk && <p className="text-xs text-destructive">{tr("Tarehe ya malipo lazima iwe kati ya {0} na {1}.", [oldestDay, today])}</p>}
           </div>
           <PaymentSplit methods={methods} lines={lines} onChange={setLines} due={due} disabled={busy} />
           <p className="text-xs text-muted-foreground">{tr("Unaweza kupokea kiasi kidogo kuliko jumla (kile alichonacho mhudumu mkononi). Kinachobaki kinabaki kama deni lake.")}</p>

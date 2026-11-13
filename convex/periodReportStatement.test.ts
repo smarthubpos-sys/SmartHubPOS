@@ -72,6 +72,6 @@ describe("simple day report: sales, expenses in detail, debts by name, CASH / LI
     const chunk = await as.query(api.periodReport.chunk, { from: "2026-10-01", to: "2026-10-01" });
     const debts = await as.query(api.periodReport.debts, { from: "2026-10-01", to: "2026-10-01" });
     expect(chunk.sections).toEqual([]);
-    expect(debts).toEqual({ waiters: [], customers: [], truncated: false });
+    expect(debts).toEqual({ waiters: [], customers: [], waiterSales: [], repaid: [], truncated: false });
   });
 });

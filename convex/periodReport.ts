@@ -5,7 +5,7 @@ import type { Doc } from "./_generated/dataModel";
 import { waiterOwes } from "./waiterMath";
 import { activeDepartments, allowedBranchIds, isSuperAdmin, logAudit, requireActiveUser, requirePermission, roleHasPermission } from "./access";
 import type { UserLike } from "./access";
-import { accRows, channelOfKind, entryRows, isDate, round2, statement, summarize, type DebtRow, type ExpenseItem, type JEntry, type Row } from "./reportCore";
+import { accRows, addDays, channelOfKind, entryRows, isDate, round2, statementOf, summarize, type DebtRow, type ExpenseItem, type JEntry, type RepaidRow, type Row, type WaiterSalesRow } from "./reportCore";
 
 /**
  * PERIOD REPORT (Accounts > Ripoti ya Siku / Mwezi / Mwaka)
@@ -90,46 +90,70 @@ export const chunk = query({
 });
 
 /**
- * DEBTS of the period: (1) waiters / waitresses who sold on orders made in the period but have not handed over the money yet (listed by name),
- * (2) customers who took goods on credit (invoices of the period with an outstanding balance). One row per department and name.
- * `cost` = what the unpaid goods cost (taken from the stock movements of the order), so the report can split sales into capital and profit.
+ * SELLING POINT (waiter) SALES and DEBTS of the period - read from the ORDERS, by the day they were sold (East Africa Time), exactly like the Sales report:
+ *  (1) `waiterSales`: every bill a waiter sent / printed in the period, paid or not (a sale is a sale), with its cost of goods (capital);
+ *  (2) `waiters`: the part of those bills that waiters have not handed over yet (listed by name);
+ *  (3) `repaid`: money the cashier received in the period for bills of days that were already CLOSED (repayments, counted on the day received);
+ *  (4) `customers`: customers who took goods on credit (invoices of the period with an outstanding balance).
+ * The screen asks for short pieces of the range (a week at a time, halving a piece when `truncated`) and adds them up.
+ * `cost` of a waiter row = what the unpaid goods cost (from the stock movements of the order), so the report can split sales into capital and profit.
  */
-const MAX_DEBT_ORDERS = 2000;
+const MAX_DEBT_ORDERS = 700;
 const eatDay = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10); // East Africa Time business day
+const dayStartIso = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 3 * 3600000).toISOString(); // 00:00 EAT of that day, as UTC
 export const debts = query({
   args: { from: v.string(), to: v.string(), scope: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     if (!isDate(a.from) || !isDate(a.to) || a.to < a.from) throw new ConvexError("Tarehe za ripoti si sahihi.");
     const sc = await reportScope(ctx, user, a.scope);
-    const waiters: DebtRow[] = [], customers: DebtRow[] = [];
-    if (!sc.tenantId) return { waiters, customers, truncated: false };
+    const waiters: DebtRow[] = [], customers: DebtRow[] = [], waiterSales: WaiterSalesRow[] = [], repaid: RepaidRow[] = [];
+    if (!sc.tenantId) return { waiters, customers, waiterSales, repaid, truncated: false };
     const tenantId = sc.tenantId;
-    const branchIds = sc.only ? [ctx.db.normalizeId("branches", sc.only)] : [...sc.departments.map((d) => ctx.db.normalizeId("branches", d.id)), undefined];
-    let seen = 0, truncated = false;
+    let truncated = false;
     const byWaiter = new Map<string, DebtRow>();
-    for (const branchId of branchIds) {
-      if (branchId === null) continue;
-      for (const status of ["pending", "accepted", "printed"]) {
-        const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId).eq("branchId", branchId).eq("status", status)).take(MAX_DEBT_ORDERS + 1);
-        for (const o of rows) {
-          if (o.settledAt || o.cancelledAt) continue;
-          const day = eatDay(o.createdAt);
-          if (day < a.from || day > a.to) continue;
-          const left = waiterOwes(o);
-          if (left <= 0) continue;
-          if (++seen > MAX_DEBT_ORDERS) { truncated = true; break; }
-          const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
-          const full = moves.reduce((n, m) => n + (m.qtyOut - m.qtyIn) * (m.unitCost ?? 0), 0);
-          const cost = o.total > 0 ? round2(full * Math.min(1, left / o.total)) : 0;
-          const bk = bkey(o.branchId), key = `${bk}|${o.waiterId}`;
-          const cur = byWaiter.get(key) ?? { bk, name: o.waiterName, orders: 0, amount: 0, cost: 0 };
-          cur.orders += 1; cur.amount = round2(cur.amount + left); cur.cost = round2(cur.cost + cost);
-          byWaiter.set(key, cur);
-        }
-      }
+    const salesBy = new Map<string, WaiterSalesRow>();
+    const orders = await ctx.db.query("waiterOrders").withIndex("by_tenant_created", (q) => q.eq("tenantId", tenantId).gte("createdAt", dayStartIso(a.from)).lt("createdAt", dayStartIso(addDays(a.to, 1)))).take(MAX_DEBT_ORDERS + 1);
+    if (orders.length > MAX_DEBT_ORDERS) truncated = true;
+    for (const o of orders.slice(0, MAX_DEBT_ORDERS)) {
+      if (o.cancelledAt || !(o.status === "pending" || o.status === "accepted" || o.status === "printed")) continue; // drafts and cancelled bills are not sales
+      const bk = bkey(o.branchId);
+      if (sc.only && bk !== sc.only) continue;
+      // The part moved to a registered customer is that customer's invoice (booked with the invoices), so it is not counted twice here.
+      const sale = round2(o.total - (o.assignedAmount ?? 0));
+      if (sale <= 0) continue;
+      const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(o._id))).collect();
+      const full = moves.reduce((n, m) => n + (m.qtyOut - m.qtyIn) * (m.unitCost ?? 0), 0);
+      const sRow = salesBy.get(bk) ?? { bk, orders: 0, sales: 0, cost: 0 };
+      sRow.orders += 1; sRow.sales = round2(sRow.sales + sale); sRow.cost = round2(sRow.cost + (o.total > 0 ? full * Math.min(1, sale / o.total) : 0));
+      salesBy.set(bk, sRow);
+      const left = waiterOwes(o);
+      if (o.settledAt || left <= 0) continue;
+      const cost = o.total > 0 ? round2(full * Math.min(1, left / o.total)) : 0;
+      const key = `${bk}|${o.waiterId}`;
+      const cur = byWaiter.get(key) ?? { bk, name: o.waiterName, orders: 0, amount: 0, cost: 0 };
+      cur.orders += 1; cur.amount = round2(cur.amount + left); cur.cost = round2(cur.cost + cost);
+      byWaiter.set(key, cur);
     }
     waiters.push(...[...byWaiter.values()].sort((x, y) => y.amount - x.amount));
+    waiterSales.push(...salesBy.values());
+
+    // Repayments: money received in the period for bills whose day was already closed (they were reported as debts on their own day).
+    const byRepaid = new Map<string, number>();
+    const cols = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", a.from).lte("date", a.to)).take(MAX_DEBT_ORDERS + 1);
+    if (cols.length > MAX_DEBT_ORDERS) truncated = true;
+    for (const c of cols.slice(0, MAX_DEBT_ORDERS)) {
+      for (const orderId of c.orderIds) {
+        const o = await ctx.db.get("waiterOrders", orderId);
+        if (!o || o.tenantId !== tenantId || !o.closedAt || eatDay(o.createdAt) >= c.date) continue;
+        const bk = bkey(o.branchId);
+        if (sc.only && bk !== sc.only) continue;
+        const part = c.allocations?.find((x) => x.orderId === orderId)?.amount ?? round2(o.total - (o.assignedAmount ?? 0));
+        byRepaid.set(bk, round2((byRepaid.get(bk) ?? 0) + part));
+      }
+    }
+    repaid.push(...[...byRepaid.entries()].map(([bk, amount]) => ({ bk, amount })));
+
     // Customers' credit sales: the invoice is already booked as sales (and its cost), so cost stays 0 here; shown only as a debt list.
     const invoices = await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("invoiceDate", a.from).lte("invoiceDate", a.to)).take(MAX_DEBT_ORDERS + 1);
     if (invoices.length > MAX_DEBT_ORDERS) truncated = true;
@@ -147,7 +171,7 @@ export const debts = query({
       byClient.set(key, cur);
     }
     customers.push(...[...byClient.values()].sort((x, y) => y.amount - x.amount));
-    return { waiters, customers, truncated };
+    return { waiters, customers, waiterSales, repaid, truncated };
   },
 });
 
@@ -167,7 +191,7 @@ export const header = query({
 const itemValidator = v.object({ bk: v.string(), d: v.string(), t: v.string(), c: v.string(), a: v.number() });
 const debtValidator = v.object({ bk: v.string(), name: v.string(), orders: v.number(), amount: v.number(), cost: v.number() });
 const sectionValidator = v.object({ bk: v.string(), name: v.string(), rows: v.array(v.object({ g: v.string(), k: v.string(), label: v.string(), a: v.number(), b: v.number(), c: v.number() })), items: v.optional(v.array(itemValidator)) });
-const debtsValidator = v.object({ waiters: v.array(debtValidator), customers: v.array(debtValidator) });
+const debtsValidator = v.object({ waiters: v.array(debtValidator), customers: v.array(debtValidator), waiterSales: v.optional(v.array(v.object({ bk: v.string(), orders: v.number(), sales: v.number(), cost: v.number() }))), repaid: v.optional(v.array(v.object({ bk: v.string(), amount: v.number() }))) });
 
 export const save = mutation({
   args: { period: v.string(), startDate: v.string(), endDate: v.string(), scope: v.string(), scopeLabel: v.string(), title: v.string(), sections: v.array(sectionValidator), debts: v.optional(debtsValidator) },
@@ -181,8 +205,7 @@ export const save = mutation({
     if (sc.only ? a.scope !== sc.only : a.scope !== "all") throw new ConvexError("Idara ya ripoti hairuhusiwi kwa akaunti yako.");
     if (sc.only && a.sections.some((s) => s.bk !== sc.only)) throw new ConvexError("Ripoti ina data ya idara nyingine.");
     const sum = summarize(a.sections.flatMap((s) => s.rows));
-    const wd = a.debts?.waiters ?? [], cd = a.debts?.customers ?? [];
-    const all = statement(sum, round2(wd.reduce((n, d) => n + d.amount, 0)), round2(wd.reduce((n, d) => n + d.cost, 0)), round2(cd.reduce((n, d) => n + d.amount, 0)));
+    const all = statementOf(sum, a.debts);
     // The snapshot must stay under the document limit: drop the per-day rows first, then the itemised expense list (category totals stay).
     let sections = a.sections;
     const size = () => JSON.stringify({ sections, debts: a.debts }).length;
@@ -203,25 +226,19 @@ export const save = mutation({
   },
 });
 
-const eatDayOf = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10);
 async function closeDayDebts(ctx: MutationCtx, tenantId: Doc<"users">["tenantId"] & {}, sc: { only?: string | null; departments: Array<{ id: string }> }, from: string, to: string, reportId: Doc<"reportRuns">["_id"]) {
-  const branchIds = sc.only ? [ctx.db.normalizeId("branches", sc.only)] : [...sc.departments.map((d) => ctx.db.normalizeId("branches", d.id)), undefined];
   const now = new Date().toISOString();
-  let seen = 0;
-  for (const branchId of branchIds) {
-    if (branchId === null) continue;
-    for (const status of ["pending", "accepted", "printed"]) {
-      const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", (q) => q.eq("tenantId", tenantId).eq("branchId", branchId).eq("status", status)).take(MAX_DEBT_ORDERS + 1);
-      for (const o of rows) {
-        if (o.settledAt || o.cancelledAt || o.closedAt) continue;
-        const day = eatDayOf(o.createdAt);
-        if (day < from || day > to || waiterOwes(o) <= 0) continue;
-        if (++seen > MAX_DEBT_ORDERS) return;
-        await ctx.db.patch("waiterOrders", o._id, { closedAt: now, closedReportId: reportId });
-      }
-    }
+  // Read the bills of the closed day(s) by their date (never by status: settled bills keep their status, so a status scan fills up with old bills).
+  const orders = await ctx.db.query("waiterOrders").withIndex("by_tenant_created", (q) => q.eq("tenantId", tenantId).gte("createdAt", dayStartIso(from)).lt("createdAt", dayStartIso(addDays(to, 1)))).take(CLOSE_CAP + 1);
+  if (orders.length > CLOSE_CAP) throw new ConvexError("Siku hii ina oda nyingi mno kufungwa kwa mara moja; wasiliana na msimamizi.");
+  for (const o of orders) {
+    if (!(o.status === "pending" || o.status === "accepted" || o.status === "printed")) continue;
+    if (o.settledAt || o.cancelledAt || o.closedAt || waiterOwes(o) <= 0) continue;
+    if (sc.only && bkey(o.branchId) !== sc.only) continue;
+    await ctx.db.patch("waiterOrders", o._id, { closedAt: now, closedReportId: reportId });
   }
 }
+const CLOSE_CAP = 3000;
 
 /** Newest saved reports first (a user tied to one department sees only that department's reports). */
 export const history = query({
@@ -244,7 +261,7 @@ export const getRun = query({
     if (!r || r.tenantId !== user.tenantId) return null;
     const sc = await reportScope(ctx, user, undefined);
     if (sc.only && r.scope !== sc.only) return null;
-    return { _id: r._id, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scope: r.scope, scopeLabel: r.scopeLabel, createdByName: r.createdByName, createdAt: r.createdAt, ...(() => { const d = JSON.parse(r.data) as { sections: Array<{ bk: string; name: string; rows: Row[]; items?: ExpenseItem[] }>; debts?: { waiters: DebtRow[]; customers: DebtRow[] } }; return { sections: d.sections, debts: d.debts ?? null }; })() };
+    return { _id: r._id, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scope: r.scope, scopeLabel: r.scopeLabel, createdByName: r.createdByName, createdAt: r.createdAt, ...(() => { const d = JSON.parse(r.data) as { sections: Array<{ bk: string; name: string; rows: Row[]; items?: ExpenseItem[] }>; debts?: { waiters: DebtRow[]; customers: DebtRow[]; waiterSales?: WaiterSalesRow[]; repaid?: RepaidRow[] } }; return { sections: d.sections, debts: d.debts ?? null }; })() };
   },
 });
 

@@ -67,4 +67,7 @@ export const PAYDATE_DICT: Record<string, { sw: string; en: string }> = {
   "Inarekebisha…": { sw: "Inarekebisha…", en: "Fixing…" },
   "Rekebisha mpangilio wa invoice / bili / risiti": { sw: "Rekebisha mpangilio wa invoice / bili / risiti", en: "Fix invoice / bill / receipt layout" },
   "Inaongeza jina la biashara, upana wa karatasi na maandishi ya chini kwa biashara zinazokosa. Hakuna kilichowekwa tayari kinabadilishwa.": { sw: "Inaongeza jina la biashara, upana wa karatasi na maandishi ya chini kwa biashara zinazokosa. Hakuna kilichowekwa tayari kinabadilishwa.", en: "Adds the business name, paper width and footer to businesses that lack them. Nothing already set is changed." },
+  "Hii ni marejesho ya deni la siku iliyofungwa: fedha zitahesabiwa leo kama marejesho, haziingii kwenye mauzo ya siku iliyofungwa.": { sw: "Hii ni marejesho ya deni la siku iliyofungwa: fedha zitahesabiwa leo kama marejesho, haziingii kwenye mauzo ya siku iliyofungwa.", en: "This is a repayment of a closed day's debt: the money is counted today as a repayment and does not change the sales of the closed day." },
+  "Fedha zitahesabiwa leo (marejesho)": { sw: "Fedha zitahesabiwa leo (marejesho)", en: "The money will be counted today (repayment)" },
+  "Ikiwemo marejesho ya madeni ya siku zilizofungwa": { sw: "Ikiwemo marejesho ya madeni ya siku zilizofungwa", en: "Including repayments of closed days' debts" },
 };

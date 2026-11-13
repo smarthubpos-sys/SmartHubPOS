@@ -154,8 +154,13 @@ export const collect = mutation({
       // before the day of the oldest bill being paid. `createdAt` keeps the real moment it was recorded.
       const orderDays = [...new Set(orders.map((o) => eatDay(o.createdAt)))].sort();
       const oldestDay = orderDays[0];
-      if (args.paymentDate === undefined && orderDays.length > 1) throw new ConvexError(`Oda ni za siku tofauti (${orderDays.join(", ")}). Pokea siku moja moja, au chagua tarehe ya malipo mwenyewe.`);
-      const date = args.paymentDate === undefined ? oldestDay : assertDate(args.paymentDate, "Tarehe ya malipo");
+      // CLOSED DAY: bills whose day report was already closed were reported as debts on their own day. Money received for them now is a REPAYMENT:
+      // it is counted on the day it is received (today), never inside the closed day. Bills of days that are still open keep their sale day.
+      const closedCount = orders.filter((o) => !!o.closedAt).length;
+      if (closedCount > 0 && closedCount < orders.length) throw new ConvexError("Madeni ya siku iliyofungwa (Closed debts) yapokelewe kando na oda za kawaida.");
+      const allClosed = orders.length > 0 && closedCount === orders.length;
+      if (!allClosed && args.paymentDate === undefined && orderDays.length > 1) throw new ConvexError(`Oda ni za siku tofauti (${orderDays.join(", ")}). Pokea siku moja moja, au chagua tarehe ya malipo mwenyewe.`);
+      const date = allClosed ? today : args.paymentDate === undefined ? oldestDay : assertDate(args.paymentDate, "Tarehe ya malipo");
       if (date > today) throw new ConvexError("Tarehe ya malipo haiwezi kuwa ya baadaye.");
       if (date < oldestDay) throw new ConvexError(`Tarehe ya malipo haiwezi kuwa kabla ya tarehe ya oda (${oldestDay}).`);
       const collectionId = await ctx.db.insert("waiterCollections", {

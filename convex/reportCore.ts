@@ -47,16 +47,23 @@ export function addRow(acc: Acc, r: Row) {
 export const mergeRows = (acc: Acc, rows: Row[]) => { for (const r of rows) addRow(acc, r); return acc; };
 export const accRows = (acc: Acc): Row[] => [...acc.values()].filter((r) => r.a !== 0 || r.b !== 0 || r.c !== 0);
 
+/** Journal entries made when the cashier receives (or returns) a waiter's money. */
+export const isWaiterMoneyEntry = (sourceType?: string) => sourceType === "waiter_sale" || sourceType === "waiter_sale_void";
+
 /** Journal entry -> additive rows. */
 export function entryRows(e: JEntry, acc: Acc = new Map()): Acc {
   const row = (g: string, k: string, label: string, a = 0, b = 0, c = 0) => addRow(acc, { g, k, label, a, b, c });
   row("stat", "entries", "", 1);
-  if (e.sourceType === "sale" || e.sourceType === "waiter_sale") row("stat", "invoices", "", 1);
+  // Selling Point (waiter) money: the journal is dated the day the money was RECEIVED, but a sale belongs to the day it was SOLD.
+  // So for these entries only the MONEY (CASH / LIPA / BANK) is read here; their sales and cost of goods come from the orders (see waiterSalesOf).
+  const moneyOnly = isWaiterMoneyEntry(e.sourceType);
+  if (e.sourceType === "sale") row("stat", "invoices", "", 1);
   if (e.sourceType === "sale_void") row("stat", "voids", "", 1);
   if (e.sourceType === "sale_return") row("stat", "returns", "", 1);
   let daySales = 0, dayOpex = 0, dayCogs = 0, moneyIn = 0, moneyOut = 0;
   for (const l of e.lines) {
     const debit = l.debit || 0, credit = l.credit || 0;
+    if (moneyOnly && !isMoneyLine(l)) continue;
     if (l.type === "revenue") {
       const amount = credit - debit;
       row("rev", l.code, l.name, amount);
@@ -142,8 +149,10 @@ export type Statement = {
 };
 
 /** Expenses are always paid out of the profit first; only what the profit cannot cover is taken from the capital. */
-export function statement(s: Summary, waiterDebt: number, waiterDebtCost: number, customerDebt = 0): Statement {
-  const debts = round2(waiterDebt + customerDebt);
+export function statement(s: Summary, waiterDebt: number, waiterDebtCost: number, customerDebt = 0, waiterOwed = waiterDebt): Statement {
+  // waiterDebt / waiterDebtCost = the waiters' sales added on top of the booked sales (old reports: only the unpaid part;
+  // new reports: ALL Selling Point sales of the period). waiterOwed = what the waiters still owe (shown as debt).
+  const debts = round2(waiterOwed + customerDebt);
   // customer credit sales are already inside the booked sales/cost; only the waiters' unpaid orders are added on top.
   const sales = round2(s.netSales + waiterDebt);
   const capital = round2(s.cogs + waiterDebtCost);
@@ -153,6 +162,28 @@ export function statement(s: Summary, waiterDebt: number, waiterDebtCost: number
   const capitalEaten = profitAfter < 0 ? Math.min(capital, round2(-profitAfter)) : 0;
   return { sales, collected: s.netSales, debts, capital, grossProfit, otherIncome: s.otherIncome, expenses, profitAfter, capitalEaten, capitalLeft: round2(capital - capitalEaten), profitLeft: profitAfter > 0 ? profitAfter : 0 };
 }
+
+export type WaiterSalesRow = { bk: string; orders: number; sales: number; cost: number };
+export type RepaidRow = { bk: string; amount: number };
+export type DebtsData = { waiters: DebtRow[]; customers: DebtRow[]; waiterSales?: WaiterSalesRow[]; repaid?: RepaidRow[] };
+
+/**
+ * The statement of a report (all departments, or one department `bk`), from its journal summary and its debts block.
+ * New reports carry `waiterSales` (every Selling Point sale of the period by day of sale, paid or not) - exactly what the Sales report counts.
+ * Old saved reports do not: they keep the old rule (booked sales + the waiters' unpaid orders).
+ */
+export function statementOf(s: Summary, d: DebtsData | null | undefined, bk?: string): Statement {
+  const keep = <T extends { bk: string }>(rows: T[]) => (bk === undefined ? rows : rows.filter((r) => r.bk === bk));
+  const sum = <T,>(rows: T[], f: (r: T) => number) => round2(rows.reduce((n, r) => n + f(r), 0));
+  const w = keep(d?.waiters ?? []), c = keep(d?.customers ?? []);
+  const owed = sum(w, (r) => r.amount), customerDebt = sum(c, (r) => r.amount);
+  if (!d?.waiterSales) return statement(s, owed, sum(w, (r) => r.cost), customerDebt);
+  const ws = keep(d.waiterSales);
+  return statement(s, sum(ws, (r) => r.sales), sum(ws, (r) => r.cost), customerDebt, owed);
+}
+
+/** Money received in the period for debts of days that were already closed (repayments). */
+export const repaidTotal = (d: DebtsData | null | undefined, bk?: string) => round2((d?.repaid ?? []).filter((r) => bk === undefined || r.bk === bk).reduce((n, r) => n + r.amount, 0));
 
 /** Sums several summaries' source rows into one (used for the "All departments" total column). */
 export const sumSections = (sections: Row[][]): Row[] => accRows(sections.reduce((acc, rows) => mergeRows(acc, rows), new Map<string, Row>() as Acc));

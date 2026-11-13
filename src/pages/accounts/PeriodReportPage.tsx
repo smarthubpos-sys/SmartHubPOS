@@ -11,11 +11,11 @@ import { formatDate, formatNumber, localDate } from "@/lib/format.ts";
 import { errorText, getLocale, tr } from "@/lib/i18n.ts";
 import { printElement } from "@/lib/print-area.ts";
 import { scrollAppToTop } from "@/lib/app-scroll.ts";
-import { chunkRange, halve, periodRange, statement, sumSections, summarize, type DebtRow, type ExpenseItem, type Period, type Row, type Statement, type Summary } from "@/convex/reportCore.ts";
+import { chunkRange, halve, periodRange, repaidTotal, statementOf, sumSections, summarize, type DebtRow, type DebtsData, type ExpenseItem, type Period, type Row, type Statement, type WaiterSalesRow } from "@/convex/reportCore.ts";
 import { toast } from "sonner";
 
 type Section = { bk: string; name: string; rows: Row[]; items?: ExpenseItem[] };
-type Debts = { waiters: DebtRow[]; customers: DebtRow[] };
+type Debts = DebtsData;
 type Meta = { period: Period; from: string; to: string; scopeLabel: string; title: string; generatedAt: string; preparedBy: string };
 type Header = { businessName: string; address: string; phone: string; email: string; tin: string; currencySymbol: string; decimalPlaces: number; preparedBy: string };
 
@@ -42,11 +42,10 @@ function ReportDocument({ meta, sections, debts, header, innerRef }: { meta: Met
   const sum = (rows: DebtRow[], f: (r: DebtRow) => number) => rows.reduce((n, r) => n + f(r), 0);
 
   const total = useMemo(() => summarize(sumSections(sections.map((x) => x.rows))), [sections]);
-  const st: Statement = useMemo(() => statement(total, sum(W, (r) => r.amount), sum(W, (r) => r.cost), sum(C, (r) => r.amount)), [total, W, C]);
-  const perDept = useMemo(() => sections.length < 2 ? [] : sections.map((x) => {
-    const w = W.filter((r) => r.bk === x.bk), c = C.filter((r) => r.bk === x.bk);
-    return { bk: x.bk, name: x.name, st: statement(summarize(x.rows), sum(w, (r) => r.amount), sum(w, (r) => r.cost), sum(c, (r) => r.amount)) };
-  }), [sections, W, C]);
+  // Sales = booked sales + ALL Selling Point sales of the period (by day of sale, paid or not), the same rule as the Sales report.
+  const st: Statement = useMemo(() => statementOf(total, debts), [total, debts]);
+  const repaid = useMemo(() => repaidTotal(debts), [debts]);
+  const perDept = useMemo(() => sections.length < 2 ? [] : sections.map((x) => ({ bk: x.bk, name: x.name, st: statementOf(summarize(x.rows), debts, x.bk) })), [sections, debts]);
 
   // Expenses exactly as entered; an old saved report without the list falls back to its category totals.
   const items = useMemo(() => {
@@ -179,6 +178,7 @@ function ReportDocument({ meta, sections, debts, header, innerRef }: { meta: Met
           ))}
         </div>
         <p className="mt-2 text-right text-[11px] text-neutral-600">{tr("Jumla iliyopokelewa")}: <b className="tabular-nums text-neutral-900">{acct(total.channels.total, d)}</b></p>
+        {repaid > 0 && <p className="text-right text-[11px] text-neutral-600">{tr("Ikiwemo marejesho ya madeni ya siku zilizofungwa")}: <b className="tabular-nums text-neutral-900">{acct(repaid, d)}</b></p>}
       </section>
 
       {/* By department (only when the report covers more than one) */}
@@ -254,15 +254,23 @@ export default function PeriodReportPage() {
       setProgress({ done: 0, total: queue.length });
       const byBranch = new Map<string, Map<string, Row>>();
       const itemsBy = new Map<string, ExpenseItem[]>();
+      const wMap = new Map<string, DebtRow>(), cMap = new Map<string, DebtRow>(), sMap = new Map<string, WaiterSalesRow>(), rMap = new Map<string, number>();
+      const addDebt = (m: Map<string, DebtRow>, r: DebtRow) => { const k = `${r.bk}|${r.name}`; const c = m.get(k); if (c) { c.orders += r.orders; c.amount += r.amount; c.cost += r.cost; } else m.set(k, { ...r }); };
       let done = 0;
       while (queue.length) {
         const piece = queue.shift()!;
         const res = await convex.query(api.periodReport.chunk, { from: piece.from, to: piece.to, scope: effectiveScope });
-        if (res.tooBig) {
+        // Selling Point sales, debts and repayments of the same piece (read from the orders, by day of sale).
+        const dres = res.tooBig ? null : await convex.query(api.periodReport.debts, { from: piece.from, to: piece.to, scope: effectiveScope });
+        if (res.tooBig || dres?.truncated) {
           const parts = halve(piece.from, piece.to);
           if (!parts) throw new Error(tr("Siku {0} ina miamala mingi mno kwa ripoti moja.", [piece.from]));
           queue.unshift(...parts); setProgress((p) => ({ ...p, total: p.total + 1 })); continue;
         }
+        for (const r of dres?.waiters ?? []) addDebt(wMap, r);
+        for (const r of dres?.customers ?? []) addDebt(cMap, r);
+        for (const r of dres?.waiterSales ?? []) { const c = sMap.get(r.bk); if (c) { c.orders += r.orders; c.sales += r.sales; c.cost += r.cost; } else sMap.set(r.bk, { ...r }); }
+        for (const r of dres?.repaid ?? []) rMap.set(r.bk, (rMap.get(r.bk) ?? 0) + r.amount);
         for (const s of res.sections) {
           let acc = byBranch.get(s.bk); if (!acc) { acc = new Map(); byBranch.set(s.bk, acc); }
           for (const r of s.rows) {
@@ -273,8 +281,14 @@ export default function PeriodReportPage() {
         }
         done++; setProgress((p) => ({ ...p, done }));
       }
-      const debtsRes = await convex.query(api.periodReport.debts, { from, to, scope: effectiveScope });
-      const debts: Debts = { waiters: debtsRes.waiters, customers: debtsRes.customers };
+      const r2 = (n: number) => Math.round(n * 100) / 100;
+      const fix = (r: DebtRow): DebtRow => ({ ...r, amount: r2(r.amount), cost: r2(r.cost) });
+      const debts: Debts = {
+        waiters: [...wMap.values()].map(fix).sort((x, y) => y.amount - x.amount),
+        customers: [...cMap.values()].map(fix).sort((x, y) => y.amount - x.amount),
+        waiterSales: [...sMap.values()].map((r) => ({ ...r, sales: r2(r.sales), cost: r2(r.cost) })),
+        repaid: [...rMap.entries()].map(([bk, amount]) => ({ bk, amount: r2(amount) })),
+      };
       // One section per department (all of them, even those with no activity, so the report always shows every department asked for).
       const wanted = effectiveScope === "all" ? [...departments.map((x) => x.id), ...(byBranch.has("none") ? ["none"] : [])] : [effectiveScope];
       const sections: Section[] = (wanted.length ? wanted : ["none"]).map((bk) => ({ bk, name: departments.length === 0 ? header.businessName || tr("Biashara") : nameOf(bk), rows: [...(byBranch.get(bk)?.values() ?? [])].map((r) => ({ ...r, a: Math.round(r.a * 100) / 100, b: Math.round(r.b * 100) / 100, c: Math.round(r.c * 100) / 100 })), items: itemsBy.get(bk) ?? [] }));
