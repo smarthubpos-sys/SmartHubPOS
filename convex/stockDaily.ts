@@ -39,6 +39,12 @@ export const closingStock = query({
       ? await ctx.db.query("stockMovements").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).lte("movementDate", date)).collect()
       : (await scopedRows(ctx, user, "stockMovements")).filter((m) => m.movementDate <= date);
     const moves = filterScoped(user, movesRaw);
+    // What the stock-take screen compares the count with: today's quantity minus every movement after the chosen date (same basis the stock take saves with).
+    const laterRaw = tenantId
+      ? await ctx.db.query("stockMovements").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gt("movementDate", date)).collect()
+      : (await scopedRows(ctx, user, "stockMovements")).filter((m) => m.movementDate > date);
+    const later = new Map<string, number>();
+    for (const m of filterScoped(user, laterRaw)) later.set(String(m.productId), (later.get(String(m.productId)) ?? 0) + m.qtyIn - m.qtyOut);
 
     type Acc = { opening: number } & Record<Bucket, number>;
     const acc = new Map<string, Acc>();
@@ -60,8 +66,9 @@ export const closingStock = query({
         opening: round8(g.opening), purchases: round8(g.purchases), returns: round8(g.returns), adjust: round8(g.adjust),
         production: round8(g.production), transfer: round8(g.transfer), other: round8(g.other), sold: round8(g.sold),
         closing, cost, value: round2(closing * cost),
+        systemQty: round8(p.currentQty - (later.get(String(p._id)) ?? 0)),
       };
-    }).filter((r) => [r.opening, r.purchases, r.returns, r.adjust, r.production, r.transfer, r.other, r.sold, r.closing].some((x) => Math.abs(x) > 1e-8))
+    }).filter((r) => [r.opening, r.purchases, r.returns, r.adjust, r.production, r.transfer, r.other, r.sold, r.closing, r.systemQty].some((x) => Math.abs(x) > 1e-8))
       .sort((x, y) => x.name.localeCompare(y.name));
 
     const sum = (f: (r: (typeof rows)[number]) => number) => round2(rows.reduce((n, r) => n + f(r), 0));

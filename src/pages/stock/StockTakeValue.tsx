@@ -41,16 +41,21 @@ export function StockTakeScreen() {
   const [title, setTitle] = useState(tr("Stock take"));
   const [busy, setBusy] = useState(false);
   const sheetRef = useRef<HTMLDivElement>(null);
+  const day = useQuery(api.stockDaily.closingStock, { date });
+  const dayRows = useMemo(() => new Map((day?.rows ?? []).map((r) => [String(r.productId), r])), [day]);
 
   const products = useMemo(() => (data?.products ?? []).filter((p) => p.isActive), [data]);
+  // "Mfumo" = the stock the system had on the chosen date (not just today's), so counting for yesterday compares with yesterday.
+  const sysQty = (id: string) => dayRows.get(id)?.systemQty ?? 0;
   const lines = useMemo(() => products.map((p) => {
     const raw = counted[p._id];
     const has = raw !== undefined && raw !== "";
-    const diff = has ? round2(num(raw) - p.currentQty) : 0;
+    const sys = dayRows.get(String(p._id))?.systemQty ?? 0;
+    const diff = has ? round2(num(raw) - sys) : 0;
     return { p, has, diff, value: round2(Math.abs(diff) * p.cost) };
-  }), [products, counted]);
+  }), [products, counted, dayRows]);
 
-  if (!data || !rights.ready) return loading;
+  if (!data || !rights.ready || !day) return loading;
 
   const shown = lines.filter(({ p, diff, has }) => (!group || p.groupId === group)
     && (!search.trim() || `${p.name} ${p.itemCode} ${p.barcode}`.toLowerCase().includes(search.trim().toLowerCase()))
@@ -99,7 +104,9 @@ export function StockTakeScreen() {
           </div>
           <div className="flex flex-wrap items-end gap-3 print:hidden">
             <label className="grid gap-1 text-xs">{tr("Jina / sababu ya stock take")}<Input className="w-64" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-            <label className="grid gap-1 text-xs">{tr("Tarehe")}<Input type="date" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} /></label>
+            <label className="grid gap-1 text-xs">{tr("Tarehe")}<Input type="date" value={date} max={today()} onChange={(e) => e.target.value && setDate(e.target.value)} /></label>
+            <Button type="button" variant="outline" size="sm" onClick={() => setDate(new Date(Date.parse(`${today()}T00:00:00Z`) - 86400000).toISOString().slice(0, 10))}>{tr("Jana")}</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setDate(today())}>{tr("Leo")}</Button>
             <label className="grid gap-1 text-xs">{tr("Group")}
               <select className={selectClass} value={group} onChange={(e) => setGroup(e.target.value)}><option value="">{tr("Zote")}</option>{data.groups.map((g) => <option key={g._id} value={g._id}>{g.name}</option>)}</select>
             </label>
@@ -113,7 +120,7 @@ export function StockTakeScreen() {
             <Stat label={tr("Thamani ya ziada")} value={overage} />
           </div>
           <div className="flex flex-wrap gap-2 print:hidden">
-            <Button variant="outline" size="sm" onClick={() => setCounted((o) => ({ ...o, ...Object.fromEntries(shown.filter((l) => !l.has).map(({ p }) => [p._id, String(p.currentQty)])) }))}>{tr("Jaza kiasi cha mfumo kwa zilizobaki")}</Button>
+            <Button variant="outline" size="sm" onClick={() => setCounted((o) => ({ ...o, ...Object.fromEntries(shown.filter((l) => !l.has).map(({ p }) => [p._id, String(sysQty(String(p._id)))])) }))}>{tr("Jaza kiasi cha mfumo kwa zilizobaki")}</Button>
             <Button variant="outline" size="sm" onClick={() => setCounted({})}>{tr("Futa hesabu zote")}</Button>
             <Button variant="outline" size="sm" onClick={() => printElement(sheetRef.current, "A4")}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha karatasi ya kuhesabia")}</Button>
             <Button size="sm" disabled={busy || !entered.length} onClick={() => void submit()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi Stock Take")}</Button>
@@ -121,15 +128,18 @@ export function StockTakeScreen() {
           <div ref={sheetRef} className="max-h-[32rem] overflow-auto rounded-md border">
             <div className="hidden border-b p-2 text-sm font-semibold print:block">{title} — {date}</div>
             <table className="w-full text-left text-sm">
-              <thead className="sticky top-0 bg-muted/60"><tr>{[tr("Code"), tr("Bidhaa"), tr("Group"), tr("Mfumo"), tr("Iliyohesabiwa"), tr("Tofauti"), tr("Thamani ya tofauti")].map((h, i) => <th key={h} className={`p-2 font-semibold ${i >= 3 ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
+              <thead className="sticky top-0 bg-muted/60"><tr>{[tr("Code"), tr("Bidhaa"), tr("Group"), tr("Mwanzo"), tr("Imeingia"), tr("Mauzo"), tr("Mfumo"), tr("Iliyohesabiwa"), tr("Tofauti"), tr("Thamani ya tofauti")].map((h, i) => <th key={h} className={`p-2 font-semibold ${i >= 3 ? "text-right" : ""}`}>{h}</th>)}</tr></thead>
               <tbody>
-                {shown.length === 0 && <tr><td colSpan={7} className="p-3 text-muted-foreground">{tr("Hakuna bidhaa inayolingana.")}</td></tr>}
+                {shown.length === 0 && <tr><td colSpan={10} className="p-3 text-muted-foreground">{tr("Hakuna bidhaa inayolingana.")}</td></tr>}
                 {shown.map(({ p, has, diff, value }) => (
                   <tr key={p._id} className="border-t">
                     <td className="p-2 text-muted-foreground">{p.itemCode}</td>
                     <td className="p-2 font-medium">{p.name}</td>
                     <td className="p-2 text-muted-foreground">{p.groupName}</td>
-                    <td className="p-2 text-right tabular-nums">{fmt(p.currentQty, 4)} {p.unitName}</td>
+                    <td className="p-2 text-right tabular-nums">{fmt(dayRows.get(String(p._id))?.opening ?? 0, 4)}</td>
+                    <td className="p-2 text-right tabular-nums">{fmt(((r) => (r ? r.purchases + r.returns + r.adjust + r.production + r.transfer + r.other : 0))(dayRows.get(String(p._id))), 4)}</td>
+                    <td className="p-2 text-right tabular-nums">{fmt(dayRows.get(String(p._id))?.sold ?? 0, 4)}</td>
+                    <td className="p-2 text-right tabular-nums">{fmt(sysQty(String(p._id)), 4)} {p.unitName}</td>
                     <td className="p-2 text-right"><Input className="ml-auto h-8 w-28 text-right print:border-b print:border-black" type="number" step="any" min="0" inputMode="decimal" value={counted[p._id] ?? ""} onChange={(e) => setCounted((o) => ({ ...o, [p._id]: e.target.value }))} aria-label={`${tr("Iliyohesabiwa")} ${p.name}`} /></td>
                     <td className={`p-2 text-right tabular-nums ${has && diff < 0 ? "text-destructive" : has && diff > 0 ? "text-emerald-700" : ""}`}>{has ? `${diff > 0 ? "+" : ""}${fmt(diff, 4)}` : ""}</td>
                     <td className={`p-2 text-right tabular-nums ${has && diff < 0 ? "text-destructive" : ""}`}>{has && diff !== 0 ? fmt(diff < 0 ? -value : value) : ""}</td>

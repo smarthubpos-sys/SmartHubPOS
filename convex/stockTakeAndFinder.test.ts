@@ -25,6 +25,28 @@ async function setup() {
   return { t, ids, manager: as(ids.manager), counter: as(ids.counter), cashier: as(ids.cashier), waiter: as(ids.waiter) };
 }
 
+describe("Stock take of a past day compares with that day's stock", () => {
+  it("shows yesterday's stock (not today's) and carries the difference to today's quantity", async () => {
+    const { t, ids, counter } = await setup();
+    const NEXT = "2026-11-06";
+    // Bia: 10 now; 4 came in AFTER DAY -> on DAY the system had 6.
+    await t.run(async (ctx) => {
+      const p = await ctx.db.get("products", ids.bia);
+      await ctx.db.insert("stockMovements", { tenantId: p!.tenantId, movementDate: NEXT, productId: ids.bia, movementType: "purchase", qtyIn: 4, qtyOut: 0, runningBalance: 10, createdBy: ids.counter });
+    });
+    const day = await counter.query(api.stockDaily.closingStock, { date: DAY });
+    expect(day.rows.find((r) => r.productId === ids.bia)?.systemQty).toBe(6);
+    const r = await counter.mutation(api.inventory.stockTake, { adjustmentDate: DAY, reason: "Stock take ya jana", lines: [{ productId: ids.bia, counted: 5 }] });
+    expect(r).toMatchObject({ adjusted: 1, shortageValue: 1000 });
+    expect((await t.run(async (ctx) => ctx.db.get("products", ids.bia)))?.currentQty).toBe(9); // 10 now - 1 missing on DAY
+    const adj = await t.run(async (ctx) => ctx.db.query("stockAdjustments").collect());
+    expect(adj[0]).toMatchObject({ qtyBefore: 6, qtyAfter: 5, adjustmentQty: -1 });
+    // counting exactly what the system had that day changes nothing
+    const same = await counter.mutation(api.inventory.stockTake, { adjustmentDate: DAY, reason: "Stock take", lines: [{ productId: ids.bia, counted: 5 }] });
+    expect(same.unchanged).toBe(1);
+  });
+});
+
 describe("Stock take: count many products, correct only the differences", () => {
   it("adjusts the products that differ, skips equal ones, shares one number and posts the value", async () => {
     const { t, ids, manager, counter } = await setup();

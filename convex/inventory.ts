@@ -12,24 +12,28 @@ type AdjustUser = Doc<"users">;
 type AdjustScope = Awaited<ReturnType<typeof resolveWriteScope>>;
 
 /** One stock correction: product quantity, adjustment record, stock movement, ledger entry and audit line. Shared by Quantity Adjustment and Stock Take. */
-async function applyAdjustment(ctx: AdjustCtx, user: AdjustUser, scope: AdjustScope, args: { productId: Doc<"products">["_id"]; newQty: number; reason: string; adjustmentDate: string; reference?: string }) {
+async function applyAdjustment(ctx: AdjustCtx, user: AdjustUser, scope: AdjustScope, args: { productId: Doc<"products">["_id"]; newQty: number; reason: string; adjustmentDate: string; reference?: string; baseQty?: number }) {
   assertFinite(args.newQty, "Stock mpya");
   if (!validQty(args.newQty) || !args.reason.trim()) throw new ConvexError("Weka stock halali na sababu ya marekebisho.");
   const p = await ctx.db.get("products", args.productId);
   if (!canAccessRecord(user, p) || !p) throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");
-  const delta = Math.round((args.newQty - p.currentQty) * 1e8) / 1e8;
+  // baseQty = what the system showed on the adjustment date (stock take of a past day); the difference is then carried to today's quantity.
+  const before = args.baseQty ?? p.currentQty;
+  const delta = Math.round((args.newQty - before) * 1e8) / 1e8;
   if (delta === 0) throw new ConvexError("Kiasi kipya ni sawa na kilichopo; hakuna cha kurekebisha.");
+  const finalQty = args.baseQty === undefined ? args.newQty : Math.round((p.currentQty + delta) * 1e8) / 1e8;
+  if (!validQty(finalQty)) throw new ConvexError(`Marekebisho ya tarehe hii yangeshusha stock ya sasa ya ${p.name} chini ya sifuri; angalia mauzo ya baada ya tarehe hiyo.`);
   const unitCost = p.weightedAvgCost ?? p.lastPurchaseCost ?? 0;
-  await ctx.db.patch("products", args.productId, { currentQty: args.newQty });
-  const id = await ctx.db.insert("stockAdjustments", { ...scope, adjustmentDate: args.adjustmentDate, productId: args.productId, qtyBefore: p.currentQty, adjustmentQty: delta, qtyAfter: args.newQty, reason: args.reason, reference: args.reference, status: "approved", requestedBy: user._id, approvedBy: user._id, approvedAt: new Date().toISOString() });
-  await ctx.db.insert("stockMovements", { ...scope, movementDate: args.adjustmentDate, productId: args.productId, movementType: "adjustment", referenceId: String(id), referenceType: "stockAdjustment", qtyIn: Math.max(delta, 0), qtyOut: Math.max(-delta, 0), runningBalance: args.newQty, unitCost, notes: args.reason, createdBy: user._id });
+  await ctx.db.patch("products", args.productId, { currentQty: finalQty });
+  const id = await ctx.db.insert("stockAdjustments", { ...scope, adjustmentDate: args.adjustmentDate, productId: args.productId, qtyBefore: before, adjustmentQty: delta, qtyAfter: args.newQty, reason: args.reason, reference: args.reference, status: "approved", requestedBy: user._id, approvedBy: user._id, approvedAt: new Date().toISOString() });
+  await ctx.db.insert("stockMovements", { ...scope, movementDate: args.adjustmentDate, productId: args.productId, movementType: "adjustment", referenceId: String(id), referenceType: "stockAdjustment", qtyIn: Math.max(delta, 0), qtyOut: Math.max(-delta, 0), runningBalance: finalQty, unitCost, notes: args.reason, createdBy: user._id });
   const value = roundMoney(Math.abs(delta) * unitCost);
   if (value > 0) {
     const inventory = await getSystemAccount(ctx, scope, "1200", "Inventory", "asset");
     const adjustment = await getSystemAccount(ctx, scope, delta > 0 ? "5100" : "5200", delta > 0 ? "Stock adjustment gain" : "Stock shrinkage expense", "expense");
     await postSystemJournal(ctx, { scope, userId: user._id, date: args.adjustmentDate, reference: `STOCK-${String(id)}`, description: `Stock adjustment: ${p.name} — ${args.reason}`, sourceType: "stock_adjustment", sourceId: String(id), lines: delta > 0 ? [{ accountId: inventory, debit: value, credit: 0, description: "Stock increase" }, { accountId: adjustment, debit: 0, credit: value, description: "Stock adjustment gain" }] : [{ accountId: adjustment, debit: value, credit: 0, description: "Stock shrinkage" }, { accountId: inventory, debit: 0, credit: value, description: "Stock decrease" }] });
   }
-  await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "stock_adjustment", module: "inventory", referenceId: String(id), referenceType: "stockAdjustment", details: `${p.name}: ${p.currentQty} -> ${args.newQty}. ${args.reason}`, timestamp: new Date().toISOString(), result: "success" });
+  await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "stock_adjustment", module: "inventory", referenceId: String(id), referenceType: "stockAdjustment", details: `${p.name}: ${before} -> ${args.newQty}. ${args.reason}`, timestamp: new Date().toISOString(), result: "success" });
   return { id, delta, value };
 }
 
@@ -79,19 +83,27 @@ export const stockTake = mutation({
       seller = await ctx.db.get("users", a.sellShortageTo);
       if (!seller || seller.tenantId !== scope.tenantId || seller.isActive === false || ["super_admin", "superadmin"].includes(normalizeRole(seller.role))) throw new ConvexError("Mtumiaji aliyechaguliwa hayupo kwenye biashara hii.");
     }
+    // Stock on the stock-take date = today's quantity minus everything that moved AFTER that date (same basis as the Closing Stock report).
+    const later = new Map<string, number>();
+    if (scope.tenantId) {
+      const tenantId = scope.tenantId;
+      const after = await ctx.db.query("stockMovements").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gt("movementDate", a.adjustmentDate)).collect();
+      for (const m of after) later.set(String(m.productId), (later.get(String(m.productId)) ?? 0) + m.qtyIn - m.qtyOut);
+    }
     for (const l of a.lines) {
       const p = await ctx.db.get("products", l.productId);
       if (!p || !canAccessRecord(user, p)) throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");
-      if (Math.round((l.counted - p.currentQty) * 1e8) === 0) { unchanged++; continue; }
-      if (seller && l.counted < p.currentQty) {
-        const qty = Math.round((p.currentQty - l.counted) * 1e8) / 1e8;
+      const systemQty = Math.round((p.currentQty - (later.get(String(p._id)) ?? 0)) * 1e8) / 1e8;
+      if (Math.round((l.counted - systemQty) * 1e8) === 0) { unchanged++; continue; }
+      if (seller && l.counted < systemQty) {
+        const qty = Math.round((systemQty - l.counted) * 1e8) / 1e8;
         if (!Number.isFinite(p.sellingPrice) || p.sellingPrice <= 0) throw new ConvexError(`Bei ya kuuzia ya ${p.name} haijawekwa; weka bei kwanza kabla ya kuuza upungufu.`);
         soldLines.push({ productId: p._id, productName: p.name, qty, unitPrice: p.sellingPrice, lineTotal: roundMoney(qty * p.sellingPrice) });
         adjusted++;
         shortageValue += roundMoney(qty * (p.weightedAvgCost ?? p.lastPurchaseCost ?? 0));
         continue;
       }
-      const r = await applyAdjustment(ctx, user, scope, { productId: l.productId, newQty: l.counted, reason: `${reason} (${reference})`, adjustmentDate: a.adjustmentDate, reference });
+      const r = await applyAdjustment(ctx, user, scope, { productId: l.productId, newQty: l.counted, reason: `${reason} (${reference})`, adjustmentDate: a.adjustmentDate, reference, baseQty: systemQty });
       adjusted++;
       if (r.delta < 0) shortageValue += r.value; else overageValue += r.value;
     }
