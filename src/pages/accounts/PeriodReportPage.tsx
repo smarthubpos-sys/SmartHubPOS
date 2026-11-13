@@ -346,7 +346,7 @@ export default function PeriodReportPage() {
   <div className="flex justify-end gap-2">
     <Button size="sm" variant="outline" onClick={() => { setResult(null); setOpenId(h._id); scrollAppToTop("smooth"); }}>{tr("Fungua")}</Button>
     {(superAdminInfo?.isSuperAdmin === true || canDeleteReports) && <Button size="sm" variant="destructive" onClick={async () => {
-      if (!window.confirm(`Una uhakika unataka kufuta ripoti "${periodText(h.period as Period, h.startDate, h.endDate)}"? Kitendo hiki hakiwezi kutenguliwa.`)) return;
+      if (!window.confirm(tr("Una uhakika unataka kufuta ripoti \"{0}\"? Kitendo hiki hakiwezi kutenguliwa.", [periodText(h.period as Period, h.startDate, h.endDate)]))) return;
       try {
         await deleteRun({ id: h._id });
         if (openId === h._id) { setOpenId(null); setResult(null); }

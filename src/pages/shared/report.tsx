@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { errorText, tr } from "@/lib/i18n.ts";
+import { errorText, getLang, tr, trMessage } from "@/lib/i18n.ts";
 import { printElement, readPaper, savePaper, type Paper } from "@/lib/print-area.ts";
 
 import { daysAgo, fmt, monthStart, num, round2, today, type Row } from "./report-utils.ts";
@@ -85,7 +85,10 @@ async function downloadExcel(name: string, rows: Row[], sumCols: string[]) {
 }
 
 /** Report table with automatic number formatting, optional totals row, CSV export and print. */
-export function ReportTable({ title, rows, sumCols = [], note, subtitle, onPrintRow }: { title: string; rows: Row[]; sumCols?: string[]; note?: string; subtitle?: string; onPrintRow?: (row: Row, copies: number, paper: Paper) => void }) {
+export function ReportTable({ title: rawTitle, rows: rawRows, sumCols = [], note: rawNote, subtitle: rawSubtitle, onPrintRow }: { title: string; rows: Row[]; sumCols?: string[]; note?: string; subtitle?: string; onPrintRow?: (row: Row, copies: number, paper: Paper) => void }) {
+  // Everything shown, printed, exported or e-mailed is in the system language: titles, notes and text cells (statuses, payment methods, descriptions saved by the server).
+  const title = tr(rawTitle), note = rawNote ? tr(rawNote) : rawNote, subtitle = rawSubtitle ? tr(rawSubtitle) : rawSubtitle;
+  const rows: Row[] = rawRows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, typeof v === "string" ? trMessage(v) : v])) as Row);
   const cols = Object.keys(rows[0] ?? {});
   const sendReport = useAction(api.reportEmails.sendReport);
   const [sending, setSending] = useState(false);
@@ -97,8 +100,8 @@ export function ReportTable({ title, rows, sumCols = [], note, subtitle, onPrint
   const emailReport = async () => {
     setSending(true);
     try {
-      const result = await sendReport({ title, rows: rows.slice(0, 500) });
-      toast.success(`Ripoti imetumwa kwa wapokeaji ${result.recipients}.`);
+      const result = await sendReport({ title, lang: getLang(), rows: rows.slice(0, 500).map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [tr(k), v])) as Row) });
+      toast.success(tr("Ripoti imetumwa kwa wapokeaji {0}.", [result.recipients]));
     } catch (error) {
       toast.error(errorText(error, "Imeshindikana kutuma ripoti kwa email."));
     } finally { setSending(false); }
@@ -121,7 +124,7 @@ export function ReportTable({ title, rows, sumCols = [], note, subtitle, onPrint
               <label className="flex items-center gap-1 text-xs">{tr("Nakala")}
                 <Input type="number" min={1} max={10} className="h-9 w-16" value={copies} onChange={(e) => setCopies(Math.min(10, Math.max(1, Math.floor(Number(e.target.value) || 1))))} />
               </label>
-              <Button size="sm" disabled={picked === null || !rows[picked]} onClick={() => { if (picked !== null && rows[picked]) onPrintRow(rows[picked], copies, paper); }}>{tr("Chapisha item iliyochaguliwa")}</Button>
+              <Button size="sm" disabled={picked === null || !rows[picked]} onClick={() => { if (picked !== null && rows[picked]) onPrintRow(rawRows[picked], copies, paper); }}>{tr("Chapisha item iliyochaguliwa")}</Button>
             </>
           )}
           <Button size="sm" variant="outline" onClick={() => setViewOpen((v) => !v)}>{viewOpen ? tr("Hide Report") : tr("Show Report")}</Button>

@@ -81,7 +81,7 @@ export default function InvoiceFinder() {
     <section className="space-y-3 rounded-xl border p-4 print:hidden">
       <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); setOpenId(null); setClosedFor(null); setTerm(text.trim()); }}>
         <label className="grid gap-1 text-sm">{tr("Tafuta invoice kwa namba, jina la mteja au mhudumu")}
-          <Input className="w-64" inputMode="text" autoFocus placeholder="00001 / mteja / mhudumu" value={text} onChange={(e) => setText(e.target.value)} aria-label={tr("Namba ya invoice")} />
+          <Input className="w-64" inputMode="text" autoFocus placeholder={tr("00001 / mteja / mhudumu")} value={text} onChange={(e) => setText(e.target.value)} aria-label={tr("Namba ya invoice")} />
         </label>
         <Button type="submit"><Search className="mr-1 h-4 w-4" />{tr("Tafuta")}</Button>
         {term && <Button type="button" variant="outline" onClick={() => { setText(""); setTerm(""); setOpenId(null); setClosedFor(null); }}>{tr("Futa utafutaji")}</Button>}
@@ -426,7 +426,7 @@ function CancelForm({ d, onDone, onBack, onEdit, lockedMsg }: { d: Full; onDone:
         <div className="space-y-2 rounded-lg border p-3">
           <h3 className="font-semibold">{tr("1. Futa invoice kabisa")}</h3>
           <p className="text-xs text-muted-foreground">{tr("Stock inarudishwa, malipo yanarudishwa, deni linafutwa na invoice inatoka kwenye ripoti zote.")}</p>
-          <select className={`${selectClass} w-full`} value={reason} onChange={(e) => setReason(e.target.value)}>{CANCEL_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}</select>
+          <select className={`${selectClass} w-full`} value={reason} onChange={(e) => setReason(e.target.value)}>{CANCEL_REASONS.map((r) => <option key={r} value={r}>{tr(r)}</option>)}</select>
           {reason === "Sababu nyingine" && <Input value={details} onChange={(e) => setDetails(e.target.value)} placeholder={tr("Eleza sababu")} />}
           <Button variant="destructive" disabled={busy} onClick={() => void run()}>{busy ? tr("Inafuta…") : tr("Futa kabisa")}</Button>
         </div>

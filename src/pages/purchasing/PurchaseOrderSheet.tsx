@@ -19,7 +19,7 @@ export default function PurchaseOrderSheet({ orderId }: { orderId: Id<"purchaseO
   const columns: Column<Line>[] = [
     { key: "no", label: "#", align: "center" },
     { key: "itemCode", label: "Code" },
-    { key: "productName", label: "Bidhaa" },
+    { key: "productName", label: tr("Bidhaa") },
     { key: "unit", label: "Unit" },
     { key: "qtyOrdered", label: "Quantity", align: "right", render: (r) => m(r.qtyOrdered) },
     { key: "unitCost", label: "Cost", align: "right", render: (r) => m(r.unitCost) },

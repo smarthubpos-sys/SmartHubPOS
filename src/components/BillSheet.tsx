@@ -135,7 +135,7 @@ export default function BillSheet({
   const openedAt = bill.savedAt ? stamp(new Date(bill.savedAt)) : "";
   const billId = bill.invoices.map((inv) => inv.invoiceNo).join(", ");
   const whatsappText = [
-    `${bill.company.name || "Biashara"} — ${heading}`,
+    `${bill.company.name || tr("Biashara")} — ${heading}`,
     `${tr("Mteja")}: ${bill.client.name}`,
     ...bill.invoices.flatMap((inv) => [
       `${tr("Invoice")} ${inv.invoiceNo} (${formatDate(inv.date)})`,

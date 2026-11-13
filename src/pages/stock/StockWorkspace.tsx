@@ -369,7 +369,7 @@ function EarningsScreen() {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3"><h1 className="text-2xl font-bold">{tr("Stock Earning Report")}</h1><DateRange startDate={start} endDate={end} onStart={setStart} onEnd={setEnd} onApply={() => { setAppliedStart(start); setAppliedEnd(end); }} /></div>
-      {!data ? loading : <ReportTable title={tr("Faida kwa bidhaa")} sumCols={["Invoices", "Mauzo (bila tax)", "Cost ya mauzo", "Faida"]} note="Mauzo huchukuliwa kutoka invoices zilizopostiwa (discount ya invoice imegawanywa kwenye mistari, tax haihesabiwi). Cost ni gharama iliyorekodiwa wakati wa kuuza."
+      {!data ? loading : <ReportTable title={tr("Faida kwa bidhaa")} sumCols={["Invoices", "Mauzo (bila tax)", "Cost ya mauzo", "Faida"]} note={tr("Mauzo huchukuliwa kutoka invoices zilizopostiwa (discount ya invoice imegawanywa kwenye mistari, tax haihesabiwi). Cost ni gharama iliyorekodiwa wakati wa kuuza.")}
         rows={data.earnings.map((e) => ({ Code: e.itemCode, Bidhaa: e.productName, "Qty iliyouzwa": e.qtySold, Invoices: e.invoices, "Mauzo (bila tax)": e.sales, "Cost ya mauzo": e.cost, Faida: e.profit, "Margin %": e.marginPct }))} />}
     </div>
   );

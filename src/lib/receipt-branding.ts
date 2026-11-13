@@ -1,3 +1,4 @@
+import { tr } from "./i18n.ts";
 /** Header / footer data that every printed bill, invoice and order slip shares (logo, business name, phone, payment info, footer). */
 export type ReceiptBranding = {
   title?: string;
@@ -23,9 +24,9 @@ export function paymentInfoFrom(sys: Record<string, unknown> | undefined): strin
   if (!sys) return [];
   return [
     [txt(sys.mobileMoneyProvider), txt(sys.mobileMoneyNumber)].filter(Boolean).join(": "),
-    txt(sys.bankName) ? `Benki: ${txt(sys.bankName)}` : "",
-    txt(sys.bankAccountName) ? `Jina la akaunti: ${txt(sys.bankAccountName)}` : "",
-    txt(sys.bankAccountNumber) ? `Akaunti: ${txt(sys.bankAccountNumber)}` : "",
+    txt(sys.bankName) ? tr("Benki: {0}", [txt(sys.bankName)]) : "",
+    txt(sys.bankAccountName) ? tr("Jina la akaunti: {0}", [txt(sys.bankAccountName)]) : "",
+    txt(sys.bankAccountNumber) ? tr("Akaunti: {0}", [txt(sys.bankAccountNumber)]) : "",
     txt(sys.paymentInstructions),
   ].filter(Boolean);
 }

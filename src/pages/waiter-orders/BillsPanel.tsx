@@ -10,7 +10,7 @@ import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 
 const money = (n: number) => Number(n).toLocaleString();
-const STATUS: Record<string, string> = { pending: "Inasubiri cashier", accepted: "Imepokelewa", printed: "Imechapishwa" };
+const STATUS: Record<string, string> = { pending: tr("Inasubiri cashier"), accepted: tr("Imepokelewa"), printed: tr("Imechapishwa") };
 const isWaiterRole = (role?: string) => ["waiter", "waitress"].includes(String(role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_"));
 
 /**

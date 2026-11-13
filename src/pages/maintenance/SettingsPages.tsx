@@ -193,12 +193,12 @@ function SystemForm({ s }: { s: Settings }) {
         </div>
         <TextField label={tr("Maandishi ya chini ya risiti")} value={f.receiptFooter} onChange={(v) => set("receiptFooter", v)} disabled={!ok} />
         <div className="grid gap-3 sm:grid-cols-2">
-          <TextField label="Mtoa huduma wa pesa za simu (mf. M-Pesa)" value={f.mobileMoneyProvider} onChange={(v) => set("mobileMoneyProvider", v)} disabled={!ok} />
-          <TextField label="Namba ya malipo ya simu" value={f.mobileMoneyNumber} onChange={(v) => set("mobileMoneyNumber", v)} disabled={!ok} />
-          <TextField label="Jina la benki" value={f.bankName} onChange={(v) => set("bankName", v)} disabled={!ok} />
-          <TextField label="Jina la akaunti ya benki" value={f.bankAccountName} onChange={(v) => set("bankAccountName", v)} disabled={!ok} />
-          <TextField label="Namba ya akaunti ya benki" value={f.bankAccountNumber} onChange={(v) => set("bankAccountNumber", v)} disabled={!ok} />
-          <TextField label="Maelekezo ya malipo (hiari)" value={f.paymentInstructions} onChange={(v) => set("paymentInstructions", v)} disabled={!ok} />
+          <TextField label={tr("Mtoa huduma wa pesa za simu (mf. M-Pesa)")} value={f.mobileMoneyProvider} onChange={(v) => set("mobileMoneyProvider", v)} disabled={!ok} />
+          <TextField label={tr("Namba ya malipo ya simu")} value={f.mobileMoneyNumber} onChange={(v) => set("mobileMoneyNumber", v)} disabled={!ok} />
+          <TextField label={tr("Jina la benki")} value={f.bankName} onChange={(v) => set("bankName", v)} disabled={!ok} />
+          <TextField label={tr("Jina la akaunti ya benki")} value={f.bankAccountName} onChange={(v) => set("bankAccountName", v)} disabled={!ok} />
+          <TextField label={tr("Namba ya akaunti ya benki")} value={f.bankAccountNumber} onChange={(v) => set("bankAccountNumber", v)} disabled={!ok} />
+          <TextField label={tr("Maelekezo ya malipo (hiari)")} value={f.paymentInstructions} onChange={(v) => set("paymentInstructions", v)} disabled={!ok} />
         </div>
       </Card>
       <Button disabled={busy || !ok} onClick={() => void run(async () => {

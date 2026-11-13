@@ -57,13 +57,13 @@ function InvoiceList({ header, startDate, endDate, data, openDoc }: R) {
   const live = rows.filter((x) => x.status === "posted");
   const cols: Column<(typeof rows)[number]>[] = [
     { key: "invoiceNo", label: "Invoice", render: (r) => <b>{r.invoiceNo ?? r.internalRef}</b> },
-    { key: "purchaseDate", label: "Tarehe", render: (r) => formatDate(r.purchaseDate), nowrap: true },
+    { key: "purchaseDate", label: tr("Tarehe"), render: (r) => formatDate(r.purchaseDate), nowrap: true },
     { key: "supplier", label: "Supplier", render: (r) => name(r.supplierId) },
     { key: "supplierInvoiceNo", label: "Supplier Invoice No", render: (r) => (r.supplierInvoiceNo && r.supplierInvoiceNo !== r.invoiceNo ? r.supplierInvoiceNo : "—") },
-    { key: "total", label: "Jumla", align: "right", render: (r) => m(r.total) },
-    { key: "amountPaid", label: "Imelipwa", align: "right", render: (r) => m(r.amountPaid) },
-    { key: "outstanding", label: "Deni", align: "right", render: (r) => m(r.outstanding) },
-    { key: "status", label: "Hali", align: "center", render: (r) => <StatusBadge status={statusKey(r)} /> },
+    { key: "total", label: tr("Jumla"), align: "right", render: (r) => m(r.total) },
+    { key: "amountPaid", label: tr("Imelipwa"), align: "right", render: (r) => m(r.amountPaid) },
+    { key: "outstanding", label: tr("Deni"), align: "right", render: (r) => m(r.outstanding) },
+    { key: "status", label: tr("Hali"), align: "center", render: (r) => <StatusBadge status={statusKey(r)} /> },
     { key: "open", label: "", align: "center", render: (r) => <OpenButton id={r._id} open={openDoc} /> },
     { key: "manage", label: "", align: "center", render: (r) => <PurchaseDocActions kind="invoice" id={r._id} status={r.status} /> },
   ];
@@ -97,10 +97,10 @@ function SupplierStatement({ header, startDate, endDate, data, openDoc }: R) {
     if (ledger === undefined) return <>{picker}<p className="p-4 text-sm text-muted-foreground">{tr("Inapakia…")}</p></>;
     const typeLabel = (t: string) => (t === "purchase" ? tr("Purchase") : t === "payment" ? tr("Payment") : tr("Return"));
     const cols: Column<(typeof ledger.rows)[number]>[] = [
-      { key: "date", label: "Tarehe", render: (r) => formatDate(r.date), nowrap: true },
+      { key: "date", label: tr("Tarehe"), render: (r) => formatDate(r.date), nowrap: true },
       { key: "type", label: "Type", render: (r) => typeLabel(r.type) },
       { key: "reference", label: "Reference", render: (r) => <span className="font-medium">{r.reference}</span> },
-      { key: "description", label: "Maelezo" },
+      { key: "description", label: tr("Maelezo") },
       { key: "charge", label: "Charges", align: "right", render: (r) => (r.charge ? m(r.charge) : "") },
       { key: "credit", label: "Payments / Credits", align: "right", render: (r) => (r.credit ? m(r.credit) : "") },
       { key: "balance", label: "Balance", align: "right", render: (r) => m(r.balance) },
@@ -130,11 +130,11 @@ function SupplierStatement({ header, startDate, endDate, data, openDoc }: R) {
   const cols: Column<(typeof rows)[number]>[] = [
     { key: "name", label: "Supplier", render: (r) => <button className="text-left font-medium text-blue-700 underline-offset-2 hover:underline print:no-underline" onClick={() => setSupplierId(String(r.supplierId))}>{r.name}</button> },
     { key: "opening", label: "Opening balance", align: "right", render: (r) => m(r.opening) },
-    { key: "purchases", label: "Manunuzi", align: "right", render: (r) => m(r.purchases) },
+    { key: "purchases", label: tr("Manunuzi"), align: "right", render: (r) => m(r.purchases) },
     { key: "payments", label: "Malipo", align: "right", render: (r) => m(r.payments) },
     { key: "returns", label: "Returns", align: "right", render: (r) => m(r.returns) },
     { key: "closing", label: "Closing balance", align: "right", render: (r) => <b className={r.closing > 0 ? "text-rose-600" : ""}>{m(r.closing)}</b> },
-    { key: "state", label: "Hali", align: "center", render: (r) => (r.closing > 0 ? tr("Anadaiwa") : r.closing < 0 ? tr("Credit") : tr("Amelipwa")) },
+    { key: "state", label: tr("Hali"), align: "center", render: (r) => (r.closing > 0 ? tr("Anadaiwa") : r.closing < 0 ? tr("Credit") : tr("Amelipwa")) },
   ];
   const owe = sum(rows.filter((r) => r.closing > 0), (r) => r.closing);
   return (
@@ -169,7 +169,7 @@ function Summary({ header, startDate, endDate, data, detailed }: R & { detailed:
   const monthCols: Column<(typeof months)[number] & { change: string }>[] = [
     { key: "month", label: "Month", render: (r) => formatDate(`${r.month}-01`).replace(/^\d+\s/, "") },
     { key: "invoices", label: "Invoices", align: "right" },
-    { key: "purchases", label: "Manunuzi", align: "right", render: (r) => m(r.purchases) },
+    { key: "purchases", label: tr("Manunuzi"), align: "right", render: (r) => m(r.purchases) },
     { key: "bar", label: "", render: (r) => <div className="h-2 w-28 rounded bg-slate-100"><div className="h-2 rounded bg-blue-600 [print-color-adjust:exact]" style={{ width: `${(r.purchases / maxMonth) * 100}%` }} /></div> },
     ...(detailed ? [{ key: "change", label: "vs previous month", align: "right" as const }] : []),
     { key: "payments", label: "Malipo", align: "right", render: (r) => m(r.payments) },
@@ -206,19 +206,19 @@ function Summary({ header, startDate, endDate, data, detailed }: R & { detailed:
         <>
           <SectionTitle>{tr("Payment status of invoices")}</SectionTitle>
           <DataTable columns={[
-            { key: "key", label: "Hali", render: (r) => <StatusBadge status={r.key} /> }, { key: "count", label: "Invoices", align: "right" },
-            { key: "total", label: "Jumla", align: "right", render: (r) => m(r.total) }, { key: "outstanding", label: "Deni", align: "right", render: (r) => m(r.outstanding) },
+            { key: "key", label: tr("Hali"), render: (r) => <StatusBadge status={r.key} /> }, { key: "count", label: "Invoices", align: "right" },
+            { key: "total", label: tr("Jumla"), align: "right", render: (r) => m(r.total) }, { key: "outstanding", label: tr("Deni"), align: "right", render: (r) => m(r.outstanding) },
             { key: "share", label: "Share", align: "right", render: (r) => pct(r.total, total) },
           ]} rows={statusMix} />
           <SectionTitle>{tr("Top 5 suppliers")}</SectionTitle>
           <DataTable columns={[
             { key: "name", label: "Supplier" }, { key: "invoices", label: "Invoices", align: "right" },
-            { key: "total", label: "Jumla", align: "right", render: (r) => m(r.total) }, { key: "share", label: "Share", align: "right", render: (r) => pct(r.total, total) },
+            { key: "total", label: tr("Jumla"), align: "right", render: (r) => m(r.total) }, { key: "share", label: "Share", align: "right", render: (r) => pct(r.total, total) },
           ]} rows={topSuppliers} />
           <SectionTitle>{tr("Top 5 products")}</SectionTitle>
           <DataTable columns={[
-            { key: "name", label: "Bidhaa" }, { key: "qty", label: "Idadi", align: "right", render: (r) => formatNumber(r.qty, Number.isInteger(r.qty) ? 0 : 2) },
-            { key: "total", label: "Jumla", align: "right", render: (r) => m(r.total) }, { key: "share", label: "Share", align: "right", render: (r) => pct(r.total, total) },
+            { key: "name", label: tr("Bidhaa") }, { key: "qty", label: tr("Idadi"), align: "right", render: (r) => formatNumber(r.qty, Number.isInteger(r.qty) ? 0 : 2) },
+            { key: "total", label: tr("Jumla"), align: "right", render: (r) => m(r.total) }, { key: "share", label: "Share", align: "right", render: (r) => pct(r.total, total) },
           ]} rows={topProducts} />
         </>
       )}
@@ -242,8 +242,8 @@ function BySupplier({ header, startDate, endDate, data }: R) {
   const total = sum(rows, (r) => r.total);
   const cols: Column<(typeof rows)[number]>[] = [
     { key: "name", label: "Supplier", render: (r) => <b>{r.name}</b> }, { key: "invoices", label: "Invoices", align: "right" },
-    { key: "total", label: "Jumla", align: "right", render: (r) => m(r.total) }, { key: "avg", label: "Average invoice", align: "right", render: (r) => m(r.total / r.invoices) },
-    { key: "paid", label: "Imelipwa", align: "right", render: (r) => m(r.paid) }, { key: "outstanding", label: "Deni", align: "right", render: (r) => m(r.outstanding) },
+    { key: "total", label: tr("Jumla"), align: "right", render: (r) => m(r.total) }, { key: "avg", label: "Average invoice", align: "right", render: (r) => m(r.total / r.invoices) },
+    { key: "paid", label: tr("Imelipwa"), align: "right", render: (r) => m(r.paid) }, { key: "outstanding", label: tr("Deni"), align: "right", render: (r) => m(r.outstanding) },
     { key: "share", label: "Share", align: "right", render: (r) => pct(r.total, total) }, { key: "last", label: "Last purchase", render: (r) => formatDate(r.last), nowrap: true },
   ];
   return (
@@ -274,8 +274,8 @@ function ByProduct({ header, startDate, endDate, data }: R) {
   const total = sum(rows, (r) => r.total);
   const q = (n: number) => formatNumber(n, Number.isInteger(n) ? 0 : 2);
   const cols: Column<(typeof rows)[number]>[] = [
-    { key: "name", label: "Bidhaa", render: (r) => <b>{r.name}</b> }, { key: "unit", label: "Unit" },
-    { key: "qty", label: "Idadi", align: "right", render: (r) => q(r.qty) }, { key: "total", label: "Jumla", align: "right", render: (r) => m(r.total) },
+    { key: "name", label: tr("Bidhaa"), render: (r) => <b>{r.name}</b> }, { key: "unit", label: "Unit" },
+    { key: "qty", label: tr("Idadi"), align: "right", render: (r) => q(r.qty) }, { key: "total", label: tr("Jumla"), align: "right", render: (r) => m(r.total) },
     { key: "avg", label: "Average cost", align: "right", render: (r) => m(r.qty ? r.total / r.qty : 0) }, { key: "lastCost", label: "Last cost", align: "right", render: (r) => m(r.lastCost) },
     { key: "lastSupplier", label: "Last supplier" }, { key: "share", label: "Share", align: "right", render: (r) => pct(r.total, total) },
   ];
@@ -300,9 +300,9 @@ function Payments({ header, startDate, endDate, data }: R) {
     return [...map.values()].sort((a, b) => b.total - a.total);
   }, [rows]);
   const cols: Column<(typeof rows)[number]>[] = [
-    { key: "paymentDate", label: "Tarehe", render: (r) => formatDate(r.paymentDate), nowrap: true }, { key: "supplier", label: "Supplier", render: (r) => name(r.supplierId) },
-    { key: "paymentMethod", label: "Njia", render: (r) => trValue(r.paymentMethod) }, { key: "reference", label: "Reference", render: (r) => r.reference ?? "—" },
-    { key: "notes", label: "Maelezo", render: (r) => r.notes ?? "—" }, { key: "amount", label: "Kiasi", align: "right", render: (r) => m(r.amount) },
+    { key: "paymentDate", label: tr("Tarehe"), render: (r) => formatDate(r.paymentDate), nowrap: true }, { key: "supplier", label: "Supplier", render: (r) => name(r.supplierId) },
+    { key: "paymentMethod", label: tr("Njia"), render: (r) => trValue(r.paymentMethod) }, { key: "reference", label: "Reference", render: (r) => r.reference ?? "—" },
+    { key: "notes", label: tr("Maelezo"), render: (r) => r.notes ?? "—" }, { key: "amount", label: tr("Kiasi"), align: "right", render: (r) => m(r.amount) },
   ];
   return (
     <ReportSheet header={header} title={tr("Purchase Payment Report")} period={periodText(startDate, endDate)}
@@ -311,7 +311,7 @@ function Payments({ header, startDate, endDate, data }: R) {
       <DataTable columns={cols} rows={rows} totals={{ amount: m(total) }} />
       {byMethod.length > 0 && <>
         <SectionTitle>{tr("Summary by payment method")}</SectionTitle>
-        <DataTable columns={[{ key: "method", label: "Njia", render: (r) => trValue(r.method) }, { key: "count", label: "Payments", align: "right" }, { key: "total", label: "Kiasi", align: "right", render: (r) => m(r.total) }, { key: "share", label: "Share", align: "right", render: (r) => pct(r.total, total) }]} rows={byMethod} totals={{ count: String(rows.length), total: m(total) }} />
+        <DataTable columns={[{ key: "method", label: tr("Njia"), render: (r) => trValue(r.method) }, { key: "count", label: "Payments", align: "right" }, { key: "total", label: tr("Kiasi"), align: "right", render: (r) => m(r.total) }, { key: "share", label: "Share", align: "right", render: (r) => pct(r.total, total) }]} rows={byMethod} totals={{ count: String(rows.length), total: m(total) }} />
       </>}
     </ReportSheet>
   );
@@ -357,10 +357,10 @@ function Outstanding({ header, openDoc }: R) {
         <SectionTitle>{tr("Open invoices")}</SectionTitle>
         <DataTable columns={[
           { key: "invoiceNo", label: "Invoice", render: (r) => <b>{r.invoiceNo}</b> }, { key: "supplierName", label: "Supplier" },
-          { key: "purchaseDate", label: "Tarehe", render: (r) => formatDate(r.purchaseDate), nowrap: true }, { key: "dueDate", label: "Due Date", render: (r) => formatDate(r.dueDate), nowrap: true },
+          { key: "purchaseDate", label: tr("Tarehe"), render: (r) => formatDate(r.purchaseDate), nowrap: true }, { key: "dueDate", label: "Due Date", render: (r) => formatDate(r.dueDate), nowrap: true },
           { key: "daysOverdue", label: "Days overdue", align: "right", render: (r) => (r.daysOverdue > 0 ? <span className="font-semibold text-rose-600">{r.daysOverdue}</span> : "—") },
-          { key: "total", label: "Jumla", align: "right", render: (r) => m(r.total) }, { key: "paid", label: "Imelipwa", align: "right", render: (r) => m(r.paid) },
-          { key: "outstanding", label: "Deni", align: "right", render: (r) => <b>{m(r.outstanding)}</b> }, { key: "open", label: "", align: "center", render: (r) => <OpenButton id={r.purchaseId} open={openDoc} /> },
+          { key: "total", label: tr("Jumla"), align: "right", render: (r) => m(r.total) }, { key: "paid", label: tr("Imelipwa"), align: "right", render: (r) => m(r.paid) },
+          { key: "outstanding", label: tr("Deni"), align: "right", render: (r) => <b>{m(r.outstanding)}</b> }, { key: "open", label: "", align: "center", render: (r) => <OpenButton id={r.purchaseId} open={openDoc} /> },
         ]} rows={detail} totals={{ total: m(sum(detail, (r) => r.total)), paid: m(sum(detail, (r) => r.paid)), outstanding: m(sum(detail, (r) => r.outstanding)) }} empty={tr("Hakuna invoice zenye deni.")} />
         <p className="text-[11px] text-slate-500">{tr("Due date = invoice date + the supplier's payment terms. Invoices with no terms are due on the invoice date.")}</p>
       </ReportSheet>
@@ -384,8 +384,8 @@ function LastPrice({ header, startDate, endDate, data }: R) {
   }, [data.lines, liveIds]);
   const change = (r: (typeof rows)[number]) => (r.previous === null || r.previous === 0 ? null : ((r.cost - r.previous) / r.previous) * 100);
   const cols: Column<(typeof rows)[number]>[] = [
-    { key: "name", label: "Bidhaa", render: (r) => <b>{r.name}</b> }, { key: "unit", label: "Unit" }, { key: "supplier", label: "Last supplier" },
-    { key: "date", label: "Tarehe", render: (r) => formatDate(r.date), nowrap: true }, { key: "cost", label: "Last cost", align: "right", render: (r) => m(r.cost) },
+    { key: "name", label: tr("Bidhaa"), render: (r) => <b>{r.name}</b> }, { key: "unit", label: "Unit" }, { key: "supplier", label: "Last supplier" },
+    { key: "date", label: tr("Tarehe"), render: (r) => formatDate(r.date), nowrap: true }, { key: "cost", label: "Last cost", align: "right", render: (r) => m(r.cost) },
     { key: "previous", label: "Previous cost", align: "right", render: (r) => (r.previous === null ? "—" : m(r.previous)) },
     { key: "change", label: "Change", align: "right", render: (r) => { const c = change(r); return c === null ? "—" : <span className={c > 0 ? "font-semibold text-rose-600" : c < 0 ? "font-semibold text-emerald-600" : ""}>{c > 0 ? "+" : ""}{formatNumber(c, 1)}%</span>; } },
     { key: "range", label: "Lowest – Highest", align: "right", render: (r) => `${m(r.min)} – ${m(r.max)}` },

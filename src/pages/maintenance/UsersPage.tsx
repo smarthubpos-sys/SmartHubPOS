@@ -13,9 +13,9 @@ import { errorText, tr } from "@/lib/i18n.ts";
 type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; pin: string; pinLoginEnabled: boolean; hasPin: boolean; staffCode: string; extra: string[] };
 /** Switches given to ONE user on top of his role (the server checks that the giver has them himself; Super Admin always has all). */
 const USER_SWITCHES: { key: string; label: string; hint: string }[] = [
-  { key: "sales.edit", label: "Edit invoice", hint: "Anaweza kurekebisha invoice zilizohifadhiwa (bidhaa, idadi, bei)." },
-  { key: "sales.void", label: "Cancel / Delete invoice", hint: "Anaweza kufuta au kubatilisha invoice; stock inarudi na malipo yanarudishwa." },
-  { key: "sales.print", label: "Print invoice", hint: "Anaweza kuchapisha invoice na risiti." },
+  { key: "sales.edit", label: "Edit invoice", hint: tr("Anaweza kurekebisha invoice zilizohifadhiwa (bidhaa, idadi, bei).") },
+  { key: "sales.void", label: "Cancel / Delete invoice", hint: tr("Anaweza kufuta au kubatilisha invoice; stock inarudi na malipo yanarudishwa.") },
+  { key: "sales.print", label: "Print invoice", hint: tr("Anaweza kuchapisha invoice na risiti.") },
 ];
 const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, pin: "", pinLoginEnabled: false, hasPin: false, staffCode: "", extra: [] };
 

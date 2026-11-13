@@ -24,7 +24,7 @@ export const reportEmailContext = internalQuery({
 });
 
 export const sendReport = action({
-  args: { title: v.string(), rows: v.array(v.record(v.string(), v.union(v.string(), v.number(), v.boolean(), v.null()))), startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
+  args: { title: v.string(), lang: v.optional(v.string()), rows: v.array(v.record(v.string(), v.union(v.string(), v.number(), v.boolean(), v.null()))), startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
   handler: async (ctx, args): Promise<{ sent: boolean; recipients: number }> => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new ConvexError("Ingia kwanza kutuma ripoti.");
@@ -34,14 +34,15 @@ export const sendReport = action({
     const key = process.env.RESEND_API_KEY;
     const from = process.env.REPORTS_FROM_EMAIL;
     if (!key || !from) throw new ConvexError("Email haijasanidiwa. Weka RESEND_API_KEY na REPORTS_FROM_EMAIL kwenye Convex environment variables.");
+    const en = args.lang === "en"; // the report is e-mailed in the language the business uses
     const cols = Object.keys(args.rows[0] ?? {});
     const escape = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-    const table = args.rows.length ? `<table style="border-collapse:collapse;width:100%"><thead><tr>${cols.map((c) => `<th style="border:1px solid #ddd;padding:8px;text-align:left">${escape(c)}</th>`).join("")}</tr></thead><tbody>${args.rows.map((row) => `<tr>${cols.map((c) => `<td style="border:1px solid #ddd;padding:8px">${escape(row?.[c])}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "<p>Hakuna taarifa kwenye ripoti hii.</p>";
-    const period = args.startDate || args.endDate ? `<p>Kipindi: ${escape(args.startDate ?? "—")} hadi ${escape(args.endDate ?? "—")}</p>` : "";
+    const table = args.rows.length ? `<table style="border-collapse:collapse;width:100%"><thead><tr>${cols.map((c) => `<th style="border:1px solid #ddd;padding:8px;text-align:left">${escape(c)}</th>`).join("")}</tr></thead><tbody>${args.rows.map((row) => `<tr>${cols.map((c) => `<td style="border:1px solid #ddd;padding:8px">${escape(row?.[c])}</td>`).join("")}</tr>`).join("")}</tbody></table>` : `<p>${en ? "There is no data in this report." : "Hakuna taarifa kwenye ripoti hii."}</p>`;
+    const period = args.startDate || args.endDate ? `<p>${en ? "Period" : "Kipindi"}: ${escape(args.startDate ?? "—")} ${en ? "to" : "hadi"} ${escape(args.endDate ?? "—")}</p>` : "";
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to: context.recipients, subject: `${context.companyName} — ${args.title}`, html: `<div style="font-family:Arial,sans-serif"><h2>${escape(context.companyName)}</h2><h3>${escape(args.title)}</h3>${period}<p>Imetumwa na SmartHubPOS.</p>${table}</div>` }),
+      body: JSON.stringify({ from, to: context.recipients, subject: `${context.companyName} — ${args.title}`, html: `<div style="font-family:Arial,sans-serif"><h2>${escape(context.companyName)}</h2><h3>${escape(args.title)}</h3>${period}<p>${en ? "Sent by SmartHubPOS." : "Imetumwa na SmartHubPOS."}</p>${table}</div>` }),
     });
     if (!response.ok) throw new ConvexError(`Imeshindikana kutuma email (${response.status}). Hakiki mipangilio ya Resend na anwani ya mtumaji.`);
     return { sent: true, recipients: context.recipients.length };
