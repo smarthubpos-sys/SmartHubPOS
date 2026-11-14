@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { useConvex, useMutation, useQuery } from "convex/react";
+import { useAction, useConvex, useMutation, useQuery } from "convex/react";
 import { useSearchParams } from "react-router-dom";
-import { FileBarChart, Printer } from "lucide-react";
+import { ChevronDown, FileBarChart, Mail, Printer, Save } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Empty, FormField, PageHeader, Panel, SelectBox, Table } from "@/components/page-kit.tsx";
 import { formatDate, formatNumber, localDate } from "@/lib/format.ts";
-import { errorText, getLocale, tr } from "@/lib/i18n.ts";
+import { errorText, getLang, getLocale, tr } from "@/lib/i18n.ts";
 import { printElement } from "@/lib/print-area.ts";
+import { downloadPeriodReportExcel } from "@/lib/period-report-excel.ts";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu.tsx";
 import { scrollAppToTop } from "@/lib/app-scroll.ts";
 import { chunkRange, halve, periodRange, repaidTotal, statementOf, sumSections, summarize, type DebtRow, type DebtsData, type ExpenseItem, type Period, type Row, type Statement, type WaiterSalesRow } from "@/convex/reportCore.ts";
 import { toast } from "sonner";
@@ -29,6 +31,29 @@ function periodText(period: Period, from: string, to: string) {
   return `${from.slice(0, 4)}`;
 }
 const periodName = (p: string) => p === "day" ? tr("Ripoti ya Siku") : p === "month" ? tr("Ripoti ya Mwezi") : tr("Ripoti ya Mwaka");
+
+type MailRow = Record<string, string | number | boolean | null>;
+/** The report as plain rows for the e-mail (summary, money received by method, debts, expenses as entered). */
+function mailRowsOf(sections: Section[], debts: Debts | null): MailRow[] {
+  const total = summarize(sumSections(sections.map((x) => x.rows)));
+  const st = statementOf(total, debts);
+  const r = (a: string, b: number | string): MailRow => ({ [tr("Maelezo")]: a, [tr("Kiasi")]: b });
+  const out: MailRow[] = [r(tr("Mauzo ya jumla"), st.sales), r(tr("Mtaji (gharama ya bidhaa zilizouzwa)"), st.capital), r(tr("Faida ya mauzo"), st.grossProfit), r(tr("Matumizi"), st.expenses), r(st.profitAfter < 0 ? tr("HASARA") : tr("FAIDA HALISI"), st.profitAfter), r(tr("MADENI"), st.debts)];
+  const ss = debts?.staffSales;
+  if (ss) {
+    const m = new Map<string, number>();
+    for (const x of ss.methods) m.set(x.method, Math.round(((m.get(x.method) ?? 0) + x.amount) * 100) / 100);
+    const list = [...m.entries()].filter(([, v]) => Math.abs(v) >= 0.005).sort((p, q) => q[1] - p[1]);
+    out.push(r(`— ${tr("Pesa Zilizopokelewa")} —`, ""), ...list.map(([k, v]) => r(k, v)), r(tr("Jumla iliyopokelewa"), Math.round(list.reduce((n, [, v]) => n + v, 0) * 100) / 100));
+  }
+  const debtRows = [...(debts?.waiters ?? []), ...(debts?.customers ?? [])];
+  if (debtRows.length) out.push(r(`— ${tr("MADENI")} —`, ""), ...debtRows.slice(0, 60).map((x) => r(x.name, x.amount)));
+  const items = sections.flatMap((x) => x.items ?? []).sort((p, q) => p.d.localeCompare(q.d) || p.t.localeCompare(q.t));
+  out.push(r(`— ${tr("Matumizi")} —`, ""));
+  if (items.length && out.length + items.length <= 480) out.push(...items.map((i) => r(`${i.d ? `${i.d} ` : ""}${i.t} (${i.c})`, i.a)));
+  else out.push(...total.expenses.map((e) => r(e.name, e.amount)));
+  return out.slice(0, 500);
+}
 
 /* ───────────────────────────────────────── the printable report ───────────────────────────────────────── */
 
@@ -231,6 +256,7 @@ export default function PeriodReportPage() {
   const header = useQuery(api.periodReport.header);
   const history = useQuery(api.periodReport.history, {});
   const save = useMutation(api.periodReport.save);
+  const sendReport = useAction(api.reportEmails.sendReport);
   const deleteRun = useMutation(api.periodReport.deleteRun);
   const superAdminInfo = useQuery(api.maintenance.clearDataOverview);
   const myPerms = useQuery(api.maintenance.myPermissions, {});
@@ -242,7 +268,11 @@ export default function PeriodReportPage() {
   const [scope, setScope] = useState("all");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
-  const [result, setResult] = useState<{ meta: Meta; sections: Section[]; debts: Debts | null } | null>(null);
+  const [result, setResult] = useState<{ meta: Meta; sections: Section[]; debts: Debts | null; scope: string } | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [mailTo, setMailTo] = useState("");
   const [openId, setOpenId] = useState<Id<"reportRuns"> | null>(null);
   const opened = useQuery(api.periodReport.getRun, openId ? { id: openId } : "skip");
   const docRef = useRef<HTMLDivElement>(null);
@@ -309,12 +339,11 @@ export default function PeriodReportPage() {
       const wanted = effectiveScope === "all" ? [...departments.map((x) => x.id), ...(byBranch.has("none") ? ["none"] : [])] : [effectiveScope];
       const sections: Section[] = (wanted.length ? wanted : ["none"]).map((bk) => ({ bk, name: departments.length === 0 ? header.businessName || tr("Biashara") : nameOf(bk), rows: [...(byBranch.get(bk)?.values() ?? [])].map((r) => ({ ...r, a: Math.round(r.a * 100) / 100, b: Math.round(r.b * 100) / 100, c: Math.round(r.c * 100) / 100 })), items: itemsBy.get(bk) ?? [] }));
       const meta: Meta = { period, from, to, scopeLabel, title: `${periodName(period)} — ${periodText(period, from, to)} — ${scopeLabel}`, generatedAt: new Date().toISOString(), preparedBy: header.preparedBy };
-      setResult({ meta, sections, debts });
-      try { await save({ period, startDate: from, endDate: to, scope: effectiveScope, scopeLabel, title: meta.title, sections, debts }); toast.success(tr("Ripoti imeundwa na kuhifadhiwa kwenye historia.")); }
-      catch (e) { toast.warning(errorText(e, "Ripoti imeundwa lakini haikuhifadhiwa kwenye historia.")); }
+      setResult({ meta, sections, debts, scope: effectiveScope }); setSaved(false);
+      toast.success(tr("Ripoti imeundwa. Bonyeza \"Hifadhi Ripoti\" kuihifadhi kwenye historia."));
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuunda ripoti.")); }
     finally { setBusy(false); }
-  }, [convex, header, period, anchor, effectiveScope, departments, nameOf, scopeLabel, save]);
+  }, [convex, header, period, anchor, effectiveScope, departments, nameOf, scopeLabel]);
 
   // Coming from the "Maliza siku" switch on the Expenses page: build today's report straight away.
   useEffect(() => {
@@ -322,8 +351,34 @@ export default function PeriodReportPage() {
     autoRan.current = true; void generate();
   }, [params, header, options, generate]);
 
+  // SAVE is its own step (it also closes the day's waiter debts for a day report); generating only builds and shows the report.
+  const saveCurrent = async () => {
+    if (!result || saving) return;
+    setSaving(true);
+    try {
+      await save({ period: result.meta.period, startDate: result.meta.from, endDate: result.meta.to, scope: result.scope, scopeLabel: result.meta.scopeLabel, title: result.meta.title, sections: result.sections, debts: result.debts ?? undefined });
+      setSaved(true); toast.success(tr("Ripoti imehifadhiwa kwenye historia."));
+    } catch (e) { toast.error(errorText(e, "Imeshindikana kuhifadhi ripoti.")); }
+    finally { setSaving(false); }
+  };
+
   const shown = openId && opened ? { meta: { period: opened.period as Period, from: opened.startDate, to: opened.endDate, scopeLabel: opened.scopeLabel, title: opened.title, generatedAt: opened.createdAt, preparedBy: opened.createdByName }, sections: opened.sections, debts: opened.debts } : result;
   const monthValue = anchor.slice(0, 7);
+  const saveExcel = async () => {
+    if (!shown || !header) return;
+    try {
+      await downloadPeriodReportExcel({ business: header.businessName, title: shown.meta.title, from: shown.meta.from, to: shown.meta.to, lines: mailRowsOf(shown.sections, shown.debts), fileName: `ripoti-${shown.meta.period}-${shown.meta.from}`, headings: { description: tr("Maelezo"), amount: tr("Kiasi") } });
+    } catch (e) { toast.error(errorText(e, "Imeshindikana kuunda faili la Excel.")); }
+  };
+  const emailCurrent = async () => {
+    if (!shown || sending) return;
+    setSending(true);
+    try {
+      const res = await sendReport({ title: shown.meta.title, lang: getLang(), rows: mailRowsOf(shown.sections, shown.debts), startDate: shown.meta.from, endDate: shown.meta.to, ...(mailTo.trim() ? { extraTo: mailTo.trim() } : {}) });
+      toast.success(tr("Ripoti imetumwa kwa wapokeaji {0}.", [res.recipients]));
+    } catch (e) { toast.error(errorText(e, "Imeshindikana kutuma ripoti kwa email.")); }
+    finally { setSending(false); }
+  };
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -353,8 +408,18 @@ export default function PeriodReportPage() {
 
       {shown && header && (
         <div className="space-y-2">
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => printElement(docRef.current, "A4")}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha / Hifadhi PDF")}</Button>
+          <div className="flex flex-wrap items-center justify-end gap-2 print:hidden">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild><Button size="sm"><Save className="mr-1 h-4 w-4" />{tr("Hifadhi kama")}<ChevronDown className="ml-1 h-4 w-4" /></Button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => printElement(docRef.current, "A4")}>{tr("PDF (chagua \"Save as PDF\")")}</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void saveExcel()}>{tr("Excel (.xlsx)")}</DropdownMenuItem>
+                {!openId && <><DropdownMenuSeparator /><DropdownMenuItem disabled={saving || saved} onSelect={() => void saveCurrent()}>{saving ? tr("Inahifadhi…") : saved ? tr("Imehifadhiwa kwenye historia") : tr("Historia ya mfumo (funga siku)")}</DropdownMenuItem></>}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button variant="outline" size="sm" onClick={() => printElement(docRef.current, "A4")}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>
+            <Input className="h-9 w-56" type="email" value={mailTo} onChange={(e) => setMailTo(e.target.value)} placeholder={tr("Email ya ziada (hiari)")} aria-label={tr("Email ya ziada (hiari)")} />
+            <Button variant="outline" size="sm" disabled={sending} onClick={() => void emailCurrent()}><Mail className="mr-1 h-4 w-4" />{sending ? tr("Inatuma…") : tr("Tuma kwa Email")}</Button>
           </div>
           <ReportDocument meta={shown.meta} sections={shown.sections} debts={shown.debts} header={header} innerRef={docRef} />
         </div>

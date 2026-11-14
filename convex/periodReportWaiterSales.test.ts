@@ -116,18 +116,45 @@ describe("Period report takes sales and payment methods from the Staff Sales fig
 
 describe("Period report expenses = bills that are valid now (no reversal lines)", () => {
   it("an edited bill shows once with its new amount and a cancelled bill disappears completely", async () => {
-    const { asBoss } = await setup();
+    const { t, boss, asBoss } = await setup();
     const day = new Date().toISOString().slice(0, 10);
+    // a business with departments: bills are saved inside a department, so the boss works in "Bar" while saving them
+    const bar = (await t.run(async (ctx) => await ctx.db.query("branches").first()))!._id;
+    await t.run(async (ctx) => { await ctx.db.patch("users", boss, { branchId: bar }); });
     const mk = (vendor: string, amount: number) => asBoss.mutation(api.bills.create, { vendor, category: "other", billDate: day, dueDate: day, amount });
     const a = await mk("supplier A", 6000);
     await asBoss.mutation(api.bills.update, { billId: a, vendor: "supplier A", category: "other", billDate: day, dueDate: day, amount: 60000 }); // edit 6,000 -> 60,000
     await mk("supplier B", 60000);
     const c = await mk("supplier C", 3000);
     await asBoss.mutation(api.bills.voidBill, { billId: c }); // cancelled: must vanish
+    await t.run(async (ctx) => { await ctx.db.patch("users", boss, { branchId: undefined }); }); // the report is read for all departments
     const ch = await asBoss.query(api.periodReport.chunk, { from: day, to: day, scope: "all" });
     const items = ch.sections.flatMap((s) => s.items);
     expect(items.map((i) => i.a).sort((x, y) => x - y)).toEqual([60000, 60000]);
     expect(items.every((i) => i.a > 0 && !/^(Edit|Void) /.test(i.t))).toBe(true);
     expect(summarize(sumSections(ch.sections.map((s) => s.rows as Row[]))).totalExpenses).toBe(120000);
+  });
+});
+
+describe("Closed waiter debts: report card and repayment on a chosen OPEN day", () => {
+  it("lists closed debts for a date range, lets the cashier repay on a chosen open day, and refuses a closed day", async () => {
+    const { asBoss, asCashier, waiter, orderId, yesterday, today } = await yesterdayOrder();
+    // not closed yet: not in the card
+    expect((await asBoss.query(api.waiterDebts.closedReport, { from: yesterday, to: today })).waiters).toHaveLength(0);
+    const before = await dayReport(asBoss, yesterday);
+    await asBoss.mutation(api.periodReport.save, { period: "day", startDate: yesterday, endDate: yesterday, scope: "all", scopeLabel: "Idara zote", title: "Siku", sections: [], debts: before.debts });
+    // closed: gone from the cashier's normal list, present in the card (range by SALE day)
+    expect(await asCashier.query(api.waiterCollections.owing, {})).toHaveLength(0);
+    const card = await asCashier.query(api.waiterDebts.closedReport, { from: yesterday, to: yesterday });
+    expect(card).toMatchObject({ total: 4000, orderCount: 1, canCollect: true });
+    expect(card.waiters[0].orders[0]).toMatchObject({ saleDay: yesterday, total: 4000 });
+    expect((await asCashier.query(api.waiterDebts.closedReport, { from: today, to: today })).waiters).toHaveLength(0); // other range: nothing
+    // repaying ON the closed day itself is refused ...
+    await expect(asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [orderId], splits: [{ method: "cash", amount: 4000 }], paymentDate: yesterday })).rejects.toThrow(/ilishafungwa/);
+    // ... and a part payment on an open day (today) is a repayment of that day; the rest stays in the card
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds: [orderId], splits: [{ method: "cash", amount: 1500 }], paymentDate: today });
+    const t = await dayReport(asBoss, today);
+    expect(t.summary.channels).toMatchObject({ cash: 1500, total: 1500 });
+    expect((await asCashier.query(api.waiterDebts.closedReport, { from: yesterday, to: yesterday })).total).toBe(2500);
   });
 });
