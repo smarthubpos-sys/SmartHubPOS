@@ -59,7 +59,16 @@ function ReportDocument({ meta, sections, debts, header, innerRef }: { meta: Met
   const head = "border-b-2 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-500";
   const h2 = "mb-2 text-[11px] font-bold uppercase tracking-[0.18em]";
   const loss = st.profitAfter < 0;
-  const channelBoxes: Array<[string, number]> = [["CASH", total.channels.cash], ["LIPA", total.channels.lipa], ["BANK", total.channels.bank], ...(Math.abs(total.channels.other) >= 0.005 ? [[tr("NYINGINE"), total.channels.other] as [string, number]] : [])];
+  // Sales and money received by payment method come from the Staff Sales figures (same as Sales > Staff Sales Report); an old saved report without them keeps the journal channels.
+  const staff = debts?.staffSales;
+  const staffMethods = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of staff?.methods ?? []) m.set(r.method, Math.round(((m.get(r.method) ?? 0) + r.amount) * 100) / 100);
+    return [...m.entries()].filter(([, v]) => Math.abs(v) >= 0.005).sort((x, y) => y[1] - x[1]);
+  }, [staff]);
+  const staffSalesTotal = useMemo(() => Math.round((staff?.sales ?? []).reduce((n, r) => n + r.amount, 0) * 100) / 100, [staff]);
+  const staffReceived = useMemo(() => Math.round(staffMethods.reduce((n, [, v]) => n + v, 0) * 100) / 100, [staffMethods]);
+  const channelBoxes: Array<[string, number]> = staff ? staffMethods.map(([m, v]) => [m, v] as [string, number]) : [["CASH", total.channels.cash], ["LIPA", total.channels.lipa], ["BANK", total.channels.bank], ...(Math.abs(total.channels.other) >= 0.005 ? [[tr("NYINGINE"), total.channels.other] as [string, number]] : [])];
   const big = (label: string, value: number, tone = "") => (
     <div className="border-t-2 pt-2" style={{ borderColor: INK }}>
       <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-500">{label}</p>
@@ -177,7 +186,8 @@ function ReportDocument({ meta, sections, debts, header, innerRef }: { meta: Met
             <div key={label} className="border-t border-neutral-300 pt-2"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-500">{label}</p><p className="mt-0.5 text-base font-bold tabular-nums">{acct(value, d)}</p></div>
           ))}
         </div>
-        <p className="mt-2 text-right text-[11px] text-neutral-600">{tr("Jumla iliyopokelewa")}: <b className="tabular-nums text-neutral-900">{acct(total.channels.total, d)}</b></p>
+        {staff && <p className="mt-2 text-right text-[11px] text-neutral-600">{tr("Mauzo (Staff Sales)")}: <b className="tabular-nums text-neutral-900">{acct(staffSalesTotal, d)}</b></p>}
+        <p className="mt-2 text-right text-[11px] text-neutral-600">{tr("Jumla iliyopokelewa")}: <b className="tabular-nums text-neutral-900">{acct(staff ? staffReceived : total.channels.total, d)}</b></p>
         {repaid > 0 && <p className="text-right text-[11px] text-neutral-600">{tr("Ikiwemo marejesho ya madeni ya siku zilizofungwa")}: <b className="tabular-nums text-neutral-900">{acct(repaid, d)}</b></p>}
       </section>
 
@@ -256,13 +266,16 @@ export default function PeriodReportPage() {
       const itemsBy = new Map<string, ExpenseItem[]>();
       const wMap = new Map<string, DebtRow>(), cMap = new Map<string, DebtRow>(), sMap = new Map<string, WaiterSalesRow>(), rMap = new Map<string, number>();
       const addDebt = (m: Map<string, DebtRow>, r: DebtRow) => { const k = `${r.bk}|${r.name}`; const c = m.get(k); if (c) { c.orders += r.orders; c.amount += r.amount; c.cost += r.cost; } else m.set(k, { ...r }); };
+      const ssSales = new Map<string, number>(), ssMethods = new Map<string, { bk: string; method: string; amount: number }>();
       let done = 0;
       while (queue.length) {
         const piece = queue.shift()!;
         const res = await convex.query(api.periodReport.chunk, { from: piece.from, to: piece.to, scope: effectiveScope });
         // Selling Point sales, debts and repayments of the same piece (read from the orders, by day of sale).
         const dres = res.tooBig ? null : await convex.query(api.periodReport.debts, { from: piece.from, to: piece.to, scope: effectiveScope });
-        if (res.tooBig || dres?.truncated) {
+        // Sales and money received by payment method, read the same way as the Staff Sales report (not from the journal).
+        const sres = res.tooBig ? null : await convex.query(api.periodReport.staffSales, { from: piece.from, to: piece.to, scope: effectiveScope });
+        if (res.tooBig || dres?.truncated || sres?.truncated) {
           const parts = halve(piece.from, piece.to);
           if (!parts) throw new Error(tr("Siku {0} ina miamala mingi mno kwa ripoti moja.", [piece.from]));
           queue.unshift(...parts); setProgress((p) => ({ ...p, total: p.total + 1 })); continue;
@@ -271,6 +284,8 @@ export default function PeriodReportPage() {
         for (const r of dres?.customers ?? []) addDebt(cMap, r);
         for (const r of dres?.waiterSales ?? []) { const c = sMap.get(r.bk); if (c) { c.orders += r.orders; c.sales += r.sales; c.cost += r.cost; } else sMap.set(r.bk, { ...r }); }
         for (const r of dres?.repaid ?? []) rMap.set(r.bk, (rMap.get(r.bk) ?? 0) + r.amount);
+        for (const r of sres?.sales ?? []) ssSales.set(r.bk, (ssSales.get(r.bk) ?? 0) + r.amount);
+        for (const r of sres?.methods ?? []) { const k = `${r.bk}|${r.method}`; const c = ssMethods.get(k); if (c) c.amount += r.amount; else ssMethods.set(k, { ...r }); }
         for (const s of res.sections) {
           let acc = byBranch.get(s.bk); if (!acc) { acc = new Map(); byBranch.set(s.bk, acc); }
           for (const r of s.rows) {
@@ -288,6 +303,7 @@ export default function PeriodReportPage() {
         customers: [...cMap.values()].map(fix).sort((x, y) => y.amount - x.amount),
         waiterSales: [...sMap.values()].map((r) => ({ ...r, sales: r2(r.sales), cost: r2(r.cost) })),
         repaid: [...rMap.entries()].map(([bk, amount]) => ({ bk, amount: r2(amount) })),
+        staffSales: { sales: [...ssSales.entries()].map(([bk, amount]) => ({ bk, amount: r2(amount) })), methods: [...ssMethods.values()].map((r) => ({ ...r, amount: r2(r.amount) })) },
       };
       // One section per department (all of them, even those with no activity, so the report always shows every department asked for).
       const wanted = effectiveScope === "all" ? [...departments.map((x) => x.id), ...(byBranch.has("none") ? ["none"] : [])] : [effectiveScope];

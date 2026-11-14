@@ -5,7 +5,7 @@ import type { Doc } from "./_generated/dataModel";
 import { waiterOwes } from "./waiterMath";
 import { activeDepartments, allowedBranchIds, isSuperAdmin, logAudit, requireActiveUser, requirePermission, roleHasPermission } from "./access";
 import type { UserLike } from "./access";
-import { accRows, addDays, channelOfKind, entryRows, isDate, round2, statementOf, summarize, type DebtRow, type ExpenseItem, type JEntry, type RepaidRow, type Row, type WaiterSalesRow } from "./reportCore";
+import { accRows, addDays, channelOfKind, entryRows, isDate, round2, statementOf, summarize, type DebtRow, type ExpenseItem, type JEntry, type RepaidRow, type Row, type StaffSalesData, type WaiterSalesRow } from "./reportCore";
 
 /**
  * PERIOD REPORT (Accounts > Ripoti ya Siku / Mwezi / Mwaka)
@@ -175,6 +175,53 @@ export const debts = query({
   },
 });
 
+/**
+ * STAFF SALES FIGURES for the report: sales and the money received BY PAYMENT METHOD, read with exactly the rules of the Staff Sales report
+ * (Sales > Staff Sales Report), so the two reports always agree and the accounting journal (which still holds cancelled / re-booked bills) is not used for these:
+ *  - sales    = posted invoices of the period + Selling Point bills sent in the period (cancelled bills and drafts are not sales);
+ *  - received = customer payments (not voided) of the period + the splits of the cashier's waiter collections of the period, by payment method.
+ */
+export const staffSales = query({
+  args: { from: v.string(), to: v.string(), scope: v.optional(v.string()) },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
+    if (!isDate(a.from) || !isDate(a.to) || a.to < a.from) throw new ConvexError("Tarehe za ripoti si sahihi.");
+    const sc = await reportScope(ctx, user, a.scope);
+    const sales: Array<{ bk: string; amount: number }> = [], methods: Array<{ bk: string; method: string; amount: number }> = [];
+    if (!sc.tenantId) return { sales, methods, truncated: false };
+    const tenantId = sc.tenantId;
+    let truncated = false;
+    const salesBy = new Map<string, number>(), methodBy = new Map<string, { bk: string; method: string; amount: number }>();
+    const addSale = (bk: string, n: number) => salesBy.set(bk, round2((salesBy.get(bk) ?? 0) + n));
+    const addMethod = (bk: string, method: string, n: number) => { const k = `${bk}|${method}`; const c = methodBy.get(k) ?? { bk, method, amount: 0 }; c.amount = round2(c.amount + n); methodBy.set(k, c); };
+    const keep = (bk: string) => !sc.only || bk === sc.only;
+
+    const invoices = await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("invoiceDate", a.from).lte("invoiceDate", a.to)).take(MAX_DEBT_ORDERS + 1);
+    if (invoices.length > MAX_DEBT_ORDERS) truncated = true;
+    for (const inv of invoices.slice(0, MAX_DEBT_ORDERS)) { if (inv.status === "posted" && keep(bkey(inv.branchId))) addSale(bkey(inv.branchId), inv.total); }
+
+    const orders = await ctx.db.query("waiterOrders").withIndex("by_tenant_created", (q) => q.eq("tenantId", tenantId).gte("createdAt", dayStartIso(a.from)).lt("createdAt", dayStartIso(addDays(a.to, 1)))).take(MAX_DEBT_ORDERS + 1);
+    if (orders.length > MAX_DEBT_ORDERS) truncated = true;
+    for (const o of orders.slice(0, MAX_DEBT_ORDERS)) {
+      if (o.cancelledAt || !(o.status === "pending" || o.status === "accepted" || o.status === "printed")) continue;
+      const sale = round2(o.total - (o.assignedAmount ?? 0));
+      if (sale > 0 && keep(bkey(o.branchId))) addSale(bkey(o.branchId), sale);
+    }
+
+    const pays = await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("paymentDate", a.from).lte("paymentDate", a.to)).take(MAX_DEBT_ORDERS + 1);
+    if (pays.length > MAX_DEBT_ORDERS) truncated = true;
+    for (const p of pays.slice(0, MAX_DEBT_ORDERS)) { if (!p.voided && keep(bkey(p.branchId))) addMethod(bkey(p.branchId), p.paymentMethod, p.amount); }
+
+    const cols = await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("date", a.from).lte("date", a.to)).take(MAX_DEBT_ORDERS + 1);
+    if (cols.length > MAX_DEBT_ORDERS) truncated = true;
+    for (const c of cols.slice(0, MAX_DEBT_ORDERS)) { if (keep(bkey(c.branchId))) for (const sp of c.splits) addMethod(bkey(c.branchId), sp.method, sp.amount); }
+
+    sales.push(...[...salesBy.entries()].map(([bk, amount]) => ({ bk, amount })));
+    methods.push(...methodBy.values());
+    return { sales, methods, truncated };
+  },
+});
+
 /** Business header printed on the report (name, address, phone, currency). */
 export const header = query({
   args: {},
@@ -191,7 +238,7 @@ export const header = query({
 const itemValidator = v.object({ bk: v.string(), d: v.string(), t: v.string(), c: v.string(), a: v.number() });
 const debtValidator = v.object({ bk: v.string(), name: v.string(), orders: v.number(), amount: v.number(), cost: v.number() });
 const sectionValidator = v.object({ bk: v.string(), name: v.string(), rows: v.array(v.object({ g: v.string(), k: v.string(), label: v.string(), a: v.number(), b: v.number(), c: v.number() })), items: v.optional(v.array(itemValidator)) });
-const debtsValidator = v.object({ waiters: v.array(debtValidator), customers: v.array(debtValidator), waiterSales: v.optional(v.array(v.object({ bk: v.string(), orders: v.number(), sales: v.number(), cost: v.number() }))), repaid: v.optional(v.array(v.object({ bk: v.string(), amount: v.number() }))) });
+const debtsValidator = v.object({ waiters: v.array(debtValidator), customers: v.array(debtValidator), waiterSales: v.optional(v.array(v.object({ bk: v.string(), orders: v.number(), sales: v.number(), cost: v.number() }))), repaid: v.optional(v.array(v.object({ bk: v.string(), amount: v.number() }))), staffSales: v.optional(v.object({ sales: v.array(v.object({ bk: v.string(), amount: v.number() })), methods: v.array(v.object({ bk: v.string(), method: v.string(), amount: v.number() })) })) });
 
 export const save = mutation({
   args: { period: v.string(), startDate: v.string(), endDate: v.string(), scope: v.string(), scopeLabel: v.string(), title: v.string(), sections: v.array(sectionValidator), debts: v.optional(debtsValidator) },
@@ -261,7 +308,7 @@ export const getRun = query({
     if (!r || r.tenantId !== user.tenantId) return null;
     const sc = await reportScope(ctx, user, undefined);
     if (sc.only && r.scope !== sc.only) return null;
-    return { _id: r._id, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scope: r.scope, scopeLabel: r.scopeLabel, createdByName: r.createdByName, createdAt: r.createdAt, ...(() => { const d = JSON.parse(r.data) as { sections: Array<{ bk: string; name: string; rows: Row[]; items?: ExpenseItem[] }>; debts?: { waiters: DebtRow[]; customers: DebtRow[]; waiterSales?: WaiterSalesRow[]; repaid?: RepaidRow[] } }; return { sections: d.sections, debts: d.debts ?? null }; })() };
+    return { _id: r._id, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scope: r.scope, scopeLabel: r.scopeLabel, createdByName: r.createdByName, createdAt: r.createdAt, ...(() => { const d = JSON.parse(r.data) as { sections: Array<{ bk: string; name: string; rows: Row[]; items?: ExpenseItem[] }>; debts?: { waiters: DebtRow[]; customers: DebtRow[]; waiterSales?: WaiterSalesRow[]; repaid?: RepaidRow[]; staffSales?: StaffSalesData } }; return { sections: d.sections, debts: d.debts ?? null }; })() };
   },
 });
 

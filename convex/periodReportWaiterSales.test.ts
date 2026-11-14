@@ -94,3 +94,22 @@ describe("Generate report = Sales report for Selling Point sales", () => {
     expect(t.dres.repaid).toEqual([{ bk: expect.any(String), amount: 4000 }]);
   });
 });
+
+describe("Period report takes sales and payment methods from the Staff Sales figures", () => {
+  it("counts non-cancelled bills as sales and received money by payment method (a cancelled bill is not a sale)", async () => {
+    const { t, tenantId, waiter, cashier, productId, asBoss } = await setup();
+    const day = eat(Date.now());
+    const now = new Date().toISOString();
+    await t.run(async (ctx) => {
+      const mk = (total: number, extra: Record<string, unknown> = {}) => ctx.db.insert("waiterOrders", { tenantId, customerName: "Meza", waiterId: waiter, waiterName: "Juma", status: "printed", paidAmount: total, lines: [{ productId, productName: "Bia", qty: 1, unitPrice: total, lineTotal: total }], total, invoiceNo: `INV-${total}`, createdAt: now, updatedAt: now, ...extra } as never);
+      const a = await mk(4000), b = await mk(6000);
+      await mk(9000, { status: "pending", cancelledAt: now }); // cancelled bill: must NOT count
+      await ctx.db.insert("waiterCollections", { tenantId, staffId: waiter, staffName: "Juma", cashierId: cashier, cashierName: "Neema", date: day, total: 10000, splits: [{ method: "Cash", amount: 6000 }, { method: "Mpesa", amount: 4000 }], orderIds: [a, b], createdAt: now });
+    });
+    const r = await asBoss.query(api.periodReport.staffSales, { from: day, to: day });
+    expect(r.sales.reduce((n, x) => n + x.amount, 0)).toBe(10000);
+    const by = Object.fromEntries(r.methods.map((m) => [m.method, m.amount]));
+    expect(by).toEqual({ Cash: 6000, Mpesa: 4000 });
+    expect(r.truncated).toBe(false);
+  });
+});

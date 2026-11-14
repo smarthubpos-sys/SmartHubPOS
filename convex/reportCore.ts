@@ -165,7 +165,9 @@ export function statement(s: Summary, waiterDebt: number, waiterDebtCost: number
 
 export type WaiterSalesRow = { bk: string; orders: number; sales: number; cost: number };
 export type RepaidRow = { bk: string; amount: number };
-export type DebtsData = { waiters: DebtRow[]; customers: DebtRow[]; waiterSales?: WaiterSalesRow[]; repaid?: RepaidRow[] };
+/** Sales and money received by payment method, read with the rules of the Staff Sales report (see periodReport.staffSales). */
+export type StaffSalesData = { sales: Array<{ bk: string; amount: number }>; methods: Array<{ bk: string; method: string; amount: number }> };
+export type DebtsData = { waiters: DebtRow[]; customers: DebtRow[]; waiterSales?: WaiterSalesRow[]; repaid?: RepaidRow[]; staffSales?: StaffSalesData };
 
 /**
  * The statement of a report (all departments, or one department `bk`), from its journal summary and its debts block.
