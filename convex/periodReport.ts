@@ -3,6 +3,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { waiterOwes } from "./waiterMath";
+import { EXPENSE } from "./bills";
 import { activeDepartments, allowedBranchIds, isSuperAdmin, logAudit, requireActiveUser, requirePermission, roleHasPermission } from "./access";
 import type { UserLike } from "./access";
 import { accRows, addDays, channelOfKind, entryRows, isDate, round2, statementOf, summarize, type DebtRow, type ExpenseItem, type JEntry, type RepaidRow, type Row, type StaffSalesData, type WaiterSalesRow } from "./reportCore";
@@ -16,6 +17,7 @@ import { accRows, addDays, channelOfKind, entryRows, isDate, round2, statementOf
  * `save` keeps a snapshot of a generated report (history table); `history` / `getRun` list and reopen them.
  */
 
+const BILL_SOURCES = new Set(["bill", "bill_edit", "bill_void"]);
 const MAX_ENTRIES = 1200; // entries per call (each has ~6 lines): keeps one call far below Convex read limits
 const MAX_SNAPSHOT = 900_000; // bytes of JSON kept per saved report (a document may not exceed 1 MiB)
 const bkey = (branchId: unknown) => (branchId ? String(branchId) : "none");
@@ -72,6 +74,9 @@ export const chunk = query({
         const k = String(l.accountId);
         if (!accounts.has(k)) accounts.set(k, await ctx.db.get("accounts", l.accountId));
         const ac = accounts.get(k);
+        // Expenses are NOT read from the journal of a bill (its original, edit and void entries): the report takes the bills as they stand now (see below),
+        // so an edited bill shows once with its new amount and a cancelled bill disappears completely, with no reversal lines.
+        if (ac && ac.type === "expense" && BILL_SOURCES.has(e.sourceType ?? "")) continue;
         if (ac) {
           lines.push({ code: ac.code, name: ac.name, type: ac.type, subtype: ac.subtype, debit: l.debit, credit: l.credit, channel: ac.subtype === "payment_method" && kindOf.has(k) ? channelOfKind(kindOf.get(k)) : undefined });
           // Every operating expense exactly as it was entered (date, who/what, category, amount); cost of goods is not an expense line.
@@ -83,6 +88,17 @@ export const chunk = query({
       }
       let acc = byBranch.get(bk); if (!acc) { acc = new Map(); byBranch.set(bk, acc); }
       entryRows({ entryDate: e.entryDate, sourceType: e.sourceType, lines }, acc);
+    }
+    // The expenses of the period = the bills that are valid now (not cancelled), on their own bill date, at their current amount.
+    const bills = await ctx.db.query("bills").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect();
+    for (const b of bills) {
+      if (b.status === "void" || b.billDate < a.from || b.billDate > a.to) continue;
+      const bk = bkey(b.branchId);
+      if (sc.only && bk !== sc.only) continue;
+      const exp = EXPENSE[b.category] ?? EXPENSE.other;
+      let acc = byBranch.get(bk); if (!acc) { acc = new Map(); byBranch.set(bk, acc); }
+      entryRows({ entryDate: b.billDate, sourceType: "bill_current", lines: [{ code: exp.code, name: exp.name, type: "expense", debit: b.amount, credit: 0 }] }, acc);
+      const list = itemsBy.get(bk) ?? []; list.push({ bk, d: b.billDate, t: `Bill ${b.billNumber}: ${b.vendor}`.slice(0, 160), c: exp.name, a: round2(b.amount) }); itemsBy.set(bk, list);
     }
     const keys = new Set([...byBranch.keys(), ...itemsBy.keys()]);
     return { tooBig: false, sections: [...keys].map((bk) => ({ bk, rows: accRows(byBranch.get(bk) ?? new Map()), items: itemsBy.get(bk) ?? [] })) };

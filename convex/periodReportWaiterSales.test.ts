@@ -113,3 +113,21 @@ describe("Period report takes sales and payment methods from the Staff Sales fig
     expect(r.truncated).toBe(false);
   });
 });
+
+describe("Period report expenses = bills that are valid now (no reversal lines)", () => {
+  it("an edited bill shows once with its new amount and a cancelled bill disappears completely", async () => {
+    const { asBoss } = await setup();
+    const day = new Date().toISOString().slice(0, 10);
+    const mk = (vendor: string, amount: number) => asBoss.mutation(api.bills.create, { vendor, category: "other", billDate: day, dueDate: day, amount });
+    const a = await mk("supplier A", 6000);
+    await asBoss.mutation(api.bills.update, { billId: a, vendor: "supplier A", category: "other", billDate: day, dueDate: day, amount: 60000 }); // edit 6,000 -> 60,000
+    await mk("supplier B", 60000);
+    const c = await mk("supplier C", 3000);
+    await asBoss.mutation(api.bills.voidBill, { billId: c }); // cancelled: must vanish
+    const ch = await asBoss.query(api.periodReport.chunk, { from: day, to: day, scope: "all" });
+    const items = ch.sections.flatMap((s) => s.items);
+    expect(items.map((i) => i.a).sort((x, y) => x - y)).toEqual([60000, 60000]);
+    expect(items.every((i) => i.a > 0 && !/^(Edit|Void) /.test(i.t))).toBe(true);
+    expect(summarize(sumSections(ch.sections.map((s) => s.rows as Row[]))).totalExpenses).toBe(120000);
+  });
+});

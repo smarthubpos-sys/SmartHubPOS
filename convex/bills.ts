@@ -6,7 +6,7 @@ import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireMana
 import { getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits } from "./paymentMethods";
 
-const EXPENSE: Record<string, { code: string; name: string }> = {
+export const EXPENSE: Record<string, { code: string; name: string }> = {
   rent: { code: "6100", name: "Rent expense" },
   electricity: { code: "6110", name: "Utilities expense" },
   water: { code: "6110", name: "Utilities expense" },
