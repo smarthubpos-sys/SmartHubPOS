@@ -328,15 +328,15 @@ export const getRun = query({
   },
 });
 
-/** Delete a saved report snapshot. Super Admin only; never deletes accounting transactions. */
+/**
+ * Delete a saved report snapshot. Super Admin, or anyone given the permission "accounts.reports.delete" (Role Management / Users form);
+ * a user tied to one department can delete only that department's reports. Never deletes accounting transactions.
+ */
 export const deleteRun = mutation({
   args: { id: v.id("reportRuns") },
   handler: async (ctx, a) => {
-    const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
-
-    if (!isSuperAdmin(user)) {
-      throw new ConvexError("Super Admin pekee ndiye anayeruhusiwa kufuta ripoti.");
-    }
+    const user = await requirePermission(ctx, "accounts.reports.delete", "accounts");
+    await requirePermission(ctx, "accounts.reports.view", "accounts"); // the delete button lives on the report page
 
     if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
 
@@ -344,6 +344,8 @@ export const deleteRun = mutation({
     if (!report || report.tenantId !== user.tenantId) {
       throw new ConvexError("Ripoti haipo kwenye biashara yako.");
     }
+    const sc = await reportScope(ctx, user, undefined);
+    if (sc.only && report.scope !== sc.only) throw new ConvexError("Ripoti hii si ya idara yako.");
 
     await logAudit(ctx, user, {
       action: "delete_period_report",

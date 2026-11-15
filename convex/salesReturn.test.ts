@@ -102,7 +102,7 @@ describe("period report", () => {
     expect(empty.sections).toHaveLength(0);
   });
 
-  it("allows only Super Admin to delete a report snapshot", async () => {
+  it("deletes a report snapshot only for Super Admin or a user given the delete permission", async () => {
     const { t, tenantId, asMgr } = await setup();
     const superId = await t.run((ctx) => ctx.db.insert("users", {
       name: "Super", username: "super", role: "super_admin",
@@ -116,10 +116,23 @@ describe("period report", () => {
       sections: [],
     });
 
-    await expect(asMgr.mutation(api.periodReport.deleteRun, { id }))
-      .rejects.toThrow(/Super Admin/);
+    // a Manager WITHOUT the permission cannot delete ...
+    const manager = await t.run((ctx) => ctx.db.insert("users", { name: "Manager", username: "manager", role: "manager", tenantId, isActive: true }));
+    const asManager = t.withIdentity({ subject: manager, tokenIdentifier: "x|manager" });
+    await expect(asManager.mutation(api.periodReport.deleteRun, { id }))
+      .rejects.toThrow(/accounts\.reports\.delete/);
+    // ... but once he is given "accounts.reports.delete" he can (the permission was shown in Role Management but the server still refused)
+    await t.run(async (ctx) => { await ctx.db.patch("users", manager, { extraPermissions: ["accounts.reports.delete"] }); });
+    await asManager.mutation(api.periodReport.deleteRun, { id });
+    expect(await asSuper.query(api.periodReport.history, {})).toHaveLength(0);
 
-    await asSuper.mutation(api.periodReport.deleteRun, { id });
+    // Super Admin still can
+    const id2 = await asMgr.mutation(api.periodReport.save, {
+      period: "day", startDate: date, endDate: date,
+      scope: "all", scopeLabel: "Biashara nzima", title: "Test delete 2",
+      sections: [],
+    });
+    await asSuper.mutation(api.periodReport.deleteRun, { id: id2 });
     expect(await asSuper.query(api.periodReport.history, {})).toHaveLength(0);
   });
   it("saves a snapshot that can be listed and reopened", async () => {

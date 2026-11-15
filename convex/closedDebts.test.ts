@@ -32,7 +32,7 @@ async function setup() {
 }
 
 describe("Closing the day report moves unpaid waiter debts to 'Closed debts'", () => {
-  it("before closing the debt is on the normal list; after closing it leaves it but is still receivable under Closed debts", async () => {
+  it("before closing the debt is on the normal list; after closing it leaves it, and cannot be received on the closed day itself", async () => {
     const s = await setup();
     expect(await s.asCashier.query(api.waiterCollections.owing, {})).toEqual([expect.objectContaining({ staffId: s.waiter, total: 4000 })]);
     expect(await s.asCashier.query(api.waiterCollections.closedOwing, {})).toEqual([]);
@@ -43,10 +43,11 @@ describe("Closing the day report moves unpaid waiter debts to 'Closed debts'", (
     expect(d.waiters).toEqual([expect.objectContaining({ name: "juma", amount: 4000 })]);
     const closed = await s.asCashier.query(api.waiterCollections.closedOwing, {});
     expect(closed).toEqual([expect.objectContaining({ staffId: s.waiter, total: 4000 })]);
-    // the cashier can still receive it
-    const r = await s.asCashier.mutation(api.waiterCollections.collect, { staffId: s.waiter, orderIds: closed[0].orders.map((o) => o._id), splits: [{ method: "cash", amount: 4000 }] as never });
-    expect(r.total).toBe(4000);
-    expect(await s.asCashier.query(api.waiterCollections.closedOwing, {})).toEqual([]);
+    // the repayment must be counted on a day that is NOT closed: today was just closed in the report, so receiving it today is refused
+    // (receiving it on a later / other open day is covered in periodReportWaiterSales.test.ts)
+    await expect(s.asCashier.mutation(api.waiterCollections.collect, { staffId: s.waiter, orderIds: closed[0].orders.map((o) => o._id), splits: [{ method: "cash", amount: 4000 }] as never }))
+      .rejects.toThrow(/ilishafungwa/);
+    expect(await s.asCashier.query(api.waiterCollections.closedOwing, {})).toEqual([expect.objectContaining({ total: 4000 })]); // nothing was received
   });
 
   it("deleting the day report puts its debts back on the normal list", async () => {
