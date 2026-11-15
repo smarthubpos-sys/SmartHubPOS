@@ -16,6 +16,7 @@ import { usePaymentMethods } from "@/hooks/use-payment-methods.ts";
 import { printElement, type Paper } from "@/lib/print-area.ts";
 import InvoiceFinder from "@/pages/sales/InvoiceFinder.tsx";
 import DayEndSummary from "@/pages/sales/DayEndSummary.tsx";
+import WaiterDebtsCard from "@/pages/sales/WaiterDebtsCard.tsx";
 
 const esc = (v: unknown) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -210,6 +211,7 @@ export default function SalesRegister() {
         <Stat label={tr("Invoices")} value={totals.invoices} /><Stat label={tr("Mauzo (jumla)")} value={totals.sales} /><Stat label={tr("Tax")} value={totals.tax} /><Stat label={tr("Malipo yaliyopokelewa")} value={totals.received} /><Stat label={tr("Deni la invoices")} value={totals.outstanding} />{totals.waiterDebt > 0 && <Stat label={tr("Madeni ya wahudumu (yaliyotokea)")} value={totals.waiterDebt} />}{totals.waiterDebtOpen > 0 && <Stat label={tr("Madeni ya wahudumu (bado yamebaki)")} value={totals.waiterDebtOpen} />}
       </div>
       <div className="print:break-inside-avoid"><DayEndSummary payments={[...payments, ...(data.spByMethod ?? [])]} sales={totals.sales} debt={round2(totals.outstanding + totals.waiterDebt)} debtors={[...(data.openInvoices ?? []).reduce<Array<{ name: string; amount: number }>>((acc, i) => { const hit = acc.find((x) => x.name === i.clientName); if (hit) hit.amount = round2(hit.amount + i.outstanding); else acc.push({ name: i.clientName, amount: i.outstanding }); return acc; }, []), ...(totals.waiterDebt > 0 ? [{ name: tr("Wahudumu (Selling Point)"), amount: totals.waiterDebt }] : [])].sort((x, y) => y.amount - x.amount)} /></div>
+      {path === "reports/staff" && <div className="print:break-inside-avoid"><WaiterDebtsCard /></div>}
       {INVOICE_SEARCH_PATHS.includes(path) && <InvoiceFinder />}
       {path === "reports/sold-items" && <section className="flex flex-wrap items-end gap-3 rounded-xl border bg-card p-4 print:hidden"><label className="grid min-w-56 flex-1 gap-1 text-sm">{tr("Staff Code ya mhudumu")}<Input value={staffCode} onChange={(e) => setStaffCode(e.target.value.toUpperCase())} placeholder={tr("Weka Staff Code")}/></label><label className="flex h-10 items-center gap-2 rounded-lg border px-3 text-sm"><input type="checkbox" className="h-4 w-4 accent-primary" checked={showItems} onChange={(e) => setShowItems(e.target.checked)}/>{tr("Items Report")}</label><p className="w-full text-xs text-muted-foreground">{tr("Acha Staff Code wazi kuona wote; weka code kuona mauzo ya mhudumu mmoja. Zima Items Report kuona invoice za mhudumu.")}</p></section>}
       {paymentForm}

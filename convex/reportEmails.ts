@@ -24,13 +24,17 @@ export const reportEmailContext = internalQuery({
 });
 
 export const sendReport = action({
-  args: { title: v.string(), lang: v.optional(v.string()), rows: v.array(v.record(v.string(), v.union(v.string(), v.number(), v.boolean(), v.null()))), startDate: v.optional(v.string()), endDate: v.optional(v.string()) },
+  args: { title: v.string(), lang: v.optional(v.string()), rows: v.array(v.record(v.string(), v.union(v.string(), v.number(), v.boolean(), v.null()))), startDate: v.optional(v.string()), endDate: v.optional(v.string()), extraTo: v.optional(v.string()) },
   handler: async (ctx, args): Promise<{ sent: boolean; recipients: number }> => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new ConvexError("Ingia kwanza kutuma ripoti.");
     if (args.rows.length > 500) throw new ConvexError("Ripoti ina mistari mingi sana. Punguza kipindi hadi mistari 500 au chini.");
     const context: { recipients: string[]; companyName: string; tenantId: string } = await ctx.runQuery(internal.reportEmails.reportEmailContext, { subject: identity.subject });
-    if (!context.recipients.length) throw new ConvexError("Weka email za wapokeaji kwenye Maintenance > System Setup kwanza.");
+    // Optional one-off recipient(s) typed at send time, added to the saved list (System Setup).
+    const extra = (args.extraTo ?? "").split(/[;,\s]+/).map((x) => x.trim()).filter(Boolean);
+    if (extra.some((x) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x))) throw new ConvexError("Anwani ya email si sahihi.");
+    const recipients = [...new Set([...context.recipients, ...extra.map((x) => x.toLowerCase())])].slice(0, 20);
+    if (!recipients.length) throw new ConvexError("Weka email za wapokeaji kwenye Maintenance > System Setup kwanza, au andika email ya kupokea.");
     const key = process.env.RESEND_API_KEY;
     const from = process.env.REPORTS_FROM_EMAIL;
     if (!key || !from) throw new ConvexError("Email haijasanidiwa. Weka RESEND_API_KEY na REPORTS_FROM_EMAIL kwenye Convex environment variables.");
@@ -42,9 +46,9 @@ export const sendReport = action({
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to: context.recipients, subject: `${context.companyName} — ${args.title}`, html: `<div style="font-family:Arial,sans-serif"><h2>${escape(context.companyName)}</h2><h3>${escape(args.title)}</h3>${period}<p>${en ? "Sent by SmartHubPOS." : "Imetumwa na SmartHubPOS."}</p>${table}</div>` }),
+      body: JSON.stringify({ from, to: recipients, subject: `${context.companyName} — ${args.title}`, html: `<div style="font-family:Arial,sans-serif"><h2>${escape(context.companyName)}</h2><h3>${escape(args.title)}</h3>${period}<p>${en ? "Sent by SmartHubPOS." : "Imetumwa na SmartHubPOS."}</p>${table}</div>` }),
     });
     if (!response.ok) throw new ConvexError(`Imeshindikana kutuma email (${response.status}). Hakiki mipangilio ya Resend na anwani ya mtumaji.`);
-    return { sent: true, recipients: context.recipients.length };
+    return { sent: true, recipients: recipients.length };
   },
 });

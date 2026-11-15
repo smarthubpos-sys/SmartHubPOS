@@ -27,6 +27,16 @@ async function cashierScope(ctx: Parameters<typeof requirePermission>[0]) {
 }
 const inScope = (branchId: Id<"branches"> | undefined, o: Doc<"waiterOrders">) => !branchId || o.branchId === branchId;
 
+/**
+ * A day is CLOSED once a day report (Generate report > period "day") that covers it was saved for the department of the bills (or for all departments).
+ * Money received later for closed debts may only be counted on a day that is still OPEN.
+ */
+async function dayIsClosed(ctx: MutationCtx, tenantId: Id<"tenants">, orders: Doc<"waiterOrders">[], date: string): Promise<boolean> {
+  const keys = new Set(orders.map((o) => (o.branchId ? String(o.branchId) : "none")));
+  const runs = await ctx.db.query("reportRuns").withIndex("by_tenant_period_start", (q) => q.eq("tenantId", tenantId).eq("period", "day").lte("startDate", date)).order("desc").take(60);
+  return runs.some((r) => r.endDate >= date && (r.scope === "all" || keys.has(r.scope)));
+}
+
 /** Cost of the goods of one order = what its stock movements took out of the shelf (minus what a cancel put back), at the cost recorded then. */
 async function orderCost(ctx: MutationCtx, orderId: Id<"waiterOrders">): Promise<number> {
   const moves = await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "waiterOrder").eq("referenceId", String(orderId))).collect();
@@ -160,9 +170,10 @@ export const collect = mutation({
       if (closedCount > 0 && closedCount < orders.length) throw new ConvexError("Madeni ya siku iliyofungwa (Closed debts) yapokelewe kando na oda za kawaida.");
       const allClosed = orders.length > 0 && closedCount === orders.length;
       if (!allClosed && args.paymentDate === undefined && orderDays.length > 1) throw new ConvexError(`Oda ni za siku tofauti (${orderDays.join(", ")}). Pokea siku moja moja, au chagua tarehe ya malipo mwenyewe.`);
-      const date = allClosed ? today : args.paymentDate === undefined ? oldestDay : assertDate(args.paymentDate, "Tarehe ya malipo");
+      const date = args.paymentDate === undefined ? (allClosed ? today : oldestDay) : assertDate(args.paymentDate, "Tarehe ya malipo"); // closed debts: the cashier may pick the (open) day the repayment belongs to; default today
       if (date > today) throw new ConvexError("Tarehe ya malipo haiwezi kuwa ya baadaye.");
       if (date < oldestDay) throw new ConvexError(`Tarehe ya malipo haiwezi kuwa kabla ya tarehe ya oda (${oldestDay}).`);
+      if (allClosed && (await dayIsClosed(ctx, tenantId, orders, date))) throw new ConvexError(`Siku ya ${date} ilishafungwa kwenye ripoti. Chagua siku ambayo hesabu zake hazijafungwa.`);
       const collectionId = await ctx.db.insert("waiterCollections", {
         tenantId, branchId, staffId: args.staffId, staffName,
         cashierId: user._id, cashierName: user.name ?? user.username ?? "cashier", date, total: paid, splits, orderIds: touched.map((o) => o._id), createdAt: now,

@@ -836,7 +836,7 @@ export default defineSchema({
     createdBy: v.id("users"),
     createdByName: v.string(),
     createdAt: v.string(),
-  }).index("by_tenant", ["tenantId"]),
+  }).index("by_tenant", ["tenantId"]).index("by_tenant_period_start", ["tenantId", "period", "startDate"]),
 
   // ── AUDIT LOG ────────────────────────────────────────────────
   auditLogs: defineTable({
