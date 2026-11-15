@@ -14,6 +14,7 @@ import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 import { qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 import { printPaymentReceipt } from "@/lib/print-payment-receipt.ts";
 import { PRINT_RECEIPT_KEY, readPrintReceiptChoice } from "@/lib/print-receipt-choice.ts";
+import { orderStamp } from "@/lib/order-stamp.ts";
 
 const money = (n: number) => Number(n).toLocaleString();
 /** Business day (East Africa Time) of an order timestamp. */
@@ -23,10 +24,7 @@ const dayBefore = (d: string) => new Date(Date.parse(`${d}T00:00:00Z`) - 8640000
 /** Cashier: pick a waiter, tick the orders whose money was handed over, record how it was paid. Orders are marked settled, never deleted. */
 export default function WaiterCollection() {
   const methods = usePaymentMethods();
-  const owingNormal = useQuery(api.waiterCollections.owing);
-  const owingClosed = useQuery(api.waiterCollections.closedOwing);
-  const [showClosed, setShowClosed] = useState(false); // "Closed debts": unpaid orders of days whose report was already closed; still receivable
-  const owing = showClosed ? owingClosed : owingNormal;
+  const owing = useQuery(api.waiterCollections.owing); // debts of CLOSED days are not shown here: they are in Sales > Staff Sales Report > Madeni ya wahudumu
   const [viewDate, setViewDate] = useState(() => localDate()); // day of the "received" list below
   const receipts = useQuery(api.waiterCollections.receipts, { date: viewDate });
   const collect = useMutation(api.waiterCollections.collect);
@@ -58,11 +56,9 @@ export default function WaiterCollection() {
   const today = localDate();
   const days = [...new Set(chosen.map((o) => orderDay(o.createdAt)))].sort();
   const oldestDay = days[0] ?? today; // money cannot belong to a day before the sale
-  // Closed debts (the day report was already closed): the money is a REPAYMENT, counted today. Bills of open days keep their sale day.
-  const repayment = showClosed;
-  const mixedDays = !repayment && days.length > 1;
-  const effectiveDate = repayment ? today : changeDate ? payDate : oldestDay; // the day the money is counted on
-  const dateOk = repayment ? true : changeDate ? /^\d{4}-\d{2}-\d{2}$/.test(payDate) && payDate <= today && payDate >= oldestDay : !mixedDays;
+  const mixedDays = days.length > 1;
+  const effectiveDate = changeDate ? payDate : oldestDay; // the day the money is counted on
+  const dateOk = changeDate ? /^\d{4}-\d{2}-\d{2}$/.test(payDate) && payDate <= today && payDate >= oldestDay : !mixedDays;
   const canSave = !busy && chosen.length > 0 && paying > 0.005 && debtLeft > -0.005 && dateOk;
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
@@ -80,13 +76,13 @@ export default function WaiterCollection() {
     setBusy(true);
     try {
       const splits = toSplits(lines, methods);
-      const res = await collect({ staffId: waiter.staffId as Id<"users">, orderIds: chosen.map((o) => o._id), splits: splits as never, paymentDate: !repayment && changeDate ? payDate : undefined }); // no date = the day of the sale
+      const res = await collect({ staffId: waiter.staffId as Id<"users">, orderIds: chosen.map((o) => o._id), splits: splits as never, paymentDate: changeDate ? payDate : undefined }); // no date = the day of the sale
       toast.success(res.debt > 0 ? tr("Fedha zimepokelewa. Deni lililobaki kwa mhudumu: {0}", [money(res.debt)]) : tr("Fedha zimepokelewa na kuhifadhiwa."));
       const receipt = {
         receiptNo: String(res.collectionId).slice(-6).toUpperCase(),
         cashierName,
         fromName: waiter.staffName,
-        orders: chosen.map((o) => ({ label: `${new Date(o.createdAt).toLocaleTimeString()}${o.tableNumber ? ` · ${o.tableNumber}` : ""}`, amount: o.total })),
+        orders: chosen.map((o) => ({ label: `${orderStamp(o.createdAt)}${o.tableNumber ? ` · ${o.tableNumber}` : ""}`, amount: o.total })),
         payments: splits.map((p) => ({ method: p.method, amount: p.amount })),
         total: res.total,
         debt: res.debt,
@@ -138,12 +134,8 @@ export default function WaiterCollection() {
   return (
     <section className="space-y-3 rounded-2xl border p-4">
       <h2 className="text-lg font-semibold">{tr("Pokea fedha za wahudumu")}</h2>
-      <div className="flex flex-wrap gap-2">
-        <Button type="button" size="sm" variant={showClosed ? "outline" : "default"} onClick={() => { setShowClosed(false); setStaffId(""); setPicked([]); }}>{tr("Madeni ya kawaida")} ({owingNormal?.length ?? 0})</Button>
-        <Button type="button" size="sm" variant={showClosed ? "default" : "outline"} onClick={() => { setShowClosed(true); setStaffId(""); setPicked([]); }}>{tr("Madeni yaliyofungwa")} ({owingClosed?.length ?? 0})</Button>
-      </div>
-      {showClosed && <p className="text-xs text-muted-foreground">{tr("Haya ni madeni ya siku ambazo ripoti yake ilishafungwa. Bado unaweza kuyapokea hapa.")}</p>}
-      {owing && owing.length === 0 && <p className="text-sm text-muted-foreground">{showClosed ? tr("Hakuna deni lililofungwa.") : tr("Hakuna mhudumu anayedaiwa kwa sasa.")}</p>}
+      <p className="text-xs text-muted-foreground">{tr("Madeni ya siku zilizofungwa yanapatikana kwenye Sales > Staff Sales Report > Madeni ya wahudumu.")}</p>
+      {owing && owing.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna mhudumu anayedaiwa kwa sasa.")}</p>}
       {owing && owing.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {owing.map((w) => (
@@ -162,7 +154,7 @@ export default function WaiterCollection() {
               <li key={String(o._id)}>
                 <label className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg px-2 hover:bg-muted">
                   <input type="checkbox" className="h-5 w-5" checked={picked.includes(String(o._id))} onChange={() => toggle(String(o._id))} />
-                  <span className="flex-1 text-sm">{new Date(o.createdAt).toLocaleTimeString()}{o.tableNumber ? ` · ${o.tableNumber}` : ""} · {o.lines}{o.paid > 0 && <em className="ml-1 text-xs text-amber-600">({tr("imelipwa")} {money(o.paid)} {tr("kati ya")} {money(o.orderTotal)})</em>}</span>
+                  <span className="flex-1 text-sm">{orderStamp(o.createdAt)}{o.tableNumber ? ` · ${o.tableNumber}` : ""} · {o.lines}{o.paid > 0 && <em className="ml-1 text-xs text-amber-600">({tr("imelipwa")} {money(o.paid)} {tr("kati ya")} {money(o.orderTotal)})</em>}</span>
                   <strong className="tabular-nums">{money(o.total)}</strong>
                 </label>
               </li>
@@ -170,14 +162,13 @@ export default function WaiterCollection() {
           </ul>
           <p className="text-base font-bold">{tr("Jumla ya kupokea")}: {money(due)}</p>
           <div className="space-y-2 rounded-lg border p-3 text-sm">
-            {repayment && <p className="text-xs text-amber-700">{tr("Hii ni marejesho ya deni la siku iliyofungwa: fedha zitahesabiwa leo kama marejesho, haziingii kwenye mauzo ya siku iliyofungwa.")}</p>}
-            <p>{repayment ? tr("Fedha zitahesabiwa leo (marejesho)") : tr("Fedha zitahesabiwa kwenye siku ya mauzo")}: <strong>{mixedDays && !changeDate ? "—" : effectiveDate}</strong></p>
+            <p>{tr("Fedha zitahesabiwa kwenye siku ya mauzo")}: <strong>{mixedDays && !changeDate ? "—" : effectiveDate}</strong></p>
             {mixedDays && !changeDate && <p className="text-xs text-destructive">{tr("Oda ni za siku tofauti ({0}). Pokea siku moja moja, au badilisha tarehe mwenyewe.", [days.join(", ")])}</p>}
-            {!repayment && <label className="flex items-center gap-2 text-xs"><input type="checkbox" className="h-4 w-4" checked={changeDate} disabled={busy} onChange={(e) => { setChangeDate(e.target.checked); if (e.target.checked) setPayDate(oldestDay); }} />{tr("Badilisha tarehe ya malipo")}</label>}
-            {!repayment && changeDate && <Input type="date" className="max-w-xs" value={payDate} min={oldestDay} max={today} disabled={busy} onChange={(e) => setPayDate(e.target.value)} />}
-            {!repayment && changeDate && !dateOk && <p className="text-xs text-destructive">{tr("Tarehe ya malipo lazima iwe kati ya {0} na {1}.", [oldestDay, today])}</p>}
+            <label className="flex items-center gap-2 text-xs"><input type="checkbox" className="h-4 w-4" checked={changeDate} disabled={busy} onChange={(e) => { setChangeDate(e.target.checked); if (e.target.checked) setPayDate(oldestDay); }} />{tr("Badilisha tarehe ya malipo")}</label>
+            {changeDate && <Input type="date" className="max-w-xs" value={payDate} min={oldestDay} max={today} disabled={busy} onChange={(e) => setPayDate(e.target.value)} />}
+            {changeDate && !dateOk && <p className="text-xs text-destructive">{tr("Tarehe ya malipo lazima iwe kati ya {0} na {1}.", [oldestDay, today])}</p>}
           </div>
-          {!repayment && (
+          {(
             <details className="rounded-lg border p-3 text-sm">
               <summary className="cursor-pointer font-medium">{tr("Mauzo ya usiku (baada ya saa 6 usiku)? Yarudishe siku iliyopita")}</summary>
               <p className="mt-2 text-xs text-muted-foreground">{tr("Bili zilizotiki zitahamia siku utakayochagua, na fedha zake (cash, mobile, bank) zitahesabiwa siku hiyo hiyo kwenye ripoti zote.")}</p>
@@ -214,7 +205,7 @@ export default function WaiterCollection() {
           {receipts.length === 0 && <p className="text-sm text-muted-foreground">{tr("Hakuna fedha zilizopokelewa siku hii.")}</p>}
           {receipts.map((r) => (
             <div key={String(r._id)} className="flex flex-wrap justify-between gap-2 text-sm">
-              <span>{new Date(r.createdAt).toLocaleTimeString()} · {r.staffName} · {r.orders} {tr("oda")} · {r.methods}{r.debt > 0 && <b className="ml-1 text-amber-600">· {tr("Deni")}: {money(r.debt)}</b>}</span>
+              <span>{orderStamp(r.createdAt)} · {r.staffName} · {r.orders} {tr("oda")} · {r.methods}{r.debt > 0 && <b className="ml-1 text-amber-600">· {tr("Deni")}: {money(r.debt)}</b>}</span>
               <span className="flex items-center gap-2"><strong className="tabular-nums">{money(r.total)}</strong><Button type="button" size="sm" variant="outline" onClick={() => void reprint(r)}>{tr("Chapisha risiti")}</Button><Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { setMoveRow(String(r._id)); setMoveRowDay(dayBefore(r.date)); }}>{tr("Hamisha siku")}</Button></span>
               {moveRow === String(r._id) && (
                 <span className="flex w-full flex-wrap items-center justify-end gap-2">

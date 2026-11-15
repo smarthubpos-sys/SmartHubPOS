@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { brandingFromSettings } from "@/lib/receipt-branding.ts";
 import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
+import { orderStamp } from "@/lib/order-stamp.ts";
 
 const money = (n: number) => Number(n).toLocaleString();
 const STATUS: Record<string, string> = { pending: tr("Inasubiri cashier"), accepted: tr("Imepokelewa"), printed: tr("Imechapishwa") };
@@ -80,7 +81,7 @@ export default function BillsPanel() {
           {rows.map((o) => (
             <label key={o._id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 hover:bg-muted">
               <input type="checkbox" className="h-5 w-5" checked={picked.includes(String(o._id))} onChange={() => toggle(String(o._id))} />
-              <span className="flex-1 text-sm">{new Date(o.createdAt).toLocaleTimeString()} · {o.lines.map((l) => `${l.productName}×${l.qty}`).join(", ")}<span className="block text-xs text-muted-foreground">{tr(STATUS[o.status] ?? o.status)}{!mine(o) && <> · {tr("Mhudumu")}: {o.waiterName} · {tr("Imetumwa kwa cashier")}</>}{mine(o) && waiter && o.billSentAt && <> · {tr("Imetumwa kwa cashier")}</>}</span></span>
+              <span className="flex-1 text-sm">{orderStamp(o.createdAt)} · {o.lines.map((l) => `${l.productName}×${l.qty}`).join(", ")}<span className="block text-xs text-muted-foreground">{tr(STATUS[o.status] ?? o.status)}{!mine(o) && <> · {tr("Mhudumu")}: {o.waiterName} · {tr("Imetumwa kwa cashier")}</>}{mine(o) && waiter && o.billSentAt && <> · {tr("Imetumwa kwa cashier")}</>}</span></span>
               <strong className="tabular-nums">{money(o.total)}</strong>
             </label>
           ))}
