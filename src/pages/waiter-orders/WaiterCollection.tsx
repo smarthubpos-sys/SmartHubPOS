@@ -15,6 +15,7 @@ import { qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 import { printPaymentReceipt } from "@/lib/print-payment-receipt.ts";
 import { PRINT_RECEIPT_KEY, readPrintReceiptChoice } from "@/lib/print-receipt-choice.ts";
 import { orderStamp } from "@/lib/order-stamp.ts";
+import SplitToCustomers from "@/pages/waiter-orders/SplitToCustomers.tsx";
 
 const money = (n: number) => Number(n).toLocaleString();
 /** Business day (East Africa Time) of an order timestamp. */
@@ -193,6 +194,8 @@ export default function WaiterCollection() {
               <Button type="button" variant="outline" disabled={busy || !clientId || chosen.length === 0 || due <= 0.005} onClick={() => void assignToCustomer()}>{tr("Elekeza deni kwa mteja")}</Button>
             </div>
           </details>
+          <SplitToCustomers key={staffId} orderIds={chosen.map((o) => o._id)} due={due} customers={customers ?? []} methods={methods} disabled={busy}
+            onDone={() => { setPicked([]); setStaffId(""); setClientId(""); setLines([newSplitLine(methods)]); }} />
           <Button disabled={!canSave} onClick={() => void receive()}>{busy ? tr("Inahifadhi...") : tr("Pokea fedha")}</Button>
         </div>
       )}

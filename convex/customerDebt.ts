@@ -145,6 +145,155 @@ export const assignOrdersToCustomer = mutation({
 });
 
 /**
+ * SPLIT ONE DEBT AMONG MANY CUSTOMERS. The cashier shares what the waiter still owes for the chosen bills between 2, 3, 4 ... registered customers.
+ * Each part may be paid on the spot (cash, Tigo Pesa, any methods); what a customer does not pay now stays HIS debt (a normal posted invoice on the day of the sale).
+ * If the parts are less than the debt, the rest stays with the waiter. All or nothing: one refused part records nothing.
+ * Bills are used oldest first, so a part can run over more than one bill (one invoice per customer per bill).
+ */
+export const splitDebtToCustomers = mutation({
+  args: {
+    orderIds: v.array(v.id("waiterOrders")),
+    parts: v.array(v.object({ clientId: v.id("clients"), amount: v.number(), paid: v.optional(v.array(splitValidator)) })),
+    paymentDate: v.optional(v.string()),
+  },
+  handler: async (ctx, a) => {
+    try {
+      const { user, tenantId, branchId } = await cashierScope(ctx);
+      await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
+      if (!a.orderIds.length) throw new ConvexError("Chagua bili za kugawanya.");
+      if (a.orderIds.length > 50) throw new ConvexError("Bili nyingi mno kwa mara moja (kikomo 50).");
+      if (new Set(a.orderIds.map(String)).size !== a.orderIds.length) throw new ConvexError("Bili moja imechaguliwa mara mbili.");
+      if (!a.parts.length) throw new ConvexError("Weka angalau mteja mmoja.");
+      if (a.parts.length > 20) throw new ConvexError("Wateja wengi mno kwa mara moja (kikomo 20).");
+      if (new Set(a.parts.map((p) => String(p.clientId))).size !== a.parts.length) throw new ConvexError("Mteja mmoja amewekwa mara mbili.");
+      if (a.parts.some((p) => !Number.isFinite(p.amount) || p.amount <= 0)) throw new ConvexError("Kila mteja lazima apewe kiasi kikubwa kuliko sifuri.");
+      const today = eatDay(new Date().toISOString());
+      const date = a.paymentDate === undefined ? today : assertDate(a.paymentDate, "Tarehe ya malipo");
+      if (date > today) throw new ConvexError("Tarehe ya malipo haiwezi kuwa ya baadaye.");
+
+      const orders: Doc<"waiterOrders">[] = [];
+      for (const id of a.orderIds) {
+        const o = await ctx.db.get("waiterOrders", id);
+        if (!o || o.tenantId !== tenantId || (branchId && o.branchId !== branchId)) throw new ConvexError("Bili haipo kwenye biashara au tawi lako.");
+        if (!collectable(o) || o.settledAt || waiterOwes(o) <= 0.005) throw new ConvexError("Bili hii haina deni la mhudumu la kugawanya.");
+        orders.push(o);
+      }
+      orders.sort((x, y) => x.createdAt.localeCompare(y.createdAt) || String(x._id).localeCompare(String(y._id)));
+      const due = r2(orders.reduce((n, o) => n + waiterOwes(o), 0));
+      const partsTotal = r2(a.parts.reduce((n, p) => n + p.amount, 0));
+      if (partsTotal > due + 0.01) throw new ConvexError(`Jumla ya sehemu za wateja (${partsTotal}) imezidi deni la bili (${due}).`);
+
+      const clients: Doc<"clients">[] = [];
+      const payNow: Array<{ splits: Array<{ method: string; methodId?: Id<"paymentMethods">; amount: number; reference?: string }>; total: number } | null> = [];
+      for (const p of a.parts) {
+        const client = await ctx.db.get("clients", p.clientId);
+        for (const o of orders) if (!clientUsable(client, tenantId, o.branchId)) throw new ConvexError(`Mteja ${client?.name ?? ""} hayupo kwenye biashara au idara ya bili hizi.`);
+        clients.push(client!);
+        if (p.paid?.length) {
+          const n = await normaliseSplits(ctx, user, p.paid);
+          if (n.total > p.amount + 0.01) throw new ConvexError(`Malipo ya ${client!.name} (${n.total}) yamezidi sehemu yake (${p.amount}).`);
+          payNow.push(n);
+        } else payNow.push(null);
+      }
+
+      // Share the debt out: each customer takes his amount from the oldest bills first.
+      const left = new Map(orders.map((o) => [String(o._id), r2(waiterOwes(o))]));
+      const slices: Array<{ part: number; order: Doc<"waiterOrders">; amount: number }> = [];
+      a.parts.forEach((p, pi) => {
+        let need = r2(p.amount);
+        for (const o of orders) {
+          if (need <= 0.001) break;
+          const have = left.get(String(o._id)) ?? 0;
+          const take = r2(Math.min(need, have));
+          if (take <= 0.001) continue;
+          slices.push({ part: pi, order: o, amount: take });
+          left.set(String(o._id), r2(have - take));
+          need = r2(need - take);
+        }
+      });
+
+      const now = new Date().toISOString();
+      const receivable = new Map<string, Id<"accounts">>();
+      const costOf = new Map<string, number>();
+      const invoicesOfPart: Array<Array<{ invoiceId: Id<"invoices">; invoiceNo: string; amount: number }>> = a.parts.map(() => []);
+      const perOrder = new Map<string, { sum: number; clientId: Id<"clients">; invoiceId: Id<"invoices"> }>();
+      for (const sl of slices) {
+        const o = sl.order, client = clients[sl.part];
+        const day = eatDay(o.createdAt);
+        const scope = { tenantId, branchId: o.branchId };
+        await assertPeriodOpen(ctx, scope, day);
+        const invoiceNo = await allocateSellingPointInvoiceNo(ctx, user, tenantId);
+        const note = `Deni la bili ya ${o.waiterName}${o.invoiceNo ? ` (${o.invoiceNo})` : ""}${o.tableNumber ? ` meza ${o.tableNumber}` : ""} - limegawanywa kwa wateja na cashier`;
+        const invoiceId = await ctx.db.insert("invoices", {
+          ...scope, invoiceNo, invoiceDate: day, clientId: client._id, subtotal: sl.amount, discount: 0, taxAmount: 0, total: sl.amount,
+          amountPaid: 0, outstanding: sl.amount, paymentStatus: "unpaid", status: "posted", salespersonId: o.waiterId, salesSource: "Selling Point",
+          notes: note, createdBy: user._id, postedAt: now,
+        });
+        const rKey = `${o.branchId ?? "none"}`;
+        if (!receivable.has(rKey)) receivable.set(rKey, await getSystemAccount(ctx, scope, "1100", "Accounts receivable", "asset"));
+        const revenue = await getSystemAccount(ctx, scope, "4000", "Sales revenue", "revenue");
+        const cogs = await getSystemAccount(ctx, scope, "5000", "Cost of goods sold", "expense");
+        const inventory = await getSystemAccount(ctx, scope, "1200", "Inventory", "asset");
+        if (!costOf.has(String(o._id))) costOf.set(String(o._id), await orderCost(ctx, o._id));
+        const cost = o.total > 0 ? r2((costOf.get(String(o._id)) ?? 0) * (sl.amount / o.total)) : 0;
+        await postSystemJournal(ctx, {
+          scope, userId: user._id, date: day, reference: `SALE-${invoiceNo}`, description: `Waiter bill moved to customer ${client.name} (${invoiceNo})`, sourceType: "sale", sourceId: String(invoiceId),
+          lines: [
+            { accountId: receivable.get(rKey)!, debit: sl.amount, credit: 0, description: "Customer receivable" },
+            { accountId: revenue, debit: 0, credit: sl.amount, description: "Sales revenue" },
+            { accountId: cogs, debit: cost, credit: 0, description: "Cost of goods sold" },
+            { accountId: inventory, debit: 0, credit: cost, description: "Inventory relieved" },
+          ],
+        });
+        await bumpStats(ctx, scope, { receivable: sl.amount, date: day, sales: sl.amount, invoices: 1 });
+        invoicesOfPart[sl.part].push({ invoiceId, invoiceNo, amount: sl.amount });
+        const cur = perOrder.get(String(o._id));
+        perOrder.set(String(o._id), { sum: r2((cur?.sum ?? 0) + sl.amount), clientId: client._id, invoiceId });
+      }
+      // What the waiter still owes for each bill after this split (nothing, when the parts cover it all).
+      for (const o of orders) {
+        const used = perOrder.get(String(o._id));
+        if (!used) continue;
+        const remaining = r2(waiterOwes(o) - used.sum);
+        await ctx.db.patch("waiterOrders", o._id, {
+          assignedAmount: r2((o.assignedAmount ?? 0) + used.sum), assignedClientId: used.clientId, assignedInvoiceId: used.invoiceId,
+          paidAmount: o.paidAmount ?? 0, updatedAt: now, ...(remaining <= 0.005 ? { settledAt: now } : {}),
+        });
+      }
+
+      // Parts paid on the spot: the money shared over that customer's invoices, oldest first (a normal customer payment of the chosen day).
+      const summary: Array<{ clientName: string; amount: number; paid: number; owes: number; invoices: string[] }> = [];
+      for (let pi = 0; pi < a.parts.length; pi++) {
+        const np = payNow[pi];
+        let paid = 0;
+        if (np) {
+          const pool = np.splits.map((s) => ({ ...s, left: s.amount }));
+          for (const inv of invoicesOfPart[pi]) {
+            let need = r2(inv.amount);
+            const part: Array<{ method: string; methodId?: Id<"paymentMethods">; amount: number; reference?: string }> = [];
+            for (const p of pool) {
+              if (need <= 0.001) break;
+              const take = r2(Math.min(need, p.left));
+              if (take <= 0) continue;
+              part.push({ method: p.method, methodId: p.methodId, amount: take, reference: p.reference });
+              p.left = r2(p.left - take); p.reference = undefined; // a reference is attached once only
+              need = r2(need - take);
+            }
+            if (!part.length) continue;
+            const r = await applyCustomerPayment(ctx, { invoiceId: inv.invoiceId, splits: part, paymentDate: date, notes: `Malipo ya papo hapo - ${clients[pi].name}` }, { tenantWide: true });
+            paid = r2(paid + r.amount);
+          }
+        }
+        summary.push({ clientName: clients[pi].name, amount: r2(a.parts[pi].amount), paid, owes: r2(a.parts[pi].amount - paid), invoices: invoicesOfPart[pi].map((i) => i.invoiceNo) });
+      }
+      const waiterLeft = r2(due - partsTotal);
+      await logAudit(ctx, user, { action: "split_waiter_debt_to_customers", module: "sales", referenceId: String(orders[0]._id), referenceType: "waiterOrder", details: `bili ${orders.length}; deni ${due}; ${summary.map((x) => `${x.clientName}:${x.amount} (alilipa ${x.paid})`).join(", ")}; amebaki kwa mhudumu ${waiterLeft}` });
+      return { total: partsTotal, waiterLeft, parts: summary };
+    } catch (e) { throw surfaceError(e); }
+  },
+});
+
+/**
  * Repayments book: the customer pays part or all of his open invoices. `allocations` say how much goes to which invoice; the payment
  * methods (e.g. 10,000 phone + 5,000 cash) are shared out over the invoices in order. All or nothing: one refused invoice records nothing.
  * The payment date is today unless the cashier chooses another day (never in the future).

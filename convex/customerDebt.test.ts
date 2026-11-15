@@ -113,3 +113,39 @@ describe("repayments book", () => {
     await expect(asCashier.mutation(api.customerDebt.receiveRepayment, { clientId, splits: [{ method: "cash", amount: 1000 }], allocations: [{ invoiceId: inv, amount: 1000 }], paymentDate: eat(Date.now() + DAY) })).rejects.toThrow();
   });
 });
+
+describe("cashier splits one waiter debt among many customers", () => {
+  it("3 customers share a 4,000 bill: one pays now with cash + Tigo Pesa, one pays cash, one owes; the waiter owes nothing and the sale is counted once", async () => {
+    const { t, tenantId, asCashier, asBoss, orderId, clientId, yesterday } = await creditSale();
+    const [c2, c3] = await t.run(async (ctx) => [
+      await ctx.db.insert("clients", { tenantId, code: "C2", name: "Baba Asha", openingBalance: 0, creditPolicy: "allow", isActive: true }),
+      await ctx.db.insert("clients", { tenantId, code: "C3", name: "Mzee Juma", openingBalance: 0, creditPolicy: "allow", isActive: true }),
+    ]);
+    const res = await asCashier.mutation(api.customerDebt.splitDebtToCustomers, { orderIds: [orderId], parts: [
+      { clientId, amount: 1500 }, // owes
+      { clientId: c2, amount: 1500, paid: [{ method: "cash", amount: 1000 }, { method: "Tigo Pesa", amount: 500 }] }, // pays now: cash + Tigo Pesa
+      { clientId: c3, amount: 1000, paid: [{ method: "cash", amount: 1000 }] },
+    ] });
+    expect(res).toMatchObject({ total: 4000, waiterLeft: 0 });
+    expect(res.parts.map((p) => [p.clientName, p.paid, p.owes])).toEqual([["Mama Neema", 0, 1500], ["Baba Asha", 1500, 0], ["Mzee Juma", 1000, 0]]);
+    expect(await asCashier.query(api.waiterCollections.owing, {})).toHaveLength(0); // off the waiter's account
+    const day = await asBoss.query(api.sales.salesRegisters, { startDate: yesterday, endDate: yesterday });
+    expect(day.totals).toMatchObject({ sales: 4000, outstanding: 1500, waiterDebt: 0 }); // counted once; only Mama Neema still owes
+    expect(day.invoices).toHaveLength(3);
+    const pays = await t.run(async (ctx) => ctx.db.query("customerPayments").collect());
+    expect(pays.map((p) => [p.paymentMethod, p.amount]).sort()).toEqual([["Tigo Pesa", 500], ["cash", 1000], ["cash", 1000]]);
+  });
+
+  it("parts smaller than the debt leave the rest with the waiter; parts bigger than the debt, or the same customer twice, record nothing", async () => {
+    const { t, tenantId, asCashier, orderId, clientId } = await creditSale();
+    const c2 = await t.run(async (ctx) => ctx.db.insert("clients", { tenantId, code: "C2", name: "Baba Asha", openingBalance: 0, creditPolicy: "allow", isActive: true }));
+    await expect(asCashier.mutation(api.customerDebt.splitDebtToCustomers, { orderIds: [orderId], parts: [{ clientId, amount: 3000 }, { clientId: c2, amount: 1500 }] })).rejects.toThrow(/imezidi/);
+    await expect(asCashier.mutation(api.customerDebt.splitDebtToCustomers, { orderIds: [orderId], parts: [{ clientId, amount: 1000 }, { clientId, amount: 500 }] })).rejects.toThrow(/mara mbili/);
+    expect(await asCashier.query(api.waiterCollections.owing, {})).toHaveLength(1); // nothing recorded
+    const res = await asCashier.mutation(api.customerDebt.splitDebtToCustomers, { orderIds: [orderId], parts: [{ clientId, amount: 1000 }, { clientId: c2, amount: 1500 }] });
+    expect(res).toMatchObject({ total: 2500, waiterLeft: 1500 });
+    const owing = await asCashier.query(api.waiterCollections.owing, {});
+    expect(owing).toHaveLength(1);
+    expect(owing[0]).toMatchObject({ total: 1500 }); // the waiter still owes the rest
+  });
+});
