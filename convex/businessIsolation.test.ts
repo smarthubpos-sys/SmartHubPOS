@@ -50,7 +50,11 @@ describe("every business is independent", () => {
     expect(await t.query(api.users.resolveLoginEmail, { business: " racruz ", username: "JUMA" })).toBe(`juma@${String(B).toLowerCase()}.${DOMAIN}`);
     expect(await t.query(api.users.resolveLoginEmail, { business: "ALPHA", username: "admin" })).toBe(`admin@${DOMAIN}`); // old accounts keep working
     // Wrong business, unknown business or unknown name: a harmless identity that cannot sign in, never a hint about what exists.
-    expect(await t.query(api.users.resolveLoginEmail, { business: "ALPHA", username: "juma" })).toBe(`juma@unknown.${DOMAIN}`);
-    expect(await t.query(api.users.resolveLoginEmail, { business: "NOPE", username: "juma" })).toBe(`juma@unknown.${DOMAIN}`);
+    // A username / business that does not exist gets an address of the SAME shape as a real one (a stable random-looking id), so the open query
+    // cannot be used to find out which usernames exist in a business.
+    const decoy = await t.query(api.users.resolveLoginEmail, { business: "ALPHA", username: "juma" });
+    expect(decoy).toMatch(new RegExp(`^juma@[a-z0-9]{32}\\.${DOMAIN.replace(/\./g, "\\.")}$`));
+    expect(await t.query(api.users.resolveLoginEmail, { business: "ALPHA", username: "juma" })).toBe(decoy); // stable
+    expect(await t.query(api.users.resolveLoginEmail, { business: "NOPE", username: "juma" })).toMatch(new RegExp(`^juma@[a-z0-9]{32}\\.`));
   });
 });

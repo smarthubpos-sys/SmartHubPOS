@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import { safeCell } from "@/lib/safe-cell.ts";
 
 /** One line of the report as the Excel / e-mail rows: [description, amount]. A row whose amount is "" is a section heading. */
 export type ReportLine = Record<string, string | number | boolean | null>;
@@ -23,7 +24,7 @@ export async function downloadPeriodReportExcel(opts: { business: string; title:
   for (const line of opts.lines) {
     const [label, amount] = Object.values(line);
     const isHeading = amount === "" || amount === null || amount === undefined;
-    const row = ws.addRow([label ?? "", isHeading ? "" : amount]);
+    const row = ws.addRow([safeCell(label ?? ""), isHeading ? "" : amount]);
     if (isHeading) { row.font = { bold: true }; row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8EEF5" } }; }
     else if (typeof amount === "number") { row.getCell(2).numFmt = "#,##0.00;[Red](#,##0.00)"; row.getCell(2).alignment = { horizontal: "right" }; }
   }

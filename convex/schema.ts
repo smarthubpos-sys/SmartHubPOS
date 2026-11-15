@@ -68,6 +68,9 @@ export default defineSchema({
     .index("by_tenant_username", ["tenantId", "username"])
     .index("by_pin_lookup", ["pinLookup"]),
 
+  // Generic "at most N per window" counter (e.g. report e-mails per user per hour) so one account cannot be used to flood or abuse the system.
+  rateLimits: defineTable({ key: v.string(), count: v.number(), windowStart: v.number() }).index("by_key", ["key"]),
+
   // Global throttle for PIN-only sign-in (a PIN identifies the person, so failures cannot be counted per user).
   pinLoginGuard: defineTable({ key: v.string(), failures: v.number(), windowStart: v.number(), lockedUntil: v.optional(v.number()) }).index("by_key", ["key"]),
 

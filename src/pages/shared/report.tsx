@@ -8,13 +8,14 @@ import { Input } from "@/components/ui/input";
 import { errorText, getLang, tr, trMessage } from "@/lib/i18n.ts";
 import { printElement, readPaper, savePaper, type Paper } from "@/lib/print-area.ts";
 
+import { safeCell } from "@/lib/safe-cell.ts";
 import { daysAgo, fmt, monthStart, num, round2, today, type Row } from "./report-utils.ts";
 
 function downloadCsv(name: string, rows: Row[]) {
   if (!rows.length) return;
   const cols = Object.keys(rows[0]);
   const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
-  const csv = [cols.map((c) => esc(tr(c))).join(","), ...rows.map((r) => cols.map((c) => esc(r[c] ?? "")).join(","))].join("\r\n");
+  const csv = [cols.map((c) => esc(tr(c))).join(","), ...rows.map((r) => cols.map((c) => esc(safeCell(r[c] ?? ""))).join(","))].join("\r\n");
   const url = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }));
   const a = document.createElement("a");
   a.href = url; a.download = `${name.replace(/\s+/g, "-").toLowerCase()}-${today()}.csv`; a.click();
@@ -62,7 +63,7 @@ async function downloadExcel(name: string, rows: Row[], sumCols: string[]) {
   const sheet = workbook.addWorksheet(tr(name).replace(/[:\\/?*[\]]/g, " ").trim().slice(0, 31) || "Report");
   const cols = Object.keys(rows[0]);
   sheet.addRow(cols.map((c) => tr(c)));
-  for (const row of rows) sheet.addRow(cols.map((c) => row[c] ?? ""));
+  for (const row of rows) sheet.addRow(cols.map((c) => safeCell(row[c] ?? "")));
   if (sumCols.length) {
     const total = sheet.addRow(cols.map((c, i) => sumCols.includes(c) || sumCols.includes(tr(c))
       ? rows.reduce((n, r) => n + num(r[c]), 0) : i === 0 ? tr("JUMLA") : ""));

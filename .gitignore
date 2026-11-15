@@ -41,3 +41,13 @@ fix-backup/
 
 # Fingerprint bridge: local progress file
 tools/attendance-bridge/state.json
+
+# Backups / scratch copies must never be committed (they carry old code and can carry secrets)
+*.bak
+*.backup*
+*.before-*
+backup-*/
+backup-*.zip
+*.zip
+.env*
+!.env.example

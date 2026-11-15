@@ -26,7 +26,12 @@ export const resolveLoginEmail = query({
   handler: async (ctx, a) => {
     const username = a.username.trim().toLowerCase();
     const code = a.business.trim().toUpperCase();
-    const fallback = `${username}@unknown.${LOGIN_DOMAIN.slice(1)}`;
+    // For a business / username that does not exist we return an address of the SAME shape as a real one (a stable, random-looking id), so nobody can use
+    // this open query to find out which usernames exist in a business. The sign-in itself then fails the same way as a wrong password.
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`decoy:${code}:${username}`)));
+    let decoyId = "";
+    for (let i = 0; i < 32; i++) decoyId += "0123456789abcdefghijklmnopqrstuvwxyz"[digest[i] % 36];
+    const fallback = `${username}@${decoyId}.${LOGIN_DOMAIN.slice(1)}`;
     if (!code || !username) return fallback;
     const tenant = await ctx.db.query("tenants").withIndex("by_code", (q) => q.eq("code", code)).first();
     if (!tenant) return fallback;
