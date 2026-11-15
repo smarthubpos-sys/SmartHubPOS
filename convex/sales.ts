@@ -883,19 +883,28 @@ export const searchInvoices = query({
     for (const no of wanted) for (const inv of await ctx.db.query("invoices").withIndex("by_tenant_no", (q) => q.eq("tenantId", tenantId).eq("invoiceNo", no)).take(20)) if (canSeeInvoice(user, inv)) found.set(String(inv._id), inv);
     // Not an invoice number: look for the customer instead (name, code or phone) and list his latest invoices. Only this business, never a long list.
     if (found.size === 0 && raw.length >= 3) {
-      const needle = raw.toLowerCase();
-      const clients = (await ctx.db.query("clients").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).take(1000))
-        .filter((c) => `${c.name} ${c.code} ${c.phone ?? ""}`.toLowerCase().includes(needle)).slice(0, 10);
-      for (const c of clients) for (const inv of await ctx.db.query("invoices").withIndex("by_client", (q) => q.eq("clientId", c._id)).order("desc").take(10)) {
-        if (inv.tenantId === tenantId && canSeeInvoice(user, inv)) found.set(String(inv._id), inv);
+      // Every word typed must be in the customer's name, code or phone, in any order ("neema mama" finds "Mama Neema"). Up to 5000 customers are looked through.
+      const words = raw.toLowerCase().split(/\s+/).filter(Boolean);
+      const clients = (await ctx.db.query("clients").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).take(5000))
+        .filter((c) => { const hay = `${c.name} ${c.code} ${c.phone ?? ""}`.toLowerCase(); return words.every((w) => hay.includes(w)); }).slice(0, 30);
+      // ALL the invoices of each matching customer, newest first: up to 2,000 per customer and 5,000 in one search (the database read limit).
+      let budget = 5000;
+      for (const c of clients) {
+        if (budget <= 0) break;
+        const rows = await ctx.db.query("invoices").withIndex("by_client", (q) => q.eq("clientId", c._id)).order("desc").take(Math.min(2000, budget));
+        budget -= rows.length;
+        for (const inv of rows) if (inv.tenantId === tenantId && canSeeInvoice(user, inv)) found.set(String(inv._id), inv);
       }
     }
     const rights = await invoiceRights(ctx, user);
     const out = [];
-    for (const inv of [...found.values()].slice(0, 20)) {
-      const client = await ctx.db.get("clients", inv.clientId);
-      const dept = inv.branchId ? await ctx.db.get("branches", inv.branchId) : null;
-      out.push({ _id: inv._id, invoiceNo: inv.invoiceNo, invoiceDate: inv.invoiceDate, clientName: client?.name ?? "—", department: dept?.name ?? "", total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, status: inv.status, revision: inv.revision ?? 0, ...rights });
+    // Newest first across ALL matching customers, so the cut-off never drops a recent invoice of one customer in favour of an old one of another.
+    const newestFirst = [...found.values()].sort((x, y) => y.invoiceDate.localeCompare(x.invoiceDate) || y.invoiceNo.localeCompare(x.invoiceNo));
+    const clientNames = new Map<string, string>(), deptNames = new Map<string, string>(); // one read per customer / department, not per invoice
+    for (const inv of newestFirst.slice(0, 2000)) {
+      if (!clientNames.has(String(inv.clientId))) clientNames.set(String(inv.clientId), (await ctx.db.get("clients", inv.clientId))?.name ?? "—");
+      if (inv.branchId && !deptNames.has(String(inv.branchId))) deptNames.set(String(inv.branchId), (await ctx.db.get("branches", inv.branchId))?.name ?? "");
+      out.push({ _id: inv._id, invoiceNo: inv.invoiceNo, invoiceDate: inv.invoiceDate, clientName: clientNames.get(String(inv.clientId)) ?? "—", department: inv.branchId ? deptNames.get(String(inv.branchId)) ?? "" : "", total: inv.total, amountPaid: inv.amountPaid, outstanding: inv.outstanding, status: inv.status, revision: inv.revision ?? 0, ...rights });
     }
     return out;
   },

@@ -213,4 +213,5 @@ export const PERIOD_REPORT_DICT: Record<string, { sw: string; en: string }> = {
   "Umezidisha deni la bili kwa": { sw: "Umezidisha deni la bili kwa", en: "You went over the bills' debt by" },
   "Kinabaki kwa mhudumu": { sw: "Kinabaki kwa mhudumu", en: "Stays with the waiter" },
   "Gawanya deni": { sw: "Gawanya deni", en: "Split debt" },
+  "Invoice zilizopatikana: {0}": { sw: "Invoice zilizopatikana: {0}", en: "Invoices found: {0}" },
 };

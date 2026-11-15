@@ -35,10 +35,12 @@ describe("Invoice Finder shows nothing until the user searches", () => {
     for (const term of ["", "   ", "#"]) expect(await as(manager).query(api.sales.searchInvoices, { invoiceNo: term }), term).toEqual([]);
   });
 
-  it("a search returns at most 20 invoices", async () => {
+  it("a search by name lists ALL the invoices of the customer (no cut-off at 20), newest first", async () => {
     const { as, sell, manager } = await setup();
     for (let i = 0; i < 22; i++) await sell(manager);
-    expect((await as(manager).query(api.sales.searchInvoices, { invoiceNo: "Juma" })).length).toBeLessThanOrEqual(20);
+    const r = await as(manager).query(api.sales.searchInvoices, { invoiceNo: "Juma" });
+    expect(r).toHaveLength(22);
+    expect(new Set(r.map((x) => x.invoiceNo)).size).toBe(22);
   });
 });
 

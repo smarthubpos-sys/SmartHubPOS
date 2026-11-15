@@ -91,8 +91,10 @@ export default function InvoiceFinder() {
       {term && results === undefined && <p className="text-sm text-muted-foreground">{tr("Inatafuta…")}</p>}
       {term && results && sellingPointResults && results.length === 0 && sellingPointResults.length === 0 && <p className={hintText ? "rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm" : "text-sm text-muted-foreground"}>{hintText ?? tr("Hakuna invoice iliyopatikana kwenye biashara/idara yako.")}</p>}
       {results && results.length > 0 && (
-        <div className="overflow-x-auto"><table className="w-full text-sm">
-          <thead><tr className="border-b text-left">{[tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Idara"), tr("Jumla"), tr("Deni"), tr("Hali"), ""].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
+        <div className="space-y-1">
+        <p className="text-xs text-muted-foreground">{tr("Invoice zilizopatikana: {0}", [String(results.length)])}</p>
+        <div className="max-h-[65vh] overflow-auto"><table className="w-full text-sm">
+          <thead className="sticky top-0 bg-background"><tr className="border-b text-left">{[tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Idara"), tr("Jumla"), tr("Deni"), tr("Hali"), ""].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
           <tbody>{results.map((r) => (
             <tr key={r._id} className="border-b">
               <td className="p-2 font-medium">{r.invoiceNo}{r.revision > 0 ? ` (#${r.revision})` : ""}</td><td className="p-2">{r.invoiceDate}</td><td className="p-2">{r.clientName}</td><td className="p-2">{r.department || "—"}</td>
@@ -101,12 +103,13 @@ export default function InvoiceFinder() {
             </tr>
           ))}</tbody>
         </table></div>
+        </div>
       )}
       {term && sellingPointResults && sellingPointResults.length > 0 && (
         <div className="space-y-2">
           <h3 className="font-semibold">{tr("Selling Point — bili za historia")}</h3>
-          <div className="overflow-x-auto"><table className="w-full text-sm">
-            <thead><tr className="border-b text-left">{[tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Mhudumu"), tr("Jumla"), tr("Hali"), ""].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
+          <div className="max-h-[65vh] overflow-auto"><table className="w-full text-sm">
+            <thead className="sticky top-0 bg-background"><tr className="border-b text-left">{[tr("Invoice"), tr("Tarehe"), tr("Mteja"), tr("Mhudumu"), tr("Jumla"), tr("Hali"), ""].map((h, i) => <th key={i} className="p-2">{h}</th>)}</tr></thead>
             <tbody>{sellingPointResults.map((bill) => (
               <tr key={bill._id} className="border-b">
                 <td className="p-2 font-medium">{bill.invoiceNo}</td><td className="p-2">{bill.invoiceDate}</td><td className="p-2">{bill.customerName}</td><td className="p-2">{bill.waiterName}</td><td className="p-2 tabular-nums">{fmt(bill.total)}</td>

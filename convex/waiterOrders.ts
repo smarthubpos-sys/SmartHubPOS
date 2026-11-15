@@ -500,7 +500,8 @@ export const searchBillsForFinder = query({
     const rows = await ctx.db.query("waiterOrders")
       .withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId))
       .collect();
-    const needle = raw.toLowerCase();
+    const words = raw.toLowerCase().split(/\s+/).filter(Boolean); // every word typed must be in the name, in any order
+    const hasWords = (text: string) => { const t = text.toLowerCase(); return words.every((w) => t.includes(w)); };
     // A manager / admin / owner audits EVERY waiter's bills (also those the waiter has not sent to the cashier yet); a cashier still sees only sent ones.
     const seesAll = await isManagerRole(ctx, user);
     const rights = {
@@ -512,9 +513,9 @@ export const searchBillsForFinder = query({
       .filter(o => orderInScope(user, scope, o)
         && (!isWaiter(user.role) || o.branchId === scope.branchId)
         && (seesAll || billVisible(user, o))
-        && (!!o.invoiceNo && wanted.has(o.invoiceNo) || o.customerName.toLowerCase().includes(needle) || (seesAll && o.waiterName.toLowerCase().includes(needle))))
+        && (!!o.invoiceNo && wanted.has(o.invoiceNo) || hasWords(o.customerName) || (seesAll && hasWords(o.waiterName))))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 50)
+      .slice(0, 1000)
       .map(o => ({
         _id: o._id, invoiceNo: o.invoiceNo ?? "—", invoiceDate: eatDay(o.createdAt),
         customerName: o.customerName, waiterName: o.waiterName, tableNumber: o.tableNumber, notes: o.notes,
