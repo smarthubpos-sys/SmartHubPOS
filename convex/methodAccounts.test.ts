@@ -122,3 +122,36 @@ describe("every payment goes to the account of its own payment method", () => {
     expect(await asMgr.mutation(api.paymentMethods.repairOldPayments, {})).toEqual({ moved: 0 });
   });
 });
+
+describe("expense bills use the business's Chart of Accounts", () => {
+  it("lists its expense accounts, '+' adds a real one, and the bill posts to the chosen account (not 'Other')", async () => {
+    const { t, asMgr, tenantId } = await setup();
+    await t.run((ctx) => ctx.db.insert("accounts", { tenantId, code: "6300", name: "Mishahara", type: "expense", balance: 0, isActive: true }));
+    await t.run((ctx) => ctx.db.insert("accounts", { tenantId, code: "1000", name: "Cash", type: "asset", balance: 0, isActive: true }));
+    expect((await asMgr.query(api.bills.expenseAccounts, {})).map((a) => a.name)).toEqual(["Mishahara"]); // only expense accounts
+    const added = await asMgr.mutation(api.bills.addExpenseAccount, { name: "Matangazo" });
+    expect(added.code).toBe("6200");
+    expect((await asMgr.mutation(api.bills.addExpenseAccount, { name: "matangazo" })).accountId).toBe(added.accountId); // same name: no duplicate
+    expect((await asMgr.query(api.bills.expenseAccounts, {})).map((a) => a.name).sort()).toEqual(["Matangazo", "Mishahara"]);
+    const billId = await asMgr.mutation(api.bills.create, { vendor: "Redio", category: "x", expenseAccountId: added.accountId, billDate: date, dueDate: date, amount: 5000 });
+    await t.run(async (ctx) => {
+      const bill = await ctx.db.get("bills", billId);
+      expect(bill).toMatchObject({ category: "Matangazo", expenseAccountId: added.accountId });
+      const lines = await ctx.db.query("journalLines").collect();
+      expect(lines.some((l) => l.accountId === added.accountId && l.debit === 5000)).toBe(true);
+      expect((await ctx.db.query("accounts").collect()).some((a) => a.code === "6190")).toBe(false); // nothing went to "Other bills expense"
+    });
+    // moving the bill to another account re-books it; a non-expense account is refused
+    const mishahara = (await asMgr.query(api.bills.expenseAccounts, {})).find((a) => a.name === "Mishahara")!;
+    await asMgr.mutation(api.bills.update, { billId, vendor: "Redio", category: "x", expenseAccountId: mishahara._id, billDate: date, dueDate: date, amount: 5000 });
+    const cash = await t.run(async (ctx) => (await ctx.db.query("accounts").collect()).find((a) => a.code === "1000")!._id);
+    await expect(asMgr.mutation(api.bills.create, { vendor: "V", category: "x", expenseAccountId: cash, billDate: date, dueDate: date, amount: 100 })).rejects.toThrow(/Account ya matumizi/);
+    await t.run(async (ctx) => {
+      const net = (id: typeof cash) => ctx.db.query("journalLines").collect().then((ls) => ls.filter((l) => l.accountId === id).reduce((n, l) => n + l.debit - l.credit, 0));
+      expect(await net(added.accountId)).toBe(0);
+      expect(await net(mishahara._id)).toBe(5000);
+    });
+    await asMgr.mutation(api.bills.voidBill, { billId });
+    await t.run(async (ctx) => { const ls = await ctx.db.query("journalLines").collect(); expect(ls.filter((l) => l.accountId === mishahara._id).reduce((n, l) => n + l.debit - l.credit, 0)).toBe(0); });
+  });
+});

@@ -1,6 +1,6 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { applyRecipePrice, recipeUnitPrices } from "./recipePricing";
 import { logAudit, requireActiveUser, requireManagerOrPermission, resolveWriteScope } from "./access";
 
@@ -184,9 +184,138 @@ export const recentBatches = query({
     const scope = await resolveWriteScope(ctx, user);
     if (!scope.tenantId) return [];
     const rows = await ctx.db.query("productionBatches").withIndex("by_tenant_date", q => q.eq("tenantId", scope.tenantId)).order("desc").take(100);
-    return Promise.all(rows.filter(r => belongsToScope(r, scope)).map(async r => {
+    return Promise.all(rows.filter(r => belongsToScope(r, scope) && r.status !== "cancelled").map(async r => {
       const product = await ctx.db.get("products", r.outputProductId);
       return { ...r, outputName: product?.name ?? "Bidhaa haipo" };
     }));
+  },
+});
+
+const EPS_PROD = 1e-8;
+const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
+const AUTO_BATCH_NOTE = "Imetengenezwa yenyewe wakati wa mauzo";
+
+/** A batch a user may still change: posted, not cancelled, nothing returned from it, and not one the system made by itself during a sale. */
+async function editableBatch(ctx: MutationCtx, scope: Scope, batchId: Id<"productionBatches">) {
+  const batch = await ctx.db.get("productionBatches", batchId);
+  if (!batch || !belongsToScope(batch, scope)) throw new ConvexError("Batch haipatikani kwenye biashara/department hii.");
+  if (batch.status === "cancelled") throw new ConvexError("Batch hii tayari imefutwa.");
+  if ((batch.returnedQty ?? 0) > EPS_PROD) throw new ConvexError("Batch hii ina bidhaa zilizorudishwa kwenye stock. Haiwezi kubadilishwa au kufutwa.");
+  if (batch.notes?.startsWith(AUTO_BATCH_NOTE)) throw new ConvexError("Batch hii ilitengenezwa yenyewe wakati wa mauzo. Rekebisha au futa mauzo husika badala yake.");
+  const output = await ctx.db.get("products", batch.outputProductId);
+  if (!output || !belongsToScope(output, scope)) throw new ConvexError("Bidhaa ya mwisho haipo kwenye biashara/department hii.");
+  return { batch, output };
+}
+
+/**
+ * Edit a batch you already made: change the quantity produced and/or the note.
+ * Nothing is erased. The ingredients and the finished product move only by the DIFFERENCE (one stock movement each),
+ * and the batch keeps its own record with the new quantity and the new cost.
+ */
+export const editBatch = mutation({
+  args: { batchId: v.id("productionBatches"), quantity: v.number(), notes: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const user = await requireManagerOrPermission(ctx, "stock.manage", "stock");
+    const scope = await resolveWriteScope(ctx, user);
+    if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
+    if (!Number.isFinite(args.quantity) || args.quantity <= 0) throw new ConvexError("Kiasi cha production lazima kiwe zaidi ya sifuri.");
+    const { batch, output } = await editableBatch(ctx, scope, args.batchId);
+    const factor = args.quantity / batch.producedQty;
+    const delta = round6(args.quantity - batch.producedQty);
+    const notes = args.notes === undefined ? batch.notes : (args.notes.trim() || undefined);
+    if (Math.abs(delta) <= EPS_PROD) {
+      await ctx.db.patch("productionBatches", batch._id, { notes });
+      await logAudit(ctx, user, { action: "production_edit", module: "stock", referenceId: String(batch._id), details: `${output.name}: maelezo yamebadilishwa` });
+      return { batchId: batch._id, producedQty: batch.producedQty, totalCost: batch.totalCost, unitCost: batch.unitCost };
+    }
+    if (output.currentQty + delta < -EPS_PROD) throw new ConvexError(`Stock ya ${output.name} haitoshi kupunguza batch hii (iliyopo: ${output.currentQty}). Huenda sehemu imeshauzwa.`);
+    const lines: Array<{ product: Doc<"products">; oldQty: number; newQty: number; unitCost: number; productName: string }> = [];
+    for (const l of batch.recipeSnapshot) {
+      const product = await ctx.db.get("products", l.productId);
+      if (!product || !belongsToScope(product, scope)) throw new ConvexError(`Malighafi ${l.productName} haipatikani kwenye department hii.`);
+      const newQty = round6(l.qty * factor);
+      const extra = newQty - l.qty;
+      if (extra > EPS_PROD && product.currentQty + EPS_PROD < extra) throw new ConvexError(`Stock haitoshi kwa ${product.name}. Iliyopo: ${product.currentQty}, inahitajika zaidi: ${round6(extra)}.`);
+      lines.push({ product, oldQty: l.qty, newQty, unitCost: l.unitCost, productName: l.productName });
+    }
+    const date = now().slice(0, 10);
+    for (const l of lines) {
+      const extra = round6(l.newQty - l.oldQty); // > 0: more raw material used, < 0: raw material comes back
+      if (Math.abs(extra) <= EPS_PROD) continue;
+      const balance = round6(l.product.currentQty - extra);
+      await ctx.db.patch("products", l.product._id, { currentQty: balance });
+      await ctx.db.insert("stockMovements", {
+        ...scope, movementDate: date, productId: l.product._id, movementType: "production_edit_ingredient", referenceId: String(batch._id), referenceType: "productionBatch",
+        qtyIn: extra < 0 ? -extra : 0, qtyOut: extra > 0 ? extra : 0, runningBalance: balance, unitCost: l.unitCost, notes: `Batch ya ${output.name} imebadilishwa (${batch.producedQty} -> ${args.quantity})`, createdBy: user._id,
+      });
+    }
+    const outBalance = round6(output.currentQty + delta);
+    await ctx.db.patch("products", output._id, { currentQty: outBalance });
+    await ctx.db.insert("stockMovements", {
+      ...scope, movementDate: date, productId: output._id, movementType: "production_edit_output", referenceId: String(batch._id), referenceType: "productionBatch",
+      qtyIn: delta > 0 ? delta : 0, qtyOut: delta < 0 ? -delta : 0, runningBalance: outBalance, unitCost: batch.unitCost, notes: `Batch imebadilishwa (${batch.producedQty} -> ${args.quantity})`, createdBy: user._id,
+    });
+    const snapshot = lines.map((l) => ({ productId: l.product._id, productName: l.productName, qty: l.newQty, unitCost: l.unitCost }));
+    const totalCost = snapshot.reduce((n, l) => n + l.qty * l.unitCost, 0);
+    await ctx.db.patch("productionBatches", batch._id, { plannedQty: args.quantity, producedQty: args.quantity, recipeSnapshot: snapshot, totalCost, unitCost: totalCost / args.quantity, notes });
+    await logAudit(ctx, user, { action: "production_edit", module: "stock", referenceId: String(batch._id), details: `${output.name}: ${batch.producedQty} -> ${args.quantity}` });
+    return { batchId: batch._id, producedQty: args.quantity, totalCost, unitCost: totalCost / args.quantity };
+  },
+});
+
+/**
+ * Delete a batch made by mistake: the ingredients go back on the shelf and the finished product comes off it.
+ * The batch record is kept with status "cancelled" (never erased) and drops out of the lists. It cannot be deleted once any of
+ * the finished product was sold or used (the stock would go negative), nor after a return to stock.
+ */
+export const deleteBatch = mutation({
+  args: { batchId: v.id("productionBatches"), reason: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const user = await requireManagerOrPermission(ctx, "stock.manage", "stock");
+    const scope = await resolveWriteScope(ctx, user);
+    if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
+    const { batch, output } = await editableBatch(ctx, scope, args.batchId);
+    if (output.currentQty + EPS_PROD < batch.producedQty) throw new ConvexError(`Huwezi kufuta batch: stock ya ${output.name} (${output.currentQty}) ni ndogo kuliko iliyotengenezwa (${batch.producedQty}); sehemu imeshauzwa au kutumika.`);
+    const lines: Array<{ product: Doc<"products">; qty: number; unitCost: number }> = [];
+    for (const l of batch.recipeSnapshot) {
+      const product = await ctx.db.get("products", l.productId);
+      if (!product || !belongsToScope(product, scope)) throw new ConvexError(`Malighafi ${l.productName} haipatikani kwenye department hii.`);
+      lines.push({ product, qty: l.qty, unitCost: l.unitCost });
+    }
+    const reason = args.reason?.trim();
+    const date = now().slice(0, 10);
+    const outBalance = round6(output.currentQty - batch.producedQty);
+    await ctx.db.patch("products", output._id, { currentQty: outBalance });
+    await ctx.db.insert("stockMovements", {
+      ...scope, movementDate: date, productId: output._id, movementType: "production_cancel_output", referenceId: String(batch._id), referenceType: "productionBatch",
+      qtyIn: 0, qtyOut: batch.producedQty, runningBalance: outBalance, unitCost: batch.unitCost, notes: `Batch imefutwa${reason ? `: ${reason}` : ""}`, createdBy: user._id,
+    });
+    for (const { product, qty, unitCost } of lines) {
+      const balance = round6(product.currentQty + qty);
+      await ctx.db.patch("products", product._id, { currentQty: balance });
+      await ctx.db.insert("stockMovements", {
+        ...scope, movementDate: date, productId: product._id, movementType: "production_cancel_ingredient", referenceId: String(batch._id), referenceType: "productionBatch",
+        qtyIn: qty, qtyOut: 0, runningBalance: balance, unitCost, notes: `Batch ya ${output.name} imefutwa${reason ? `: ${reason}` : ""}`, createdBy: user._id,
+      });
+    }
+    await ctx.db.patch("productionBatches", batch._id, { status: "cancelled", notes: [batch.notes, `Imefutwa ${date}${reason ? `: ${reason}` : ""}`].filter(Boolean).join(" | ") });
+    await logAudit(ctx, user, { action: "production_delete", module: "stock", referenceId: String(batch._id), details: `${output.name} x${batch.producedQty}${reason ? `; ${reason}` : ""}` });
+    return { ok: true, ingredients: lines.map((l) => ({ name: l.product.name, qty: l.qty })) };
+  },
+});
+
+/** Delete a recipe (the finished product and its stock are untouched; batches already made keep their own snapshot). */
+export const deleteRecipe = mutation({
+  args: { recipeId: v.id("productionRecipes") },
+  handler: async (ctx, args) => {
+    const user = await requireManagerOrPermission(ctx, "stock.manage", "stock");
+    const scope = await resolveWriteScope(ctx, user);
+    if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
+    const recipe = await ctx.db.get("productionRecipes", args.recipeId);
+    if (!recipe || !belongsToScope(recipe, scope)) throw new ConvexError("Recipe haipatikani kwenye biashara/department hii.");
+    const output = await ctx.db.get("products", recipe.outputProductId);
+    await ctx.db.delete("productionRecipes", recipe._id);
+    await logAudit(ctx, user, { action: "recipe_delete", module: "stock", referenceId: String(recipe._id), details: output?.name ?? "" });
+    return { ok: true };
   },
 });

@@ -65,16 +65,40 @@ export const purchaseForEdit = query({
 });
 
 export const editPurchase = mutation({
-  args: { purchaseId: v.id("purchases"), purchaseDate: v.optional(v.string()), supplierInvoiceNo: v.optional(v.string()), notes: v.optional(v.string()), lines: v.optional(v.array(lineInput)) },
+  args: { purchaseId: v.id("purchases"), supplierId: v.optional(v.id("suppliers")), purchaseDate: v.optional(v.string()), supplierInvoiceNo: v.optional(v.string()), notes: v.optional(v.string()), lines: v.optional(v.array(lineInput)) },
   handler: async (ctx, a) => {
     const u = await requirePermission(ctx, "purchasing.edit", "purchasing");
     const purchase = await loadPurchase(ctx, u, a.purchaseId);
     const scope = scopeOf(purchase);
     const patch: Partial<Doc<"purchases">> = {};
+    // Wrong supplier picked by mistake: move the invoice, its payments made at receipt and its stock records to the right supplier.
+    const supplierChange = a.supplierId !== undefined && a.supplierId !== purchase.supplierId ? a.supplierId : undefined;
+    if (supplierChange) {
+      if (purchase.purchaseOrderId) throw new ConvexError("Invoice hii imetokana na Purchase Order. Badilisha supplier kwenye Purchase Order husika.");
+      const next = await ctx.db.get("suppliers", supplierChange);
+      if (!next || !canAccessBusinessRecord(u, next)) throw new ConvexError("Supplier hayupo kwenye branch yako.");
+      const attached = (await ctx.db.query("supplierPayments").withIndex("by_purchase", (q) => q.eq("purchaseId", purchase._id)).collect()).filter((p) => !p.voided);
+      if (Math.abs(round(attached.reduce((n, p) => n + p.amount, 0)) - purchase.amountPaid) > 0.01) throw new ConvexError("Invoice hii imelipwa kupitia malipo ya jumla ya supplier, hivyo haiwezi kuhamishiwa supplier mwingine bila kuvuruga hesabu zake. Futa invoice kisha iingize upya kwa supplier sahihi.");
+      const invoiceNoAfter = (a.supplierInvoiceNo !== undefined ? a.supplierInvoiceNo : (purchase.supplierInvoiceNo ?? "")).trim();
+      if (invoiceNoAfter && invoiceNoAfter !== (purchase.invoiceNo ?? "")) await assertSupplierInvoiceFree(ctx, supplierChange, invoiceNoAfter, purchase._id);
+      const oldSupplier = purchase.supplierId;
+      patch.supplierId = supplierChange;
+      for (const p of attached) await ctx.db.patch("supplierPayments", p._id, { supplierId: supplierChange });
+      for (const m of await ctx.db.query("stockMovements").withIndex("by_reference", (q) => q.eq("referenceType", "purchase").eq("referenceId", String(purchase._id))).collect()) await ctx.db.patch("stockMovements", m._id, { supplierId: supplierChange });
+      const lineRows = await ctx.db.query("purchaseLines").withIndex("by_purchase", (q) => q.eq("purchaseId", purchase._id)).collect();
+      for (const productId of new Set(lineRows.map((l) => l.productId))) {
+        for (const h of (await ctx.db.query("purchasePriceHistory").withIndex("by_product", (q) => q.eq("productId", productId)).collect()).filter((x) => x.purchaseId === purchase._id)) await ctx.db.patch("purchasePriceHistory", h._id, { supplierId: supplierChange });
+        for (const lot of (await ctx.db.query("stockLots").withIndex("by_product", (q) => q.eq("productId", productId)).collect()).filter((x) => x.reference === String(purchase._id))) await ctx.db.patch("stockLots", lot._id, { supplierId: supplierChange });
+        for (const sn of (await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", productId)).collect()).filter((x) => x.receivedReference === String(purchase._id))) await ctx.db.patch("stockSerials", sn._id, { supplierId: supplierChange });
+        const product = await ctx.db.get("products", productId);
+        if (product && product.lastSupplierId === oldSupplier && product.lastPurchaseDate === purchase.purchaseDate) await ctx.db.patch("products", productId, { lastSupplierId: supplierChange });
+      }
+      await logAudit(ctx, u, { action: "change_purchase_supplier", module: "purchasing", referenceId: String(a.purchaseId), referenceType: "purchase", details: `${purchase.internalRef}; supplier ${String(oldSupplier)} -> ${String(supplierChange)}` });
+    }
     if (a.purchaseDate !== undefined) { assertDate(a.purchaseDate); if (a.purchaseDate !== purchase.purchaseDate) await assertPeriodOpen(ctx, scope, a.purchaseDate); patch.purchaseDate = a.purchaseDate; }
     if (a.supplierInvoiceNo !== undefined) {
       const typed = a.supplierInvoiceNo.trim();
-      if (typed && typed !== (purchase.supplierInvoiceNo ?? "").trim()) await assertSupplierInvoiceFree(ctx, purchase.supplierId, typed, purchase._id);
+      if (typed && typed !== (purchase.supplierInvoiceNo ?? "").trim() && !supplierChange) await assertSupplierInvoiceFree(ctx, purchase.supplierId, typed, purchase._id);
       patch.supplierInvoiceNo = typed || purchase.invoiceNo || purchase.supplierInvoiceNo;
     }
     if (a.notes !== undefined) patch.notes = a.notes.trim() || undefined;
@@ -135,7 +159,7 @@ export const editPurchase = mutation({
         if (s.avg !== undefined) p.weightedAvgCost = s.avg;
         if (s.last !== undefined) p.lastPurchaseCost = s.last;
         await ctx.db.patch("products", s.id, p);
-        if (Math.abs(s.net) > EPS) await ctx.db.insert("stockMovements", { ...scope, movementDate: newDate, productId: s.id, movementType: "purchase_edit", referenceId: String(purchase._id), referenceType: "purchase", qtyIn: s.net > 0 ? s.net : 0, qtyOut: s.net < 0 ? -s.net : 0, runningBalance: s.newCur, unitCost: s.unitCost, supplierId: purchase.supplierId, notes: `Edit ${purchase.internalRef}`, createdBy: u._id });
+        if (Math.abs(s.net) > EPS) await ctx.db.insert("stockMovements", { ...scope, movementDate: newDate, productId: s.id, movementType: "purchase_edit", referenceId: String(purchase._id), referenceType: "purchase", qtyIn: s.net > 0 ? s.net : 0, qtyOut: s.net < 0 ? -s.net : 0, runningBalance: s.newCur, unitCost: s.unitCost, supplierId: supplierChange ?? purchase.supplierId, notes: `Edit ${purchase.internalRef}`, createdBy: u._id });
       }
       for (const l of oldLines) await ctx.db.delete("purchaseLines", l._id);
       for (const l of next) await ctx.db.insert("purchaseLines", { purchaseId: a.purchaseId, productId: l.productId, qty: l.qty, qtyStr: String(l.qty), unitCost: l.unitCost, unitCostStr: String(l.unitCost), lineTotal: l.total, lineTotalStr: String(l.total), discount: 0, receivedQty: l.qty });

@@ -909,6 +909,7 @@ export default defineSchema({
     billNumber: v.string(),
     vendor: v.string(),
     category: v.string(), // rent | electricity | water | internet | tax | transport | salary_related | other
+    expenseAccountId: v.optional(v.id("accounts")), // the expense account of the business's Chart of Accounts this bill posts to (older bills use the fixed category above)
     billDate: v.string(),
     dueDate: v.string(),
     amount: v.number(),

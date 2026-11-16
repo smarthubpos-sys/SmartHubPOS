@@ -142,7 +142,7 @@ export const balances = query({
 });
 
 /** Replace the money lines of one posted journal entry so they match `desired` (account -> amount). Returns true when something changed. */
-async function reallocate(ctx: MutationCtx, entry: Doc<"journalEntries">, side: "debit" | "credit", desired: Array<{ accountId: Id<"accounts">; amount: number }>) {
+export async function reallocate(ctx: MutationCtx, entry: Doc<"journalEntries">, side: "debit" | "credit", desired: Array<{ accountId: Id<"accounts">; amount: number }>) {
   const lines = await ctx.db.query("journalLines").withIndex("by_entry", (q) => q.eq("entryId", entry._id)).collect();
   const money: Doc<"journalLines">[] = [];
   for (const l of lines) if (l[side] > 0 && isMoneyAccount(await ctx.db.get("accounts", l.accountId))) money.push(l);

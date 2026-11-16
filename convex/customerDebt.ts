@@ -4,7 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { isManagerRole, logAudit, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope } from "./access";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
 import { bumpStats } from "./stats";
-import { assertDate, assertPeriodOpen, getSystemAccount, postSystemJournal } from "./ledger";
+import { assertDate, assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal } from "./ledger";
 import { surfaceError } from "./surfaceError";
 import { allocateSellingPointInvoiceNo } from "./waiterOrders";
 import { applyCustomerPayment } from "./sales";
@@ -343,6 +343,137 @@ export const receiveRepayment = mutation({
       }
       await logAudit(ctx, user, { action: "customer_repayment", module: "sales", referenceId: String(a.clientId), referenceType: "client", details: `${client!.name}; jumla ${total}; tarehe ${date}; ${results.map((r) => `${r.invoiceNo}:${r.amount}`).join(", ")}` });
       return { total, clientName: client!.name, date, results };
+    } catch (e) { throw surfaceError(e); }
+  },
+});
+
+// ───────────── EDIT what was received / where it was directed ─────────────
+
+const isAssignedDebt = (i: Doc<"invoices">) => i.salesSource === "Selling Point" && !i.customerBillId && (i.notes ?? "").startsWith("Deni la bili ya");
+
+/** Customer payments the cashier recorded lately (one row per receipt of one invoice), so a wrong method or amount can be corrected. */
+export const recentCustomerPayments = query({
+  args: {},
+  handler: async (ctx) => {
+    const { tenantId, branchId } = await cashierScope(ctx);
+    const rows = (await ctx.db.query("customerPayments").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(300))
+      .filter((p) => !p.voided && !!p.invoiceId && (!branchId || p.branchId === branchId));
+    const groups = new Map<string, { invoiceId: Id<"invoices">; receiptNo?: string; date: string; clientId: Id<"clients">; total: number; splits: Array<{ method: string; methodId?: Id<"paymentMethods">; amount: number; reference?: string }> }>();
+    for (const p of rows) {
+      const key = `${p.invoiceId}|${p.receiptNo ?? p._id}`;
+      const g = groups.get(key) ?? { invoiceId: p.invoiceId!, receiptNo: p.receiptNo, date: p.paymentDate, clientId: p.clientId, total: 0, splits: [] };
+      g.total = r2(g.total + p.amount);
+      g.splits.push({ method: p.paymentMethod, methodId: p.paymentMethodId, amount: p.amount, reference: p.reference });
+      groups.set(key, g);
+    }
+    const out = [];
+    for (const g of [...groups.values()].slice(0, 40)) {
+      const invoice = await ctx.db.get("invoices", g.invoiceId);
+      if (!invoice || invoice.status !== "posted") continue;
+      const client = await ctx.db.get("clients", g.clientId);
+      out.push({ ...g, invoiceNo: invoice.invoiceNo, clientName: client?.name ?? "—", invoiceTotal: invoice.total, outstanding: invoice.outstanding, editable: !!g.receiptNo });
+    }
+    return out;
+  },
+});
+
+/** Debts directed to customers (a waiter's bill moved to a customer, or split among customers): the invoices the cashier created that way. */
+export const assignedDebts = query({
+  args: {},
+  handler: async (ctx) => {
+    const { tenantId, branchId } = await cashierScope(ctx);
+    const rows = (await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId)).order("desc").take(600))
+      .filter((i) => i.status === "posted" && isAssignedDebt(i) && (!branchId || i.branchId === branchId)).slice(0, 60);
+    const out = [];
+    for (const i of rows) {
+      const client = await ctx.db.get("clients", i.clientId);
+      out.push({ _id: i._id, invoiceNo: i.invoiceNo, invoiceDate: i.invoiceDate, clientId: i.clientId, clientName: client?.name ?? "—", total: i.total, amountPaid: i.amountPaid, outstanding: i.outstanding, note: i.notes ?? "" });
+    }
+    return out;
+  },
+});
+
+/**
+ * EDIT a customer payment (one receipt of one invoice): the wrong method was chosen, the split was typed wrongly, the amount or the day was wrong.
+ * Nothing is erased: the old payment lines are voided and reversed in the ledger on their own day, and the corrected lines are booked like a
+ * normal payment (each method into its own account). The invoice balance, the customer's debt, the dashboard and every payment report follow.
+ */
+export const editCustomerPayment = mutation({
+  args: { invoiceId: v.id("invoices"), receiptNo: v.string(), splits: v.array(splitValidator), paymentDate: v.optional(v.string()) },
+  handler: async (ctx, a) => {
+    try {
+      const { user, tenantId, branchId } = await cashierScope(ctx);
+      const invoice = await ctx.db.get("invoices", a.invoiceId);
+      if (!invoice || invoice.tenantId !== tenantId || (branchId && invoice.branchId !== branchId) || invoice.status !== "posted") throw new ConvexError("Invoice haipatikani au imeshafutwa.");
+      const live = (await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect()).filter((p) => !p.voided);
+      const old = live.filter((p) => p.receiptNo === a.receiptNo);
+      if (!old.length) throw new ConvexError("Malipo hayo hayapatikani (huenda yameshabadilishwa au kufutwa). Fungua orodha upya.");
+      const oldTotal = r2(old.reduce((n, p) => n + p.amount, 0));
+      const { splits, total } = await normaliseSplits(ctx, user, a.splits);
+      const maxTotal = r2(invoice.outstanding + oldTotal);
+      if (total <= 0.005 || total > maxTotal + 0.005) throw new ConvexError(`Jumla mpya (${total}) lazima iwe zaidi ya sifuri na isizidi deni la invoice (${maxTotal}).`);
+      const refs = splits.map((s) => s.reference).filter((r): r is string => !!r);
+      if (new Set(refs).size !== refs.length) throw new ConvexError("Reference moja imetumika mara mbili kwenye risiti hii.");
+      if (refs.length) {
+        const oldIds = new Set(old.map((p) => String(p._id)));
+        const prior = await ctx.db.query("customerPayments").withIndex("by_client", (q) => q.eq("clientId", invoice.clientId)).collect();
+        if (prior.some((p) => !oldIds.has(String(p._id)) && !p.voided && p.reference && refs.includes(p.reference) && p.tenantId === invoice.tenantId && p.branchId === invoice.branchId)) throw new ConvexError("Reference ya malipo imeshatumika; ombi linalofanana limezuiwa.");
+      }
+      const today = eatDay(new Date().toISOString());
+      const oldDate = old[0].paymentDate;
+      const date = a.paymentDate === undefined ? oldDate : assertDate(a.paymentDate, "Tarehe ya malipo");
+      if (date > today) throw new ConvexError("Tarehe ya malipo haiwezi kuwa ya baadaye.");
+      if (date < invoice.invoiceDate) throw new ConvexError(`Tarehe ya malipo haiwezi kuwa kabla ya tarehe ya invoice (${invoice.invoiceDate}).`);
+      const scope = { tenantId: invoice.tenantId, branchId: invoice.branchId };
+      const receivable = await getSystemAccount(ctx, scope, "1100", "Accounts receivable", "asset");
+      for (const p of old) {
+        const accountId = await methodAccount(ctx, scope, { methodId: p.paymentMethodId, method: p.paymentMethod });
+        await postSystemJournal(ctx, { scope, userId: user._id, date: p.paymentDate, reference: `PAYEDIT-${String(p._id)}`, description: `Customer payment corrected for ${invoice.invoiceNo} (${p.paymentMethod} reversed)`, sourceType: "payment_edit", sourceId: String(p._id), lines: [
+          { accountId: receivable, debit: p.amount, credit: 0, description: "Customer payment reversed - receivable restored" },
+          { accountId, debit: 0, credit: p.amount, description: `Payment reversed - ${p.paymentMethod}` },
+        ] });
+        await ctx.db.patch("customerPayments", p._id, { voided: true });
+        await bumpStats(ctx, scope, { receivable: p.amount, date: p.paymentDate, collected: -p.amount });
+      }
+      for (const s of splits) {
+        const accountId = await methodAccount(ctx, scope, { methodId: s.methodId, method: s.method });
+        const paymentId = await ctx.db.insert("customerPayments", { ...scope, paymentDate: date, clientId: invoice.clientId, invoiceId: a.invoiceId, amount: s.amount, paymentMethod: s.method, paymentMethodId: s.methodId, receiptNo: a.receiptNo, reference: s.reference, notes: old[0].notes, createdBy: user._id });
+        await postSystemJournal(ctx, { scope, userId: user._id, date, reference: `PAY-${String(paymentId)}`, description: `Customer payment for ${invoice.invoiceNo} (${s.method})`, sourceType: "payment", sourceId: String(paymentId), lines: [
+          { accountId, debit: s.amount, credit: 0, description: `Customer payment received - ${s.method}` },
+          { accountId: receivable, debit: 0, credit: s.amount, description: "Reduce customer receivable" },
+        ] });
+      }
+      await bumpStats(ctx, scope, { receivable: -total, date, collected: total });
+      const paid = r2(invoice.amountPaid - oldTotal + total);
+      const outstanding = r2(invoice.total - paid);
+      await ctx.db.patch("invoices", a.invoiceId, { amountPaid: paid, outstanding, paymentStatus: outstanding <= 0.004 ? "paid" : paid > 0.004 ? "partial" : "unpaid" });
+      await logAudit(ctx, user, { action: "edit_customer_payment", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `${invoice.invoiceNo}; ${old.map((p) => `${p.paymentMethod} ${p.amount}`).join(" + ")} (${oldDate}) -> ${splits.map((s) => `${s.method} ${s.amount}`).join(" + ")} (${date})` });
+      return { invoiceNo: invoice.invoiceNo, total, outstanding, date };
+    } catch (e) { throw surfaceError(e); }
+  },
+});
+
+/**
+ * Change WHICH customer a debt was directed to (the cashier picked the wrong customer). Only invoices made by "Elekeza deni kwa mteja" /
+ * "Gawanya deni" can be moved. The invoice and its payments follow the right customer, so his statement, debt and reports are correct.
+ * The amount and the ledger do not change (the receivable account is the business's, not the customer's).
+ */
+export const reassignDebt = mutation({
+  args: { invoiceId: v.id("invoices"), clientId: v.id("clients") },
+  handler: async (ctx, a) => {
+    try {
+      const { user, tenantId, branchId } = await cashierScope(ctx);
+      const invoice = await ctx.db.get("invoices", a.invoiceId);
+      if (!invoice || invoice.tenantId !== tenantId || (branchId && invoice.branchId !== branchId) || invoice.status !== "posted") throw new ConvexError("Deni halipatikani au limeshafutwa.");
+      if (!isAssignedDebt(invoice)) throw new ConvexError("Hili si deni lililoelekezwa kwa mteja na cashier; haliwezi kuhamishwa hapa.");
+      if (invoice.clientId === a.clientId) throw new ConvexError("Mteja huyo ndiye aliyepo tayari.");
+      const next = await ctx.db.get("clients", a.clientId);
+      if (!clientUsable(next, tenantId, invoice.branchId)) throw new ConvexError("Mteja huyu hayupo kwenye biashara au idara ya deni hili.");
+      const prev = await ctx.db.get("clients", invoice.clientId);
+      for (const p of await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect()) await ctx.db.patch("customerPayments", p._id, { clientId: a.clientId });
+      await ctx.db.patch("invoices", a.invoiceId, { clientId: a.clientId, notes: [invoice.notes, `Mteja amebadilishwa: ${prev?.name ?? "?"} -> ${next!.name} (${eatDay(new Date().toISOString())})`].filter(Boolean).join(" | ") });
+      await logAudit(ctx, user, { action: "reassign_customer_debt", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `${invoice.invoiceNo}; ${prev?.name ?? "?"} -> ${next!.name}; deni ${invoice.outstanding}` });
+      return { invoiceNo: invoice.invoiceNo, clientName: next!.name };
     } catch (e) { throw surfaceError(e); }
   },
 });

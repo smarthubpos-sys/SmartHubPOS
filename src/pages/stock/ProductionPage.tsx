@@ -14,6 +14,10 @@ export default function ProductionPage() {
   const saveRecipe = useMutation(api.production.saveRecipe);
   const produceBatch = useMutation(api.production.produceBatch);
   const returnToStock = useMutation(api.production.returnToStock);
+  const editBatch = useMutation(api.production.editBatch);
+  const deleteBatch = useMutation(api.production.deleteBatch);
+  const deleteRecipe = useMutation(api.production.deleteRecipe);
+  const [edit, setEdit] = useState<{ id: string; qty: string; notes: string } | null>(null);
   const [ret, setRet] = useState<{ id: string; qty: string; reason: string } | null>(null);
   const [outputProductId, setOutputProductId] = useState("");
   const [outputQty, setOutputQty] = useState("1");
@@ -53,6 +57,44 @@ export default function ProductionPage() {
     } catch (e) { toast.error(errorText(e, tr("Kurudisha kwenye stock kumeshindikana."))); }
     finally { setBusy(false); }
   };
+  const submitEdit = async () => {
+    if (!edit) return;
+    if (!(Number(edit.qty) > 0)) return toast.error(tr("Weka kiasi cha production (zaidi ya sifuri)."));
+    setBusy(true);
+    try {
+      await editBatch({ batchId: edit.id as never, quantity: Number(edit.qty), notes: edit.notes });
+      toast.success(tr("Batch imebadilishwa. Stock imerekebishwa kwa tofauti tu."));
+      setEdit(null);
+    } catch (e) { toast.error(errorText(e, tr("Kubadilisha batch kumeshindikana."))); }
+    finally { setBusy(false); }
+  };
+  const removeBatch = async (id: string, name: string) => {
+    const reason = window.prompt(tr("Futa batch ya {0}? Malighafi zitarudi kwenye stock na bidhaa iliyokamilika itatolewa. Andika sababu (hiari) kisha bonyeza OK.", [name]));
+    if (reason === null) return;
+    setBusy(true);
+    try {
+      await deleteBatch({ batchId: id as never, reason: reason.trim() || undefined });
+      toast.success(tr("Batch imefutwa. Malighafi zimerudi kwenye stock."));
+      setEdit(null);
+    } catch (e) { toast.error(errorText(e, tr("Kufuta batch kumeshindikana."))); }
+    finally { setBusy(false); }
+  };
+  const removeRecipe = async (id: string, name: string) => {
+    if (!window.confirm(tr("Futa recipe ya {0}? Stock na batch zilizokwisha tengenezwa havitaguswa.", [name]))) return;
+    setBusy(true);
+    try { await deleteRecipe({ recipeId: id as never }); toast.success(tr("Recipe imefutwa.")); }
+    catch (e) { toast.error(errorText(e, tr("Kufuta recipe kumeshindikana."))); }
+    finally { setBusy(false); }
+  };
+  const loadRecipe = (r: NonNullable<typeof recipes>[number]) => {
+    setOutputProductId(String(r.outputProductId));
+    setOutputQty(String(r.outputQty));
+    setAutoOnSale(r.autoOnSale === true);
+    setPriceFromIngredients(r.priceFromIngredients === true);
+    setIngredients(r.ingredients.map((x) => ({ productId: String(x.productId), qty: String(x.qty) })));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    toast.message(tr("Recipe imepakiwa juu. Badilisha kisha bonyeza Hifadhi Recipe."));
+  };
   const selectClass = "h-10 w-full rounded-md border bg-background px-3 text-sm";
   if (products === undefined || recipes === undefined || batches === undefined) return <div className="p-6">{tr("Inapakia Production…")}</div>;
   return <main className="mx-auto max-w-6xl space-y-6 p-4 md:p-6">
@@ -81,7 +123,7 @@ export default function ProductionPage() {
         <Button disabled={busy} onClick={() => void submitBatch()}>Kamilisha Production</Button>
       </div>
     </section>
-    <section className="rounded-xl border p-4 space-y-3"><h2 className="text-lg font-semibold">{tr("Recipes zilizopo")}</h2>{recipes.length === 0 ? <p className="text-sm text-muted-foreground">{tr("Bado hakuna recipe.")}</p> : <div className="space-y-2">{recipes.map((r) => <div key={r._id} className="rounded-lg bg-muted/40 p-3"><div className="font-medium">{r.outputName} · yield {r.outputQty}{r.autoOnSale ? <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">{tr("Inatengenezwa yenyewe mauzoni")}</span> : null}</div><div className="text-sm text-muted-foreground">{r.ingredients.map((x) => `${x.productName}: ${x.qty}`).join(" · ")}</div><div className="mt-1 text-sm tabular-nums">{tr("Gharama")}: {r.computedCost.toLocaleString()} · {tr("Bei ya kuuzia")}: {(r.priceFromIngredients ? r.computedPrice : r.outputSellingPrice).toLocaleString()} · {tr("Faida")}: {((r.priceFromIngredients ? r.computedPrice : r.outputSellingPrice) - r.computedCost).toLocaleString()}{r.priceFromIngredients ? <span className="ml-2 rounded bg-sky-100 px-2 py-0.5 text-xs text-sky-800">{tr("Bei inafuata viungo")}</span> : null}</div></div>)}</div>}</section>
-    <section className="rounded-xl border p-4 space-y-3"><h2 className="text-lg font-semibold">{tr("Production ya karibuni")}</h2>{batches.length === 0 ? <p className="text-sm text-muted-foreground">{tr("Bado hakuna batch iliyokamilika.")}</p> : <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left"><th className="p-2">{tr("Tarehe")}</th><th className="p-2">{tr("Bidhaa")}</th><th className="p-2">{tr("Kiasi")}</th><th className="p-2">{tr("Gharama jumla")}</th><th className="p-2">{tr("Gharama/unit")}</th><th className="p-2">{tr("Imerudishwa")}</th><th className="p-2" /></tr></thead><tbody>{batches.map((b)=>{ const left = Math.round((b.producedQty - (b.returnedQty ?? 0)) * 1e6) / 1e6; return <><tr key={b._id} className="border-b"><td className="p-2">{b.createdAt.slice(0,10)}</td><td className="p-2">{b.outputName}</td><td className="p-2">{b.producedQty}</td><td className="p-2">{b.totalCost.toLocaleString()}</td><td className="p-2">{b.unitCost.toLocaleString()}</td><td className="p-2">{b.returnedQty ?? 0}</td><td className="p-2 text-right">{left > 0 && <Button size="sm" variant="outline" onClick={() => setRet(ret?.id === String(b._id) ? null : { id: String(b._id), qty: String(left), reason: "" })}>{tr("Rudisha kwenye stock")}</Button>}</td></tr>{ret?.id === String(b._id) && <tr key={`${b._id}-r`} className="border-b bg-muted/40"><td colSpan={7} className="p-3"><div className="grid gap-2 md:grid-cols-[160px_1fr_auto] items-end"><label className="space-y-1 text-xs">{tr("Kiasi cha kurudisha (hadi {0})", [left])}<Input type="number" min="0.001" max={left} step="any" value={ret.qty} onChange={(e) => setRet({ ...ret, qty: e.target.value })} /></label><label className="space-y-1 text-xs">{tr("Sababu (lazima)")}<Input value={ret.reason} maxLength={300} placeholder={tr("Mfano: haikuuzwa, batch imezidi")} onChange={(e) => setRet({ ...ret, reason: e.target.value })} /></label><Button disabled={busy} onClick={() => void submitReturn()}>{tr("Thibitisha kurudisha")}</Button></div><p className="mt-2 text-xs text-muted-foreground">{tr("Bidhaa iliyokamilika inapungua, na malighafi zinaongezeka kwa kiasi cha recipe ya batch hii.")}</p></td></tr>}</>; })}</tbody></table></div>}</section>
+    <section className="rounded-xl border p-4 space-y-3"><h2 className="text-lg font-semibold">{tr("Recipes zilizopo")}</h2>{recipes.length === 0 ? <p className="text-sm text-muted-foreground">{tr("Bado hakuna recipe.")}</p> : <div className="space-y-2">{recipes.map((r) => <div key={r._id} className="rounded-lg bg-muted/40 p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div className="font-medium">{r.outputName} · yield {r.outputQty}{r.autoOnSale ? <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">{tr("Inatengenezwa yenyewe mauzoni")}</span> : null}</div><div className="flex gap-1"><Button size="sm" variant="outline" disabled={busy} onClick={() => loadRecipe(r)}>{tr("Hariri")}</Button><Button size="sm" variant="destructive" disabled={busy} onClick={() => void removeRecipe(String(r._id), r.outputName)}>{tr("Futa")}</Button></div></div><div className="text-sm text-muted-foreground">{r.ingredients.map((x) => `${x.productName}: ${x.qty}`).join(" · ")}</div><div className="mt-1 text-sm tabular-nums">{tr("Gharama")}: {r.computedCost.toLocaleString()} · {tr("Bei ya kuuzia")}: {(r.priceFromIngredients ? r.computedPrice : r.outputSellingPrice).toLocaleString()} · {tr("Faida")}: {((r.priceFromIngredients ? r.computedPrice : r.outputSellingPrice) - r.computedCost).toLocaleString()}{r.priceFromIngredients ? <span className="ml-2 rounded bg-sky-100 px-2 py-0.5 text-xs text-sky-800">{tr("Bei inafuata viungo")}</span> : null}</div></div>)}</div>}</section>
+    <section className="rounded-xl border p-4 space-y-3"><h2 className="text-lg font-semibold">{tr("Production ya karibuni")}</h2>{batches.length === 0 ? <p className="text-sm text-muted-foreground">{tr("Bado hakuna batch iliyokamilika.")}</p> : <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left"><th className="p-2">{tr("Tarehe")}</th><th className="p-2">{tr("Bidhaa")}</th><th className="p-2">{tr("Kiasi")}</th><th className="p-2">{tr("Gharama jumla")}</th><th className="p-2">{tr("Gharama/unit")}</th><th className="p-2">{tr("Imerudishwa")}</th><th className="p-2 text-right">{tr("Vitendo")}</th></tr></thead><tbody>{batches.map((b)=>{ const left = Math.round((b.producedQty - (b.returnedQty ?? 0)) * 1e6) / 1e6; return <><tr key={b._id} className="border-b"><td className="p-2">{b.createdAt.slice(0,10)}</td><td className="p-2">{b.outputName}</td><td className="p-2">{b.producedQty}</td><td className="p-2">{b.totalCost.toLocaleString()}</td><td className="p-2">{b.unitCost.toLocaleString()}</td><td className="p-2">{b.returnedQty ?? 0}</td><td className="p-2 text-right"><div className="flex flex-wrap justify-end gap-1">{(b.returnedQty ?? 0) === 0 && !b.notes?.startsWith("Imetengenezwa yenyewe") && <><Button size="sm" variant="outline" disabled={busy} onClick={() => { setRet(null); setEdit(edit?.id === String(b._id) ? null : { id: String(b._id), qty: String(b.producedQty), notes: b.notes ?? "" }); }}>{tr("Hariri")}</Button><Button size="sm" variant="destructive" disabled={busy} onClick={() => void removeBatch(String(b._id), b.outputName)}>{tr("Futa")}</Button></>}{left > 0 && <Button size="sm" variant="outline" onClick={() => { setEdit(null); setRet(ret?.id === String(b._id) ? null : { id: String(b._id), qty: String(left), reason: "" }); }}>{tr("Rudisha kwenye stock")}</Button>}</div></td></tr>{edit?.id === String(b._id) && <tr key={`${b._id}-e`} className="border-b bg-muted/40"><td colSpan={7} className="p-3"><div className="grid gap-2 md:grid-cols-[180px_1fr_auto_auto] items-end"><label className="space-y-1 text-xs">{tr("Kiasi kipya cha production")}<Input type="number" min="0.001" step="any" value={edit.qty} onChange={(e) => setEdit({ ...edit, qty: e.target.value })} /></label><label className="space-y-1 text-xs">{tr("Maelezo")}<Input value={edit.notes} maxLength={300} onChange={(e) => setEdit({ ...edit, notes: e.target.value })} /></label><Button disabled={busy} onClick={() => void submitEdit()}>{tr("Hifadhi mabadiliko")}</Button><Button variant="outline" disabled={busy} onClick={() => setEdit(null)}>{tr("Ghairi")}</Button></div><p className="mt-2 text-xs text-muted-foreground">{tr("Malighafi na bidhaa iliyokamilika zitarekebishwa kwa tofauti tu. Haiwezekani kama sehemu ya bidhaa imeshauzwa.")}</p></td></tr>}{ret?.id === String(b._id) && <tr key={`${b._id}-r`} className="border-b bg-muted/40"><td colSpan={7} className="p-3"><div className="grid gap-2 md:grid-cols-[160px_1fr_auto] items-end"><label className="space-y-1 text-xs">{tr("Kiasi cha kurudisha (hadi {0})", [left])}<Input type="number" min="0.001" max={left} step="any" value={ret.qty} onChange={(e) => setRet({ ...ret, qty: e.target.value })} /></label><label className="space-y-1 text-xs">{tr("Sababu (lazima)")}<Input value={ret.reason} maxLength={300} placeholder={tr("Mfano: haikuuzwa, batch imezidi")} onChange={(e) => setRet({ ...ret, reason: e.target.value })} /></label><Button disabled={busy} onClick={() => void submitReturn()}>{tr("Thibitisha kurudisha")}</Button></div><p className="mt-2 text-xs text-muted-foreground">{tr("Bidhaa iliyokamilika inapungua, na malighafi zinaongezeka kwa kiasi cha recipe ya batch hii.")}</p></td></tr>}</>; })}</tbody></table></div>}</section>
   </main>;
 }

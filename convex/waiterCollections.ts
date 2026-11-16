@@ -2,7 +2,7 @@ import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { logAudit, normalizeRole, requirePermission, resolveWriteScope } from "./access";
-import { normaliseSplits, splitValidator } from "./paymentMethods";
+import { normaliseSplits, reallocate, splitValidator } from "./paymentMethods";
 import { bumpStats } from "./stats";
 import { assertDate, assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal } from "./ledger";
 import { surfaceError } from "./surfaceError";
@@ -272,7 +272,7 @@ export const receipts = query({
   handler: async (ctx, args) => {
     const { tenantId, branchId } = await cashierScope(ctx).catch((e) => { throw surfaceError(e); });
     const rows = (await ctx.db.query("waiterCollections").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).eq("date", args.date)).collect()).filter((c) => !branchId || c.branchId === branchId);
-    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ _id: c._id, orderIds: c.orderIds, date: c.date, staffName: c.staffName, cashierName: c.cashierName, total: c.total, debt: c.shortfall ?? 0, orders: c.orderIds.length, createdAt: c.createdAt, methods: c.splits.map((s) => `${s.method} ${s.amount}`).join(" + "), splits: c.splits.map((s) => ({ method: s.method, amount: s.amount })) }));
+    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ _id: c._id, orderIds: c.orderIds, date: c.date, staffName: c.staffName, cashierName: c.cashierName, total: c.total, debt: c.shortfall ?? 0, orders: c.orderIds.length, createdAt: c.createdAt, methods: c.splits.map((s) => `${s.method} ${s.amount}`).join(" + "), splits: c.splits.map((s) => ({ method: s.method, methodId: s.methodId, amount: s.amount, reference: s.reference })) }));
   },
 });
 
@@ -304,6 +304,49 @@ export const bookMissingJournals = mutation({
       }
       await logAudit(ctx, user, { action: "book_waiter_journals", module: "accounts", details: `${booked} receipt(s) booked, ${skipped} skipped` });
       return { booked, skipped };
+    } catch (e) { throw surfaceError(e); }
+  },
+});
+
+/**
+ * EDIT a receipt of waiter money: the cashier chose the wrong payment method(s) or typed the split wrongly (cash instead of Tigo Pesa,
+ * 10,000 + 20,000 instead of 30,000 on one method ...). The amount received stays the same, so the orders, the sales and the debt are untouched;
+ * only HOW it was paid changes: the receipt's methods, the money lines of its ledger entry (each method has its own account) and everything
+ * that reads the methods (day / month reports, cashier receipts). Refused when the day was closed in a report or the accounting period is closed.
+ */
+export const editReceipt = mutation({
+  args: { collectionId: v.id("waiterCollections"), splits: v.array(splitValidator) },
+  handler: async (ctx, args) => {
+    try {
+      const { user, tenantId, branchId } = await cashierScope(ctx);
+      const c = await ctx.db.get("waiterCollections", args.collectionId);
+      if (!c || c.tenantId !== tenantId || (branchId && c.branchId !== branchId)) throw new ConvexError("Risiti haipo kwenye biashara au tawi lako.");
+      const { splits, total } = await normaliseSplits(ctx, user, args.splits);
+      if (Math.abs(total - c.total) > 0.005) throw new ConvexError(`Jumla ya njia za malipo (${total}) lazima ibaki sawa na kiasi kilichopokelewa (${c.total}).`);
+      const refs = splits.map((s) => s.reference).filter((r): r is string => !!r);
+      if (new Set(refs).size !== refs.length) throw new ConvexError("Reference moja imetumika mara mbili kwenye risiti hii.");
+      const orders: Doc<"waiterOrders">[] = [];
+      for (const id of c.orderIds) { const o = await ctx.db.get("waiterOrders", id); if (o) orders.push(o); }
+      if (await dayIsClosed(ctx, tenantId, orders.length ? orders : [{ branchId: c.branchId } as Doc<"waiterOrders">], c.date)) throw new ConvexError(`Siku ya ${c.date} ilishafungwa kwenye ripoti. Risiti yake haiwezi kuhaririwa.`);
+      const entries = (await ctx.db.query("journalEntries").withIndex("by_reference", (q) => q.eq("reference", `WSALE-${c._id}`)).collect()).filter((e) => e.tenantId === tenantId && e.status === "posted");
+      if (entries.length > 1) throw new ConvexError("Risiti hii inahusu idara zaidi ya moja; haiwezi kuhaririwa hapa.");
+      if (entries.length === 1) {
+        const entry = entries[0];
+        await assertPeriodOpen(ctx, { tenantId, branchId: entry.branchId }, entry.entryDate);
+        const desired = new Map<Id<"accounts">, number>();
+        for (const s of splits) { const accountId = await methodAccount(ctx, { tenantId, branchId: entry.branchId }, { methodId: s.methodId, method: s.method }); desired.set(accountId, r2((desired.get(accountId) ?? 0) + s.amount)); }
+        const changed = await reallocate(ctx, entry, "debit", [...desired].map(([accountId, amount]) => ({ accountId, amount })));
+        const same = c.splits.length === splits.length && c.splits.every((x, i) => x.method === splits[i].method && x.methodId === splits[i].methodId && Math.abs(x.amount - splits[i].amount) < 0.005);
+        if (!changed && !same && entries.length === 1) {
+          // reallocate leaves an entry alone only when its money lines do not match the receipt; never hide that from the cashier
+          const lines = await ctx.db.query("journalLines").withIndex("by_entry", (q) => q.eq("entryId", entry._id)).collect();
+          const moneyNow = r2(lines.filter((l) => l.debit > 0).reduce((n, l) => n + l.debit, 0));
+          if (moneyNow + 0.01 < total) throw new ConvexError("Kumbukumbu ya hesabu ya risiti hii haikulingana na malipo; haiwezi kuhaririwa kwa usalama. Wasiliana na meneja.");
+        }
+      }
+      await ctx.db.patch("waiterCollections", c._id, { splits });
+      await logAudit(ctx, user, { action: "edit_waiter_receipt", module: "sales", referenceId: String(c._id), referenceType: "waiterCollection", details: `${c.staffName}; ${c.splits.map((s) => `${s.method} ${s.amount}`).join(" + ")} -> ${splits.map((s) => `${s.method} ${s.amount}`).join(" + ")}` });
+      return { collectionId: c._id, total, methods: splits.map((s) => ({ method: s.method, amount: s.amount })) };
     } catch (e) { throw surfaceError(e); }
   },
 });

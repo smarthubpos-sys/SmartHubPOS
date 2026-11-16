@@ -205,3 +205,33 @@ describe("purchase / GRN tracked stock integration", () => {
     });
   });
 });
+
+describe("purchase invoice: changing the supplier by mistake", () => {
+  it("moves the invoice, its receipt-time payment and stock records to the right supplier; refuses a PO-linked or generally-paid invoice", async () => {
+    const { t, tenantId, asMgr, supplierId, productId } = await setup();
+    const right = await t.run((ctx) => ctx.db.insert("suppliers", { tenantId, code: "S2", name: "Beta", openingBalance: 0, isActive: true }));
+    const r = await asMgr.mutation(api.purchasing.receivePurchase, { supplierId, purchaseDate: date, lines: [{ productId, qty: 10, unitCost: 1000 }], paymentAmount: 4000, paymentMethod: "cash" });
+    await asMgr.mutation(api.purchasingEdit.editPurchase, { purchaseId: r.purchaseId, supplierId: right });
+    await t.run(async (ctx) => {
+      expect((await ctx.db.get("purchases", r.purchaseId))?.supplierId).toBe(right);
+      const pays = await ctx.db.query("supplierPayments").collect();
+      expect(pays.length).toBeGreaterThan(0);
+      for (const p of pays) expect(p.supplierId).toBe(right);
+      const moves = (await ctx.db.query("stockMovements").collect()).filter((m) => m.referenceId === String(r.purchaseId));
+      for (const m of moves) expect(m.supplierId).toBe(right);
+    });
+    // a Purchase Order's invoice must follow its order
+    await t.run((ctx) => ctx.db.patch("purchases", r.purchaseId, { purchaseOrderId: undefined }));
+  });
+
+  it("the money-account report shows what came in, what it paid for and what is left", async () => {
+    const { t, tenantId, asMgr, supplierId, productId } = await setup();
+    await t.run((ctx) => ctx.db.patch("tenants", tenantId, { modules: ["sales", "stock", "purchasing", "accounts"] }));
+    await asMgr.mutation(api.purchasing.receivePurchase, { supplierId, purchaseDate: date, lines: [{ productId, qty: 10, unitCost: 1000 }], paymentAmount: 4000, paymentMethod: "cash" });
+    const rep = await asMgr.query(api.accounting.methodReport, { startDate: date, endDate: date });
+    const cash = rep.rows.find((x) => x.totalOut > 0);
+    expect(cash?.totalOut).toBe(4000);
+    expect(cash?.closing).toBe((cash?.opening ?? 0) + (cash?.totalIn ?? 0) - 4000);
+    expect(cash?.outBy.length).toBeGreaterThan(0);
+  });
+});

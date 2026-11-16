@@ -15,7 +15,6 @@ import { formatDate, localDate } from "@/lib/format.ts";
 import { methodArgs, pickMethodKey, usePaymentMethods } from "@/hooks/use-payment-methods.ts";
 import { tr } from "@/lib/i18n.ts";
 
-const CATEGORIES = ["rent", "electricity", "water", "internet", "tax", "transport", "other"];
 const catLabel = (c: string) => ({ rent: tr("Kodi ya pango"), electricity: tr("Umeme"), water: tr("Maji"), internet: tr("Intaneti / simu"), tax: tr("Kodi na leseni"), transport: tr("Usafiri"), other: tr("Nyingine") } as Record<string, string>)[c] ?? c;
 const methodLabel = (m: string) => ({ cash: tr("Fedha taslimu"), bank: tr("Benki"), mobile: tr("Pesa za simu") } as Record<string, string>)[m] ?? m;
 
@@ -25,9 +24,8 @@ export default function ExpensesPage() {
   const pay = useMutation(api.bills.pay);
   const voidBill = useMutation(api.bills.voidBill);
   const update = useMutation(api.bills.update);
-  const addCategory = useMutation(api.bills.addCategory);
-  const removeCategory = useMutation(api.bills.removeCategory);
-  const myCategories = useQuery(api.bills.categories);
+  const addExpenseAccount = useMutation(api.bills.addExpenseAccount);
+  const expenseAccounts = useQuery(api.bills.expenseAccounts); // the expense accounts of this business's Chart of Accounts
   const { money } = useMoney();
   const methods = usePaymentMethods();
   const { busy, run } = useSubmit();
@@ -40,7 +38,7 @@ export default function ExpensesPage() {
   const [editId, setEditId] = useState<Id<"bills"> | null>(null); // set while a saved bill is being edited
   const [addingCat, setAddingCat] = useState(false);
   const [newCat, setNewCat] = useState("");
-  const blank = { vendor: "", category: "rent", billNumber: "", billDate: today, dueDate: localDate(14), amount: "", notes: "" };
+  const blank = { vendor: "", category: "", accountId: "", billNumber: "", billDate: today, dueDate: localDate(14), amount: "", notes: "" };
   const [f, setF] = useState(blank);
   const [p, setP] = useState({ amount: "", method: "cash", date: today, reference: "" });
   const payments = useQuery(api.bills.payments, payFor ? { billId: payFor } : "skip");
@@ -83,27 +81,19 @@ export default function ExpensesPage() {
         <Panel title={editId ? tr("Hariri bili") : tr("Matumizi mapya")}>
           <div className="grid gap-3 md:grid-cols-3">
             <FormField label={tr("Mtoa huduma / anayedai")}><Input value={f.vendor} onChange={(e) => setF({ ...f, vendor: e.target.value })} /></FormField>
-            <FormField label={tr("Aina ya bili")}>
-              <SelectBox value={f.category} onChange={(e) => { if (e.target.value === "__new__") setAddingCat(true); else setF({ ...f, category: e.target.value }); }}>
-                {CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c)}</option>)}
-                {(myCategories ?? []).map((c) => <option key={c._id} value={c.name}>{c.name}</option>)}
-                {!CATEGORIES.includes(f.category) && !(myCategories ?? []).some((c) => c.name === f.category) && <option value={f.category}>{f.category}</option>}
-                <option value="__new__">{tr("＋ Ongeza aina mpya...")}</option>
+            <FormField label={tr("Aina ya bili (account ya matumizi)")}>
+              <SelectBox value={f.accountId || (f.category ? "__legacy__" : "")} onChange={(e) => { if (e.target.value === "__new__") setAddingCat(true); else if (e.target.value !== "__legacy__") setF({ ...f, accountId: e.target.value }); }}>
+                <option value="">{tr("Chagua account ya matumizi...")}</option>
+                {(expenseAccounts ?? []).map((a) => <option key={a._id} value={a._id}>{a.code} · {a.name}</option>)}
+                {!f.accountId && f.category && <option value="__legacy__">{catLabel(f.category)}</option>}
+                <option value="__new__">{tr("＋ Ongeza account mpya ya matumizi...")}</option>
               </SelectBox>
+              {expenseAccounts && expenseAccounts.length === 0 && <p className="mt-1 text-xs text-muted-foreground">{tr("Hakuna account ya matumizi kwenye Chart of Accounts. Ongeza kwa \"＋\" au kwenye Chart of Accounts.")}</p>}
               {addingCat && (
                 <div className="mt-2 flex gap-2">
                   <Input autoFocus placeholder={tr("Mf. Mishahara, Matangazo")} value={newCat} onChange={(e) => setNewCat(e.target.value)} />
-                  <Button size="sm" disabled={busy || newCat.trim().length < 2} onClick={async () => { const name = await run(() => addCategory({ name: newCat }), tr("Aina imeongezwa.")); if (name) { setF({ ...f, category: name }); setNewCat(""); setAddingCat(false); } }}>{tr("Ongeza")}</Button>
+                  <Button size="sm" disabled={busy || newCat.trim().length < 2} onClick={async () => { const res = await run(() => addExpenseAccount({ name: newCat }), tr("Account ya matumizi imeongezwa kwenye Chart of Accounts.")); if (res) { setF({ ...f, accountId: String(res.accountId) }); setNewCat(""); setAddingCat(false); } }}>{tr("Ongeza")}</Button>
                   <Button size="sm" variant="outline" onClick={() => { setNewCat(""); setAddingCat(false); }}>{tr("Cancel")}</Button>
-                </div>
-              )}
-              {(myCategories ?? []).length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {(myCategories ?? []).map((c) => (
-                    <span key={c._id} className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs">{c.name}
-                      <button type="button" className="text-destructive" aria-label={tr("Futa aina")} disabled={busy} onClick={() => { if (window.confirm(tr("Futa aina hii kwenye orodha? Bili zilizokwisha hifadhiwa hazibadiliki."))) void run(() => removeCategory({ categoryId: c._id }), tr("Aina imefutwa.")); }}>✕</button>
-                    </span>
-                  ))}
                 </div>
               )}
             </FormField>
@@ -114,7 +104,7 @@ export default function ExpensesPage() {
             <FormField label={tr("Maelezo (hiari)")} className="md:col-span-3"><Input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></FormField>
           </div>
           <div className="mt-3 flex gap-2">
-            <Button disabled={busy || !f.vendor.trim() || !f.amount} onClick={async () => { const body = { vendor: f.vendor, category: f.category, billNumber: f.billNumber || undefined, billDate: f.billDate, dueDate: f.dueDate, amount: Number(f.amount), notes: f.notes || undefined }; const ok = await run(() => editId ? update({ billId: editId, ...body }) : create(body)); if (ok) { setF(blank); setEditId(null); setShowForm(false); } }}>{editId ? tr("Hifadhi mabadiliko") : tr("Hifadhi bili")}</Button>
+            <Button disabled={busy || !f.vendor.trim() || !f.amount || (!f.accountId && !(editId && f.category))} onClick={async () => { const body = { vendor: f.vendor, category: f.category || "other", expenseAccountId: f.accountId ? (f.accountId as Id<"accounts">) : undefined, billNumber: f.billNumber || undefined, billDate: f.billDate, dueDate: f.dueDate, amount: Number(f.amount), notes: f.notes || undefined }; const ok = await run(() => editId ? update({ billId: editId, ...body }) : create(body)); if (ok) { setF(blank); setEditId(null); setShowForm(false); } }}>{editId ? tr("Hifadhi mabadiliko") : tr("Hifadhi bili")}</Button>
             <Button variant="outline" onClick={() => { setShowForm(false); setEditId(null); setF(blank); }}>{tr("Cancel")}</Button>
           </div>
         </Panel>
@@ -151,7 +141,7 @@ export default function ExpensesPage() {
                 <td className="whitespace-nowrap">{formatDate(b.dueDate)}</td><td className="whitespace-nowrap">{money(b.amount)}</td><td className="whitespace-nowrap">{money(b.paidAmount)}</td>
                 <td>{pill(status(b))}</td>
                 <td className="whitespace-nowrap text-right">
-                  {b.status !== "void" && <Button size="sm" variant="outline" disabled={busy} onClick={() => { setEditId(b._id); setF({ vendor: b.vendor, category: b.category, billNumber: b.billNumber, billDate: b.billDate, dueDate: b.dueDate, amount: String(b.amount), notes: b.notes ?? "" }); setShowForm(true); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{tr("Hariri")}</Button>}
+                  {b.status !== "void" && <Button size="sm" variant="outline" disabled={busy} onClick={() => { setEditId(b._id); setF({ vendor: b.vendor, category: b.category, accountId: b.expenseAccountId ? String(b.expenseAccountId) : "", billNumber: b.billNumber, billDate: b.billDate, dueDate: b.dueDate, amount: String(b.amount), notes: b.notes ?? "" }); setShowForm(true); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{tr("Hariri")}</Button>}
                   {["unpaid", "partial"].includes(b.status) && <Button size="sm" variant="outline" onClick={() => { setPayFor(b._id); setP({ ...p, amount: String(b.amount - b.paidAmount) }); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{tr("Lipa")}</Button>}
                   {b.status === "unpaid" && <Button size="sm" variant="ghost" className="text-destructive" disabled={busy} onClick={() => { if (window.confirm(tr("Batilisha bili hii?"))) void run(() => voidBill({ billId: b._id }), tr("Bili imebatilishwa.")); }}>{tr("Batilisha")}</Button>}
                 </td>

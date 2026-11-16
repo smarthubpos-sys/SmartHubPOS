@@ -89,3 +89,47 @@ export const generalLedger = query({ args: { startDate: v.string(), endDate: v.s
  for(const entry of entries){const lines=await ctx.db.query("journalLines").withIndex("by_entry",q=>q.eq("entryId",entry._id)).collect();for(const line of lines){const account=accountMap.get(String(line.accountId));if(account)result.push({date:entry.entryDate,reference:entry.reference,description:line.description??entry.description,code:account.code,account:account.name,debit:line.debit,credit:line.credit});}}
  return result.sort((x,y)=>x.date.localeCompare(y.date)||x.code.localeCompare(y.code));
 }});
+
+/**
+ * Money-account report (Tigo Pesa, cash, bank ...): for the chosen period, per account, what it opened with, how much came IN,
+ * how much went OUT and what each outgoing amount paid for, and what is left. Read from posted journal lines only, so it always agrees
+ * with the ledger. Cash-kind payment methods share the one Cash account.
+ */
+export const methodReport = query({ args: { startDate: v.string(), endDate: v.string() }, handler: async (ctx, a) => {
+ const u = await requirePermission(ctx, "accounts.reports.view", "accounts");
+ if (a.endDate < a.startDate) throw new ConvexError("Date range si sahihi.");
+ const accounts = (await scopedRows(ctx, u, "accounts")).filter((x) => x.isActive && isMoneyAccount(x));
+ const byId = new Map(accounts.map((x) => [String(x._id), x]));
+ const branchNames = new Map<string, string>();
+ for (const x of accounts) if (x.branchId && !branchNames.has(String(x.branchId))) branchNames.set(String(x.branchId), (await ctx.db.get("branches", x.branchId))?.name ?? "");
+ const dayBefore = new Date(Date.parse(`${a.startDate}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+ type Detail = { date: string; reference: string; description: string; sourceType: string; amount: number };
+ type Group = { sourceType: string; amount: number; count: number };
+ const rows = new Map<string, { opening: number; totalIn: number; totalOut: number; inBy: Map<string, Group>; outBy: Map<string, Group>; ins: Detail[]; outs: Detail[]; truncated: boolean }>();
+ const rowOf = (id: string) => { let r = rows.get(id); if (!r) { r = { opening: 0, totalIn: 0, totalOut: 0, inBy: new Map(), outBy: new Map(), ins: [], outs: [], truncated: false }; rows.set(id, r); } return r; };
+ const DETAIL_CAP = 400;
+ for (const e of await postedEntries(ctx, u, undefined, dayBefore)) {
+  for (const l of await ctx.db.query("journalLines").withIndex("by_entry", (q) => q.eq("entryId", e._id)).collect()) if (byId.has(String(l.accountId))) rowOf(String(l.accountId)).opening = roundMoney(rowOf(String(l.accountId)).opening + l.debit - l.credit);
+ }
+ for (const e of await postedEntries(ctx, u, a.startDate, a.endDate)) {
+  const sourceType = e.sourceType ?? "manual";
+  for (const l of await ctx.db.query("journalLines").withIndex("by_entry", (q) => q.eq("entryId", e._id)).collect()) {
+   if (!byId.has(String(l.accountId))) continue;
+   const r = rowOf(String(l.accountId));
+   const detail: Detail = { date: e.entryDate, reference: e.reference, description: l.description ?? e.description, sourceType, amount: roundMoney(l.debit > 0 ? l.debit : l.credit) };
+   const put = (map: Map<string, Group>, list: Detail[]) => { const g = map.get(sourceType) ?? { sourceType, amount: 0, count: 0 }; g.amount = roundMoney(g.amount + detail.amount); g.count++; map.set(sourceType, g); if (list.length < DETAIL_CAP) list.push({ ...detail, description: e.description }); else r.truncated = true; };
+   if (l.debit > 0) { r.totalIn = roundMoney(r.totalIn + l.debit); put(r.inBy, r.ins); }
+   if (l.credit > 0) { r.totalOut = roundMoney(r.totalOut + l.credit); put(r.outBy, r.outs); }
+  }
+ }
+ const out = [] as Array<{ accountId: string; code: string; name: string; branchName: string; opening: number; totalIn: number; totalOut: number; closing: number; inBy: Group[]; outBy: Group[]; ins: Detail[]; outs: Detail[]; truncated: boolean }>;
+ for (const [id, r] of rows) {
+  const ac = byId.get(id)!;
+  const closing = roundMoney(r.opening + r.totalIn - r.totalOut);
+  if (r.opening === 0 && r.totalIn === 0 && r.totalOut === 0) continue;
+  const sortGroups = (m: Map<string, Group>) => [...m.values()].sort((x, y) => y.amount - x.amount);
+  out.push({ accountId: id, code: ac.code, name: ac.name, branchName: ac.branchId ? (branchNames.get(String(ac.branchId)) ?? "") : "", opening: r.opening, totalIn: r.totalIn, totalOut: r.totalOut, closing, inBy: sortGroups(r.inBy), outBy: sortGroups(r.outBy), ins: r.ins.sort((x, y) => x.date.localeCompare(y.date)), outs: r.outs.sort((x, y) => x.date.localeCompare(y.date)), truncated: r.truncated });
+ }
+ out.sort((x, y) => x.code.localeCompare(y.code) || x.name.localeCompare(y.name));
+ return { startDate: a.startDate, endDate: a.endDate, rows: out, totalIn: roundMoney(out.reduce((n, x) => n + x.totalIn, 0)), totalOut: roundMoney(out.reduce((n, x) => n + x.totalOut, 0)), totalClosing: roundMoney(out.reduce((n, x) => n + x.closing, 0)) };
+}});

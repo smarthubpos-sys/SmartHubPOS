@@ -105,22 +105,30 @@ const asLines = (lines: Array<{ productId: Id<"products">; qty: number; unitCost
 function InvoiceEditDialog({ id, onClose }: { id: Id<"purchases">; onClose: () => void }) {
   const data = useQuery(api.purchasingEdit.purchaseForEdit, { purchaseId: id });
   const products = useQuery(api.products.listActive, {});
+  const suppliers = useQuery(api.suppliers.list, {});
   return (
     <Overlay title={tr("Hariri Purchase Invoice {0}", [data?.purchase.invoiceNo ?? data?.purchase.internalRef ?? ""])} onClose={onClose}>
-      {!data || !products ? <p className="text-sm text-muted-foreground">{tr("Inapakia…")}</p> : data.hasReturns ? (
+      {!data || !products || !suppliers ? <p className="text-sm text-muted-foreground">{tr("Inapakia…")}</p> : data.hasReturns ? (
         <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">{tr("Invoice hii ina Purchase Return. Futa return kwanza ndipo uihariri.")}</p>
-      ) : <InvoiceEditForm id={id} data={data} products={products} onClose={onClose} />}
+      ) : <InvoiceEditForm id={id} data={data} products={products} suppliers={suppliers} onClose={onClose} />}
     </Overlay>
   );
 }
 
-function InvoiceEditForm({ id, data, products, onClose }: { id: Id<"purchases">; data: { purchase: { purchaseDate: string; supplierInvoiceNo?: string; notes?: string }; lines: Array<{ productId: Id<"products">; qty: number; unitCost: number }> }; products: Products; onClose: () => void }) {
+function InvoiceEditForm({ id, data, products, suppliers, onClose }: { id: Id<"purchases">; data: { purchase: { supplierId: Id<"suppliers">; purchaseOrderId?: Id<"purchaseOrders">; purchaseDate: string; supplierInvoiceNo?: string; notes?: string }; lines: Array<{ productId: Id<"products">; qty: number; unitCost: number }> }; products: Products; suppliers: Suppliers; onClose: () => void }) {
   const edit = useMutation(api.purchasingEdit.editPurchase);
   const { busy, run } = useSave(onClose);
-  const [f, setF] = useState({ date: data.purchase.purchaseDate, supInv: data.purchase.supplierInvoiceNo ?? "", notes: data.purchase.notes ?? "", lines: asLines(data.lines) });
+  const [f, setF] = useState({ supplierId: String(data.purchase.supplierId), date: data.purchase.purchaseDate, supInv: data.purchase.supplierInvoiceNo ?? "", notes: data.purchase.notes ?? "", lines: asLines(data.lines) });
+  const fromOrder = !!data.purchase.purchaseOrderId;
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2">
+        <label className="grid gap-1 text-sm sm:col-span-2">{tr("Supplier")}
+          <select className="h-10 rounded-md border bg-background px-3" value={f.supplierId} disabled={fromOrder} onChange={(e) => setF({ ...f, supplierId: e.target.value })}>
+            {suppliers.filter((s) => s.isActive || String(s._id) === f.supplierId).map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+          </select>
+          {fromOrder && <span className="text-xs text-muted-foreground">{tr("Invoice hii imetokana na Purchase Order; badilisha supplier kwenye Purchase Order.")}</span>}
+        </label>
         <label className="grid gap-1 text-sm">{tr("Tarehe")}<Input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></label>
         <label className="grid gap-1 text-sm">{tr("Namba ya invoice ya supplier")}<Input value={f.supInv} onChange={(e) => setF({ ...f, supInv: e.target.value })} /></label>
         <label className="grid gap-1 text-sm sm:col-span-2">{tr("Maelezo")}<Input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></label>
@@ -128,7 +136,7 @@ function InvoiceEditForm({ id, data, products, onClose }: { id: Id<"purchases">;
       <LinesEditor lines={f.lines} onChange={(lines) => setF({ ...f, lines })} products={products} />
       <p className="text-xs text-muted-foreground">{tr("Stock na deni la supplier vitarekebishwa kwa tofauti tu. Kilicholipwa tayari hakibadilishwi.")}</p>
       <div className="flex gap-2">
-        <Button disabled={busy} onClick={() => void run(() => edit({ purchaseId: id, purchaseDate: f.date, supplierInvoiceNo: f.supInv, notes: f.notes, lines: toLines(f.lines) }), tr("Invoice imehaririwa."))}>{tr("Hifadhi mabadiliko")}</Button>
+        <Button disabled={busy} onClick={() => void run(() => edit({ purchaseId: id, ...(fromOrder ? {} : { supplierId: f.supplierId as Id<"suppliers"> }), purchaseDate: f.date, supplierInvoiceNo: f.supInv, notes: f.notes, lines: toLines(f.lines) }), tr("Invoice imehaririwa."))}>{tr("Hifadhi mabadiliko")}</Button>
         <Button variant="outline" onClick={onClose}>{tr("Ghairi")}</Button>
       </div>
     </>

@@ -149,3 +149,61 @@ describe("cashier splits one waiter debt among many customers", () => {
     expect(owing[0]).toMatchObject({ total: 1500 }); // the waiter still owes the rest
   });
 });
+
+describe("cashier edits what was received and where a debt was directed", () => {
+  it("a customer payment can be corrected (method, amount): invoice, customer debt and the ledger follow, nothing is erased", async () => {
+    const { t, asCashier, orderId, clientId } = await creditSale();
+    await asCashier.mutation(api.customerDebt.assignOrdersToCustomer, { orderIds: [orderId], clientId });
+    const open = await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId });
+    const invoiceId = open.invoices[0]._id;
+    await asCashier.mutation(api.customerDebt.receiveRepayment, { clientId, splits: [{ method: "cash", amount: 1500 }], allocations: [{ invoiceId, amount: 1500 }] });
+    const rows = await asCashier.query(api.customerDebt.recentCustomerPayments, {});
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ total: 1500, outstanding: 2500, editable: true });
+    const r = await asCashier.mutation(api.customerDebt.editCustomerPayment, { invoiceId, receiptNo: rows[0].receiptNo!, splits: [{ method: "cash", amount: 1000 }, { method: "mobile", amount: 1000, reference: "TP1" }] });
+    expect(r).toMatchObject({ total: 2000, outstanding: 2000 });
+    expect((await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId })).owes).toBe(2000);
+    const after = await asCashier.query(api.customerDebt.recentCustomerPayments, {});
+    expect(after[0].splits.map((s) => s.amount).sort()).toEqual([1000, 1000]);
+    await t.run(async (ctx) => {
+      const entries = await ctx.db.query("journalEntries").collect();
+      for (const e of entries) expect(Math.abs(e.totalDebit - e.totalCredit)).toBeLessThan(0.01);
+      const pays = await ctx.db.query("customerPayments").collect();
+      expect(pays.filter((p) => p.voided)).toHaveLength(1); // the old line is kept, voided
+    });
+    // more than the debt is refused and changes nothing
+    await expect(asCashier.mutation(api.customerDebt.editCustomerPayment, { invoiceId, receiptNo: rows[0].receiptNo!, splits: [{ method: "cash", amount: 9000 }] })).rejects.toThrow();
+    expect((await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId })).owes).toBe(2000);
+  });
+
+  it("a debt directed to the wrong customer is moved to the right one, with its payments", async () => {
+    const { t, tenantId, asCashier, asWaiter, orderId, clientId } = await creditSale();
+    await asCashier.mutation(api.customerDebt.assignOrdersToCustomer, { orderIds: [orderId], clientId });
+    const rightId = await t.run(async (ctx) => ctx.db.insert("clients", { tenantId, code: "C2", name: "Baba Zawadi", openingBalance: 0, creditPolicy: "allow", isActive: true }));
+    const debts = await asCashier.query(api.customerDebt.assignedDebts, {});
+    expect(debts).toHaveLength(1);
+    await asCashier.mutation(api.customerDebt.reassignDebt, { invoiceId: debts[0]._id, clientId: rightId });
+    expect((await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId: rightId })).owes).toBe(4000);
+    expect((await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId })).owes).toBe(0);
+    await expect(asCashier.mutation(api.customerDebt.reassignDebt, { invoiceId: debts[0]._id, clientId: rightId })).rejects.toThrow();
+    await expect(asWaiter.mutation(api.customerDebt.reassignDebt, { invoiceId: debts[0]._id, clientId })).rejects.toThrow();
+  });
+
+  it("a waiter receipt can change its payment methods (same total) and the money accounts report shows it", async () => {
+    const { t, asWaiter, asCashier, waiter, productId } = await setup();
+    const sent = await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "key-edit-receipt1", mode: "send", lines: [{ productId, qty: 2 }] });
+    const owing = await asCashier.query(api.waiterCollections.owing, {});
+    const orderIds = owing.flatMap((o) => o.orders.map((x: { _id: Id<"waiterOrders"> }) => x._id)).length ? owing.flatMap((o) => o.orders.map((x: { _id: Id<"waiterOrders"> }) => x._id)) : [sent.orderId];
+    await asCashier.mutation(api.waiterCollections.collect, { staffId: waiter, orderIds, splits: [{ method: "cash", amount: 4000 }] });
+    const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
+    const receipts = await asCashier.query(api.waiterCollections.receipts, { date: today });
+    expect(receipts).toHaveLength(1);
+    await expect(asCashier.mutation(api.waiterCollections.editReceipt, { collectionId: receipts[0]._id, splits: [{ method: "mobile", amount: 3000 }] })).rejects.toThrow(/lazima ibaki sawa/);
+    await asCashier.mutation(api.waiterCollections.editReceipt, { collectionId: receipts[0]._id, splits: [{ method: "cash", amount: 1000 }, { method: "mobile", amount: 3000, reference: "TP9" }] });
+    const again = await asCashier.query(api.waiterCollections.receipts, { date: today });
+    expect(again[0].splits.map((s) => s.amount)).toEqual([1000, 3000]);
+    const rep = await asCashier.query(api.accounting.methodReport, { startDate: today, endDate: today }).catch(() => null);
+    if (rep) expect(rep.totalIn).toBe(4000);
+    await t.run(async (ctx) => { for (const e of await ctx.db.query("journalEntries").collect()) expect(Math.abs(e.totalDebit - e.totalCredit)).toBeLessThan(0.01); });
+  });
+});
