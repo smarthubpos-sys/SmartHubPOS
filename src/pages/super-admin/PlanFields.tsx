@@ -1,7 +1,7 @@
 import { Input } from "@/components/ui/input.tsx";
-import { formatDate } from "@/lib/format.ts";
+import { formatDate, localDate } from "@/lib/format.ts";
 import { tr } from "@/lib/i18n.ts";
-import type { PlanValue, Sub } from "./plan-utils.ts";
+import { previewPlan, type PlanValue, type Sub } from "./plan-utils.ts";
 
 export function SubscriptionBadge({ sub }: { sub?: Sub }) {
   if (!sub) return null;
@@ -14,8 +14,11 @@ export function SubscriptionBadge({ sub }: { sub?: Sub }) {
 }
 
 /** Demo (3 days) or paid (months + amount). `light` = inputs on a dark card are white; otherwise default theme inputs. */
-export default function PlanFields({ value, onChange, light = false }: { value: PlanValue; onChange: (v: PlanValue) => void; light?: boolean }) {
+export default function PlanFields({ value, onChange, light = false, runningUntil }: { value: PlanValue; onChange: (v: PlanValue) => void; light?: boolean; runningUntil?: string }) {
   const inputCls = light ? "bg-white text-slate-900" : "";
+  const today = localDate();
+  const preview = previewPlan(value, today, runningUntil);
+  const extending = !!runningUntil && runningUntil >= today;
   const choice = (plan: PlanValue["plan"], label: string) => (
     <button type="button" onClick={() => onChange({ ...value, plan })}
       className={`cursor-pointer rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${value.plan === plan ? "border-primary bg-primary text-primary-foreground" : "border-white/30 bg-transparent hover:bg-white/10"}`}>{label}</button>
@@ -32,6 +35,16 @@ export default function PlanFields({ value, onChange, light = false }: { value: 
             <Input type="number" min={1} max={60} step={1} value={value.months} onChange={(e) => onChange({ ...value, months: e.target.value })} className={inputCls} /></label>
           <label className="grid gap-1 text-sm">{tr("Kiasi alicholipa (TZS)")}
             <Input type="number" min={1} step="any" value={value.amount} onChange={(e) => onChange({ ...value, amount: e.target.value })} className={inputCls} /></label>
+          {!extending && (
+            <label className="grid gap-1 text-sm sm:col-span-2">{tr("Tarehe aliyolipa (hiari, leo ikiachwa wazi)")}
+              <Input type="date" max={today} value={value.paidOn ?? ""} onChange={(e) => onChange({ ...value, paidOn: e.target.value })} className={inputCls} /></label>
+          )}
+          {preview && (
+            <p className="text-sm sm:col-span-2" role="status">
+              {tr("Usajili utaanza")}: <b>{formatDate(preview.startsAt)}</b> · {tr("Utaisha")}: <b>{formatDate(preview.endsAt)}</b>
+              {extending ? <span className="block text-xs opacity-80">{tr("Unaongezwa baada ya tarehe ya mwisho ya sasa ({0}).", [formatDate(runningUntil ?? "")])}</span> : null}
+            </p>
+          )}
         </div>
       )}
     </div>

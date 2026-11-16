@@ -1,4 +1,3 @@
-import ExcelJS from "exceljs";
 import { safeCell } from "@/lib/safe-cell.ts";
 
 /** One line of the report as the Excel / e-mail rows: [description, amount]. A row whose amount is "" is a section heading. */
@@ -9,6 +8,7 @@ export type ReportLine = Record<string, string | number | boolean | null>;
  * (summary, money received by method, debts, expenses). Headings are bold; amounts are real numbers (they can be added up in Excel).
  */
 export async function downloadPeriodReportExcel(opts: { business: string; title: string; from: string; to: string; lines: ReportLine[]; fileName: string; headings: { description: string; amount: string } }) {
+  const ExcelJS = (await import("exceljs")).default; // loaded only when the file is saved, so opening the report page stays light
   const wb = new ExcelJS.Workbook();
   wb.creator = "SmartHubPOS";
   const ws = wb.addWorksheet("Report");

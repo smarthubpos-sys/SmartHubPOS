@@ -28,6 +28,10 @@ async function setup() {
     await entry("S1", "Sale 1", "sale", [[cash, 2000, 0], [lipa, 1000, 0], [bank, 2000, 0], [sales, 0, 5000], [cogs, 3000, 0], [inv, 0, 3000]]);
     await entry("B1", "Bill BILL-0001: Landlord", "bill", [[rent, 1500, 0], [ap, 0, 1500]]);
     await entry("B2", "Bill BILL-0002: Boda", "bill", [[transport, 500, 0], [ap, 0, 500]]);
+    // The report reads expenses from the bills as they stand now (not from the bill journal entries).
+    const bill = (billNumber: string, vendor: string, category: string, amount: number) => ctx.db.insert("bills", { tenantId: T, billNumber, vendor, category, billDate: DAY, dueDate: DAY, amount, paidAmount: 0, status: "unpaid", createdBy: admin });
+    await bill("BILL-0001", "Landlord", "rent", 1500);
+    await bill("BILL-0002", "Boda", "transport", 500);
     const client = await ctx.db.insert("clients", { tenantId: T, code: "C1", name: "Mteja Mkopo", openingBalance: 0, creditPolicy: "allow", isActive: true });
     await ctx.db.insert("invoices", { tenantId: T, invoiceNo: "INV-1", invoiceDate: DAY, clientId: client, subtotal: 400, discount: 0, taxAmount: 0, total: 400, amountPaid: 0, outstanding: 400, paymentStatus: "unpaid", status: "posted", createdBy: admin });
     const product = await ctx.db.insert("products", { tenantId: T, itemCode: "P1", name: "Soda", sellingPrice: 1000, openingQty: 0, currentQty: 0, isActive: true });
@@ -54,7 +58,7 @@ describe("simple day report: sales, expenses in detail, debts by name, CASH / LI
 
     // expenses exactly as entered (cost of goods is not one of them)
     const items = chunk.sections.flatMap((s) => s.items).sort((a, b) => b.a - a.a);
-    expect(items.map((i) => [i.t, i.c, i.a])).toEqual([["Bill BILL-0001: Landlord", "Rent", 1500], ["Bill BILL-0002: Boda", "Transport", 500]]);
+    expect(items.map((i) => [i.t, i.c, i.a])).toEqual([["Bill BILL-0001: Landlord", "Rent expense", 1500], ["Bill BILL-0002: Boda", "Transport expense", 500]]);
 
     // waiters who still owe, by name, with the number of orders (paid part already taken off)
     expect(debts.waiters.map((w) => [w.name, w.orders, w.amount, w.cost]).sort()).toEqual([["Asha", 2, 1400, 700], ["Juma", 1, 800, 400]]);

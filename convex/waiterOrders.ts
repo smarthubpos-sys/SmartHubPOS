@@ -149,9 +149,8 @@ export const list = query({
       .withIndex("by_tenant", q => q.eq("tenantId", tenantId))
       .first();
     if (!waiterOrdersAllowedFor(user.role, settings)) return [];
-    const rows = await ctx.db.query("waiterOrders")
-      .withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId))
-      .collect();
+    // Never read every bill of the business: only the most recent 3,000 orders are considered for the queue.
+    const rows = await ctx.db.query("waiterOrders").withIndex("by_tenant_created", q => q.eq("tenantId", tenantId)).order("desc").take(3000);
     const inScope = rows.filter(r => orderInScope(user, scope, r) && (isWaiter(user.role) ? r.branchId === scope.branchId : true));
     const isWaiterRole = isWaiter(user.role);
     // A waiter sees only his own orders (placed, sent or received). Everyone else (cashier / manager) sees only orders that were SENT.

@@ -5,10 +5,10 @@ import { applyPlan, planStatus, tzToday } from "./plans";
 
 /** Super Admin: mark a business as demo (3 days) or record a payment (amount + months). */
 export const set = mutation({
-  args: { tenantId: v.id("tenants"), plan: v.union(v.literal("demo"), v.literal("paid")), months: v.optional(v.number()), amount: v.optional(v.number()), note: v.optional(v.string()) },
+  args: { tenantId: v.id("tenants"), plan: v.union(v.literal("demo"), v.literal("paid")), months: v.optional(v.number()), amount: v.optional(v.number()), note: v.optional(v.string()), paidOn: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const user = await requireSuperAdminUser(ctx);
-    const result = await applyPlan(ctx, a.tenantId, { plan: a.plan, months: a.months, amount: a.amount, note: a.note }, user._id);
+    const result = await applyPlan(ctx, a.tenantId, { plan: a.plan, months: a.months, amount: a.amount, note: a.note, paidOn: a.paidOn }, user._id);
     await logAudit(ctx, user, { action: "set_subscription", module: "super-admin", referenceId: String(a.tenantId), details: `${a.plan} ${a.months ?? ""} ${a.amount ?? ""} -> ${result.endsAt}` });
     return result;
   },
@@ -64,7 +64,7 @@ export const dashboardSummary = query({
       expiredBusinesses: statuses.filter(({ status }) => status.expired).length,
       expiringBusinesses: statuses.filter(({ status }) => status.expiringSoon).length,
       totalRevenue: payments.reduce((sum, payment) => sum + payment.amount, 0),
-      monthRevenue: payments.filter((payment) => payment.createdAt.slice(0, 7) === monthPrefix).reduce((sum, payment) => sum + payment.amount, 0),
+      monthRevenue: payments.filter((payment) => (payment.paidOn ?? payment.createdAt).slice(0, 7) === monthPrefix).reduce((sum, payment) => sum + payment.amount, 0),
       expiring,
     };
   },

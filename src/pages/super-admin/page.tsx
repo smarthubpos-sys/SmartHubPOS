@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useMutation, useQuery } from "convex/react";
 import { Plus, X, Pencil } from "lucide-react";
@@ -7,7 +7,9 @@ import type { FunctionReturnType } from "convex/server";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { tr, errorText } from "@/lib/i18n.ts";
-import PlanFields, { SubscriptionBadge } from "./PlanFields.tsx";
+import PlanFields from "./PlanFields.tsx";
+import SubscriptionCell from "./SubscriptionCell.tsx";
+import { formatDate, formatNumber } from "@/lib/format.ts";
 import EditBusinessPanel from "./EditBusinessPanel.tsx";
 import ErrorBoundary from "@/components/error-boundary.tsx";
 import { emptyPlan, planArgs, type PlanValue } from "./plan-utils.ts";
@@ -33,6 +35,16 @@ export default function SuperAdminPage() {
   const [plan, setPlan] = useState<PlanValue>(emptyPlan);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const totals = useMemo(() => {
+    const list = offices ?? [];
+    return {
+      paid: list.filter((o) => o.subscription.plan === "paid" && !o.subscription.expired).length,
+      demo: list.filter((o) => o.subscription.plan === "demo" && !o.subscription.expired).length,
+      expired: list.filter((o) => o.subscription.expired).length,
+      soon: list.filter((o) => o.subscription.expiringSoon).length,
+      revenue: list.reduce((n, o) => n + (o.totalPaid ?? 0), 0),
+    };
+  }, [offices]);
   const setDept = (i: number, value: string) => setDepartments((d) => d.map((x, k) => (k === i ? value : x)));
 
   return (
@@ -49,7 +61,9 @@ export default function SuperAdminPage() {
           setMessage("");
           try {
             const result = await create({ name, code, currency, departments: departments.map((d) => d.trim()).filter(Boolean), ...planArgs(plan) });
-            setMessage(result.branchesCreated > 0 ? tr("Biashara imeundwa pamoja na idara {0}.", [result.branchesCreated]) : tr("Biashara imeundwa (bila idara)."));
+            const made = result.branchesCreated > 0 ? tr("Biashara imeundwa pamoja na idara {0}.", [result.branchesCreated]) : tr("Biashara imeundwa (bila idara).");
+            const subText = result.plan === "paid" ? tr("Alilipa {0}. Usajili: {1} → {2}.", [formatDate(result.paidOn ?? result.startsAt), formatDate(result.startsAt), formatDate(result.endsAt)]) : tr("Demo: inaisha {0}.", [formatDate(result.endsAt)]);
+            setMessage(`${made} ${subText}`);
             setName(""); setCode(""); setDepartments([]); setPlan(emptyPlan);
           } catch (err) { setMessage(errorText(err, "Imeshindikana kuunda ofisi")); } finally { setBusy(false); }
         }}
@@ -74,6 +88,15 @@ export default function SuperAdminPage() {
         {message && <p className="text-sm md:col-span-4" role="status">{message}</p>}
       </form>
 
+      {offices && offices.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-5" aria-label={tr("Muhtasari wa usajili")}>
+          <div className="rounded-xl border p-3"><div className="text-xs text-muted-foreground">{tr("Zimelipiwa")}</div><div className="text-xl font-semibold text-emerald-500">{totals.paid}</div></div>
+          <div className="rounded-xl border p-3"><div className="text-xs text-muted-foreground">{tr("Demo")}</div><div className="text-xl font-semibold text-amber-500">{totals.demo}</div></div>
+          <div className="rounded-xl border p-3"><div className="text-xs text-muted-foreground">{tr("Zinaisha ndani ya siku 7")}</div><div className="text-xl font-semibold text-amber-500">{totals.soon}</div></div>
+          <div className="rounded-xl border p-3"><div className="text-xs text-muted-foreground">{tr("Zimeisha")}</div><div className="text-xl font-semibold text-rose-500">{totals.expired}</div></div>
+          <div className="rounded-xl border p-3"><div className="text-xs text-muted-foreground">{tr("Jumla ya mapato")}</div><div className="text-xl font-semibold">{formatNumber(totals.revenue)} TZS</div></div>
+        </div>
+      )}
       <div className="overflow-x-auto rounded-xl border">
         <table className="w-full text-sm">
           <thead className="bg-muted/50"><tr><th className="p-3 text-left">{tr("Ofisi")}</th><th className="p-3 text-left">{tr("Code")}</th><th className="p-3 text-left">{tr("Hali")}</th><th className="p-3 text-left">{tr("Usajili")}</th><th className="p-3 text-left">{tr("Idara")}</th></tr></thead>
@@ -108,7 +131,7 @@ function OfficeRow({ office }: { office: Office }) {
       </td>
       <td className="p-3">{office.code}</td>
       <td className="p-3">{office.isActive ? tr("Active") : tr("Inactive")}</td>
-      <td className="p-3"><SubscriptionBadge sub={office.subscription} /></td>
+      <td className="p-3"><SubscriptionCell sub={office.subscription} last={office.lastPayment} totalPaid={office.totalPaid} count={office.paymentsCount} /></td>
       <td className="p-3">
         <div className="mb-1 flex flex-wrap gap-1 text-xs">
           {branches === undefined ? "…" : branches.filter((b) => b.isActive).length === 0 ? <span className="text-muted-foreground">{tr("Hakuna idara")}</span> : branches.filter((b) => b.isActive).map((b) => (

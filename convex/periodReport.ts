@@ -90,9 +90,9 @@ export const chunk = query({
       entryRows({ entryDate: e.entryDate, sourceType: e.sourceType, lines }, acc);
     }
     // The expenses of the period = the bills that are valid now (not cancelled), on their own bill date, at their current amount.
-    const bills = await ctx.db.query("bills").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).collect();
+    const bills = await ctx.db.query("bills").withIndex("by_tenant_billdate", (q) => q.eq("tenantId", tenantId).gte("billDate", a.from).lte("billDate", a.to)).collect();
     for (const b of bills) {
-      if (b.status === "void" || b.billDate < a.from || b.billDate > a.to) continue;
+      if (b.status === "void") continue;
       const bk = bkey(b.branchId);
       if (sc.only && bk !== sc.only) continue;
       const exp = EXPENSE[b.category] ?? EXPENSE.other;

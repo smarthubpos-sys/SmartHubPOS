@@ -34,8 +34,8 @@ describe("Stock take of a past day compares with that day's stock", () => {
       const p = await ctx.db.get("products", ids.bia);
       await ctx.db.insert("stockMovements", { tenantId: p!.tenantId, movementDate: NEXT, productId: ids.bia, movementType: "purchase", qtyIn: 4, qtyOut: 0, runningBalance: 10, createdBy: ids.counter });
     });
-    const day = await counter.query(api.stockDaily.closingStock, { date: DAY });
-    expect(day.rows.find((r) => r.productId === ids.bia)?.systemQty).toBe(6);
+    const day = await counter.query(api.stockDaily.stockTakeDay, { date: DAY });
+    expect(day.find((r) => r.productId === ids.bia)?.later).toBe(4); // 4 came in AFTER DAY: stock on DAY = 10 - 4 = 6
     const r = await counter.mutation(api.inventory.stockTake, { adjustmentDate: DAY, reason: "Stock take ya jana", lines: [{ productId: ids.bia, counted: 5 }] });
     expect(r).toMatchObject({ adjusted: 1, shortageValue: 1000 });
     expect((await t.run(async (ctx) => ctx.db.get("products", ids.bia)))?.currentQty).toBe(9); // 10 now - 1 missing on DAY

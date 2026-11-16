@@ -39,13 +39,6 @@ export const closingStock = query({
       ? await ctx.db.query("stockMovements").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).lte("movementDate", date)).collect()
       : (await scopedRows(ctx, user, "stockMovements")).filter((m) => m.movementDate <= date);
     const moves = filterScoped(user, movesRaw);
-    // What the stock-take screen compares the count with: today's quantity minus every movement after the chosen date (same basis the stock take saves with).
-    const laterRaw = tenantId
-      ? await ctx.db.query("stockMovements").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gt("movementDate", date)).collect()
-      : (await scopedRows(ctx, user, "stockMovements")).filter((m) => m.movementDate > date);
-    const later = new Map<string, number>();
-    for (const m of filterScoped(user, laterRaw)) later.set(String(m.productId), (later.get(String(m.productId)) ?? 0) + m.qtyIn - m.qtyOut);
-
     type Acc = { opening: number } & Record<Bucket, number>;
     const acc = new Map<string, Acc>();
     for (const p of products) acc.set(String(p._id), { opening: 0, purchases: 0, returns: 0, adjust: 0, production: 0, transfer: 0, sold: 0, other: 0 });
@@ -66,9 +59,8 @@ export const closingStock = query({
         opening: round8(g.opening), purchases: round8(g.purchases), returns: round8(g.returns), adjust: round8(g.adjust),
         production: round8(g.production), transfer: round8(g.transfer), other: round8(g.other), sold: round8(g.sold),
         closing, cost, value: round2(closing * cost),
-        systemQty: round8(p.currentQty - (later.get(String(p._id)) ?? 0)),
       };
-    }).filter((r) => [r.opening, r.purchases, r.returns, r.adjust, r.production, r.transfer, r.other, r.sold, r.closing, r.systemQty].some((x) => Math.abs(x) > 1e-8))
+    }).filter((r) => [r.opening, r.purchases, r.returns, r.adjust, r.production, r.transfer, r.other, r.sold, r.closing].some((x) => Math.abs(x) > 1e-8))
       .sort((x, y) => x.name.localeCompare(y.name));
 
     const sum = (f: (r: (typeof rows)[number]) => number) => round2(rows.reduce((n, r) => n + f(r), 0));
@@ -76,5 +68,32 @@ export const closingStock = query({
       date, rows,
       totals: { items: rows.length, closingQty: sum((r) => r.closing), value: sum((r) => r.value), openingValue: sum((r) => r.opening * r.cost), soldQty: sum((r) => r.sold) },
     };
+  },
+});
+
+/**
+ * LIGHT query for the Stock Taking screen (a past day too). It reads ONLY the stock movements from the chosen day onwards, never the whole history:
+ *   stock on that day = today's quantity - everything that moved after that day  (the screen has today's quantity from the product list);
+ *   Imeingia / Mauzo  = the movements of that day itself;  Mwanzo = stock on that day - (Imeingia - Mauzo).
+ * Only products that had movements on / after the day are returned; for the others the stock on that day is simply today's quantity.
+ */
+export const stockTakeDay = query({
+  args: { date: v.string() },
+  handler: async (ctx, a) => {
+    const user = await requirePermission(ctx, "stock.view", "stock");
+    const date = assertDate(a.date, "Tarehe ya stock take");
+    const tenantId = user.tenantId;
+    if (!tenantId) return [];
+    const moves = filterScoped(user, await ctx.db.query("stockMovements").withIndex("by_tenant_date", (q) => q.eq("tenantId", tenantId).gte("movementDate", date)).collect());
+    const acc = new Map<string, { later: number; inflow: number; sold: number }>();
+    for (const m of moves) {
+      const g = acc.get(String(m.productId)) ?? { later: 0, inflow: 0, sold: 0 };
+      const net = m.qtyIn - m.qtyOut;
+      if (m.movementDate > date) g.later += net;
+      else if (bucketOf(m.movementType) === "sold") g.sold -= net; // sold is shown as a positive "went out" figure
+      else g.inflow += net;
+      acc.set(String(m.productId), g);
+    }
+    return [...acc.entries()].map(([productId, g]) => ({ productId, later: round8(g.later), inflow: round8(g.inflow), sold: round8(g.sold) }));
   },
 });

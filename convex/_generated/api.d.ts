@@ -54,6 +54,7 @@ import type * as schedules from "../schedules.js";
 import type * as settings from "../settings.js";
 import type * as stats from "../stats.js";
 import type * as stockDaily from "../stockDaily.js";
+import type * as subscriptionReminders from "../subscriptionReminders.js";
 import type * as subscriptions from "../subscriptions.js";
 import type * as suppliers from "../suppliers.js";
 import type * as support from "../support.js";
@@ -124,6 +125,7 @@ declare const fullApi: ApiFromModules<{
   settings: typeof settings;
   stats: typeof stats;
   stockDaily: typeof stockDaily;
+  subscriptionReminders: typeof subscriptionReminders;
   subscriptions: typeof subscriptions;
   suppliers: typeof suppliers;
   support: typeof support;

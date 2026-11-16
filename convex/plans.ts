@@ -35,7 +35,7 @@ export function planStatus(tenant: { plan?: string; planEndsAt?: string } | null
 }
 
 /** Sets a business to a 3-day demo, or records a payment (extends from the current end when still running). */
-export async function applyPlan(ctx: MutationCtx, tenantId: Id<"tenants">, opts: { plan: "demo" | "paid"; months?: number; amount?: number; note?: string }, createdBy?: Id<"users">) {
+export async function applyPlan(ctx: MutationCtx, tenantId: Id<"tenants">, opts: { plan: "demo" | "paid"; months?: number; amount?: number; note?: string; paidOn?: string }, createdBy?: Id<"users">) {
   const tenant = await ctx.db.get("tenants", tenantId);
   if (!tenant) throw new ConvexError("Biashara haipo");
   const today = tzToday();
@@ -46,11 +46,20 @@ export async function applyPlan(ctx: MutationCtx, tenantId: Id<"tenants">, opts:
   const { months, amount } = opts;
   if (months === undefined || !Number.isInteger(months) || months < 1 || months > 60) throw new ConvexError("Weka idadi ya miezi (1 hadi 60).");
   if (amount === undefined || !Number.isFinite(amount) || amount <= 0) throw new ConvexError("Weka kiasi kilicholipwa.");
+  // The day the money was received (default today). A new / expired plan starts on that day; a plan still running is extended from its end.
+  let paidDay = today;
+  if (opts.paidOn !== undefined && opts.paidOn !== "") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.paidOn) || Number.isNaN(Date.parse(`${opts.paidOn}T00:00:00Z`))) throw new ConvexError("Tarehe ya malipo si sahihi.");
+    if (opts.paidOn > today) throw new ConvexError("Tarehe ya malipo haiwezi kuwa ya baadaye.");
+    if (daysBetween(opts.paidOn, today) > 730) throw new ConvexError("Tarehe ya malipo ni ya zamani mno (zaidi ya miaka 2).");
+    paidDay = opts.paidOn;
+  }
   const status = planStatus(tenant, today);
   const extending = tenant.plan === "paid" && !!status.endsAt && !status.expired;
-  const startsAt = extending ? addDays(status.endsAt!, 1) : today;
+  const startsAt = extending ? addDays(status.endsAt!, 1) : paidDay;
   const endsAt = planEnd(startsAt, "paid", months);
-  await ctx.db.insert("subscriptionPayments", { tenantId, amount, months, startsAt, endsAt, note: opts.note?.trim() || undefined, createdBy, createdAt: new Date().toISOString() });
+  if (endsAt < today) throw new ConvexError("Kwa tarehe hii ya malipo na miezi hii, usajili ungekuwa umeisha tayari. Ongeza miezi au chagua tarehe ya karibu zaidi.");
+  await ctx.db.insert("subscriptionPayments", { tenantId, amount, months, startsAt, endsAt, note: opts.note?.trim() || undefined, createdBy, createdAt: new Date().toISOString(), paidOn: paidDay });
   await ctx.db.patch("tenants", tenantId, { plan: "paid", planStartsAt: extending ? (tenant.planStartsAt ?? startsAt) : startsAt, planEndsAt: endsAt, planMonths: months, planAmount: amount });
-  return { plan: "paid" as const, startsAt, endsAt };
+  return { plan: "paid" as const, startsAt, endsAt, paidOn: paidDay };
 }

@@ -25,10 +25,14 @@ export const closedReport = query({
     const empty = { waiters: [] as Array<{ staffId: Id<"users">; staffName: string; total: number; orders: Array<{ _id: Id<"waiterOrders">; saleDay: string; closedDay: string; tableNumber?: string; orderTotal: number; paid: number; total: number; lines: string }> }>, total: 0, orderCount: 0, canCollect: false, truncated: false };
     if (!user.tenantId) return empty;
     const tenantId = user.tenantId;
-    const rows = await ctx.db.query("waiterOrders").withIndex("by_tenant_created", (q) => q.eq("tenantId", tenantId).gte("createdAt", startIso(a.from)).lt("createdAt", startIso(addDay(a.to, 1)))).take(CAP + 1);
-    const truncated = rows.length > CAP;
+    // Only bills that were CLOSED with a day report (their unpaid part moved off the cashier's screen), picked by the day they were sold.
+    // Reading by "closedAt" means the thousands of normal bills are never touched, and the card re-runs only when a closed debt changes.
+    const fromIso = startIso(a.from), toIso = startIso(addDay(a.to, 1));
+    const closed = await ctx.db.query("waiterOrders").withIndex("by_tenant_closed", (q) => q.eq("tenantId", tenantId).gt("closedAt", "")).take(CAP + 1);
+    const truncated = closed.length > CAP;
+    const rows = closed.slice(0, CAP).filter((o) => o.createdAt >= fromIso && o.createdAt < toIso);
     const byWaiter = new Map<string, (typeof empty)["waiters"][number]>();
-    for (const o of rows.slice(0, CAP).filter((r) => r.tenantId === tenantId && (!user.branchId || r.branchId === user.branchId))) { // like the cashier screen: the whole business, or only the user's own department
+    for (const o of rows.filter((r) => r.tenantId === tenantId && (!user.branchId || r.branchId === user.branchId))) { // like the cashier screen: the whole business, or only the user's own department
       if (!o.closedAt || o.settledAt || o.cancelledAt || !(o.status === "pending" || o.status === "accepted" || o.status === "printed")) continue;
       const left = r2(waiterOwes(o)); // what the waiter still owes for this bill
       if (left <= 0) continue;

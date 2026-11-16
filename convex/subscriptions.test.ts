@@ -117,3 +117,40 @@ describe("announcements", () => {
     await expect(asA.mutation(api.announcements.create, { kind: "message", title: "X", body: "Y" })).rejects.toThrow();
   });
 });
+
+describe("when a business was paid", () => {
+  it("a payment day in the past starts the plan on that day; the Super Admin list shows the last payment, the period and the total paid", async () => {
+    const { asAdmin, a } = await setup();
+    const paidOn = addDays(tzToday(), -10);
+    const r = await asAdmin.mutation(api.subscriptions.set, { tenantId: a, plan: "paid", months: 2, amount: 80000, paidOn });
+    expect(r).toMatchObject({ startsAt: paidOn, paidOn, endsAt: addDays(addMonths(paidOn, 2), -1) });
+    const row = (await asAdmin.query(api.tenants.list, {})).find((x) => x._id === a)!;
+    expect(row.lastPayment).toMatchObject({ paidOn, amount: 80000, months: 2, startsAt: paidOn, endsAt: r.endsAt });
+    expect(row).toMatchObject({ totalPaid: 80000, paymentsCount: 1 });
+    expect(row.subscription).toMatchObject({ plan: "paid", expired: false });
+    // a second payment while it still runs extends from the end; the list shows the newest payment and the sum
+    await asAdmin.mutation(api.subscriptions.set, { tenantId: a, plan: "paid", months: 1, amount: 40000 });
+    const again = (await asAdmin.query(api.tenants.list, {})).find((x) => x._id === a)!;
+    expect(again.lastPayment).toMatchObject({ paidOn: tzToday(), amount: 40000 });
+    expect(again).toMatchObject({ totalPaid: 120000, paymentsCount: 2 });
+  });
+
+  it("a business created as paid on an earlier day starts then; a business with no payment has none", async () => {
+    const { asAdmin } = await setup();
+    const paidOn = addDays(tzToday(), -20);
+    const created = await asAdmin.mutation(api.tenants.create, { name: "Old Payer", code: "OP1", plan: "paid", months: 3, amount: 150000, paidOn });
+    const demo = await asAdmin.mutation(api.tenants.create, { name: "Just Demo", code: "JD1" });
+    const list = await asAdmin.query(api.tenants.list, {});
+    expect(list.find((x) => x._id === created.tenantId)?.lastPayment).toMatchObject({ paidOn, endsAt: addDays(addMonths(paidOn, 3), -1) });
+    expect(list.find((x) => x._id === demo.tenantId)?.lastPayment).toBeNull();
+  });
+
+  it("refuses a payment day in the future, an unreadable one, and one that would make the plan already over", async () => {
+    const { asAdmin, a } = await setup();
+    const set = (paidOn: string, months = 1) => asAdmin.mutation(api.subscriptions.set, { tenantId: a, plan: "paid", months, amount: 1000, paidOn });
+    await expect(set(addDays(tzToday(), 1))).rejects.toThrow(/baadaye/);
+    await expect(set("2026-13-45")).rejects.toThrow(/si sahihi/);
+    await expect(set(addDays(tzToday(), -90), 1)).rejects.toThrow(/umeisha tayari/);
+    expect((await asAdmin.query(api.subscriptions.history, { tenantId: a })).payments).toHaveLength(0); // nothing was recorded
+  });
+});

@@ -33,7 +33,7 @@ export default function SubscriptionPanel({ tenantId }: { tenantId: Id<"tenants"
     <div className="space-y-3 rounded-xl bg-white/5 p-3 text-sm">
       <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-blue-200">{tr("Hali ya sasa")}:</span><SubscriptionBadge sub={data?.status} /></div>
       <form onSubmit={save} className="space-y-3">
-        <PlanFields value={plan} onChange={setPlan} light />
+        <PlanFields value={plan} onChange={setPlan} light runningUntil={data?.status.plan === "paid" && !data.status.expired ? data.status.endsAt : undefined} />
         <label className="grid gap-1 text-sm">{tr("Maelezo (hiari)")}<Input value={note} onChange={(e) => setNote(e.target.value)} placeholder={tr("Mf. M-Pesa 0712…")} className="bg-white text-slate-900" /></label>
         <p className="text-xs opacity-80">{tr("Ukiongeza malipo wakati usajili bado unaendelea, miezi mipya inaongezwa baada ya tarehe ya mwisho ya sasa.")}</p>
         <Button type="submit" disabled={busy} className="w-full">{busy ? tr("Inahifadhi…") : plan.plan === "demo" ? tr("Rudisha kwenye demo") : tr("Hifadhi malipo")}</Button>
@@ -44,7 +44,7 @@ export default function SubscriptionPanel({ tenantId }: { tenantId: Id<"tenants"
           <ul className="divide-y divide-white/10 text-xs">
             {data.payments.map((p) => (
               <li key={p._id} className="flex flex-wrap justify-between gap-x-3 py-1.5">
-                <span>{formatDate(p.createdAt)} · {formatNumber(p.amount)} TZS · {tr("miezi {0}", [p.months])}</span>
+                <span>{formatDate(p.paidOn ?? p.createdAt)} · {formatNumber(p.amount)} TZS · {tr("miezi {0}", [p.months])}</span>
                 <span className="opacity-80">{formatDate(p.startsAt)} → {formatDate(p.endsAt)}</span>
               </li>
             ))}

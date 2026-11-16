@@ -35,6 +35,8 @@ export const EXTRA_DICT: Record<string, { sw: string; en: string }> = {
  "Imeisha {0}": { sw: "Imeisha {0}", en: "Expired {0}" },
  "Demo · siku {0} zimebaki": { sw: "Demo · siku {0} zimebaki", en: "Demo · {0} days left" },
  "Imelipiwa hadi {0}": { sw: "Imelipiwa hadi {0}", en: "Paid until {0}" },
+ "Alilipa {0}. Usajili: {1} → {2}.": { sw: "Alilipa {0}. Usajili: {1} → {2}.", en: "Paid on {0}. Subscription: {1} → {2}." },
+ "Demo: inaisha {0}.": { sw: "Demo: inaisha {0}.", en: "Demo: ends {0}." },
  "Aina ya usajili": { sw: "Aina ya usajili", en: "Subscription type" },
  "Demo (siku 3)": { sw: "Demo (siku 3)", en: "Demo (3 days)" },
  "Amelipia": { sw: "Amelipia", en: "Paid" },

@@ -41,16 +41,18 @@ export function StockTakeScreen() {
   const [title, setTitle] = useState(tr("Stock take"));
   const [busy, setBusy] = useState(false);
   const sheetRef = useRef<HTMLDivElement>(null);
-  const day = useQuery(api.stockDaily.closingStock, { date });
-  const dayRows = useMemo(() => new Map((day?.rows ?? []).map((r) => [String(r.productId), r])), [day]);
+  const day = useQuery(api.stockDaily.stockTakeDay, { date }); // light: only the movements from the chosen day onwards
+  const dayRows = useMemo(() => new Map((day ?? []).map((r) => [r.productId, r])), [day]);
 
   const products = useMemo(() => (data?.products ?? []).filter((p) => p.isActive), [data]);
   // "Mfumo" = the stock the system had on the chosen date (not just today's), so counting for yesterday compares with yesterday.
-  const sysQty = (id: string) => dayRows.get(id)?.systemQty ?? 0;
+  const curQty = useMemo(() => new Map(products.map((p) => [String(p._id), p.currentQty])), [products]);
+  const dayNet = (id: string) => { const r = dayRows.get(id); return r ? r.inflow - r.sold : 0; };
+  const sysQty = (id: string) => Math.round(((curQty.get(id) ?? 0) - (dayRows.get(id)?.later ?? 0)) * 1e8) / 1e8; // stock on the chosen day
   const lines = useMemo(() => products.map((p) => {
     const raw = counted[p._id];
     const has = raw !== undefined && raw !== "";
-    const sys = dayRows.get(String(p._id))?.systemQty ?? 0;
+    const sys = Math.round((p.currentQty - (dayRows.get(String(p._id))?.later ?? 0)) * 1e8) / 1e8;
     const diff = has ? round2(num(raw) - sys) : 0;
     return { p, has, diff, value: round2(Math.abs(diff) * p.cost) };
   }), [products, counted, dayRows]);
@@ -136,8 +138,8 @@ export function StockTakeScreen() {
                     <td className="p-2 text-muted-foreground">{p.itemCode}</td>
                     <td className="p-2 font-medium">{p.name}</td>
                     <td className="p-2 text-muted-foreground">{p.groupName}</td>
-                    <td className="p-2 text-right tabular-nums">{fmt(dayRows.get(String(p._id))?.opening ?? 0, 4)}</td>
-                    <td className="p-2 text-right tabular-nums">{fmt(((r) => (r ? r.purchases + r.returns + r.adjust + r.production + r.transfer + r.other : 0))(dayRows.get(String(p._id))), 4)}</td>
+                    <td className="p-2 text-right tabular-nums">{fmt(sysQty(String(p._id)) - dayNet(String(p._id)), 4)}</td>
+                    <td className="p-2 text-right tabular-nums">{fmt(dayRows.get(String(p._id))?.inflow ?? 0, 4)}</td>
                     <td className="p-2 text-right tabular-nums">{fmt(dayRows.get(String(p._id))?.sold ?? 0, 4)}</td>
                     <td className="p-2 text-right tabular-nums">{fmt(sysQty(String(p._id)), 4)} {p.unitName}</td>
                     <td className="p-2 text-right"><Input className="ml-auto h-8 w-28 text-right print:border-b print:border-black" type="number" step="any" min="0" inputMode="decimal" value={counted[p._id] ?? ""} onChange={(e) => setCounted((o) => ({ ...o, [p._id]: e.target.value }))} aria-label={`${tr("Iliyohesabiwa")} ${p.name}`} /></td>

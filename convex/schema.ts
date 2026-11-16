@@ -12,7 +12,8 @@ export default defineSchema({
     modules: v.optional(v.array(v.string())),
     // Most people (users) this business may have. Missing = no limit. Only the Super Admin changes it; a business administrator cannot add more once it is reached.
     maxUsers: v.optional(v.number()) }).index("by_code", ["code"]).index("by_active", ["isActive"]),
-  subscriptionPayments: defineTable({ tenantId: v.id("tenants"), amount: v.number(), months: v.number(), startsAt: v.string(), endsAt: v.string(), note: v.optional(v.string()), createdBy: v.optional(v.id("users")), createdAt: v.string() }).index("by_tenant", ["tenantId"]),
+  subscriptionPayments: defineTable({ tenantId: v.id("tenants"), amount: v.number(), months: v.number(), startsAt: v.string(), endsAt: v.string(), note: v.optional(v.string()), createdBy: v.optional(v.id("users")), createdAt: v.string(),
+    paidOn: v.optional(v.string()) /* the DAY the money was received (YYYY-MM-DD); missing on old rows = day of createdAt */ }).index("by_tenant", ["tenantId"]),
   // Ads (banner) and broadcast messages from the Super Admin. tenantId empty = every business.
   announcements: defineTable({
     kind: v.string(), // banner | message
@@ -917,7 +918,8 @@ export default defineSchema({
     createdBy: v.id("users"),
   }) .index("by_scope", ["tenantId", "branchId"])
     .index("by_due", ["dueDate"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_tenant_billdate", ["tenantId", "billDate"]), // the period report reads only the bills of its dates
 
   // Expense types a business wrote for itself; the Expense Payments dropdown shows them next to the built-in ones.
   expenseCategories: defineTable({
@@ -1045,6 +1047,7 @@ export default defineSchema({
     .index("by_waiter", ["waiterId"])
     .index("by_client_key", ["waiterId", "clientKey"])
     .index("by_tenant_invoice_no", ["tenantId", "invoiceNo"])
+    .index("by_tenant_closed", ["tenantId", "closedAt"]) // debts of closed days: the Staff Sales debts card reads only these, not every bill
     .index("by_created", ["createdAt"])
     .index("by_tenant_created", ["tenantId", "createdAt"])
     .index("by_closed_report", ["closedReportId"]),
