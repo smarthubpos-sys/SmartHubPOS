@@ -1,14 +1,14 @@
 import { query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { requirePermission, resolveWriteScope } from "./access";
+import { requireSellingPointOrSales, resolveWriteScope } from "./access";
 
 const round = (n: number) => Math.round(n * 100) / 100;
 const isWaiterRole = (role?: string) => ["waiter", "waitress"].includes(String(role ?? "").toLowerCase());
 
 /** Cashier / manager only: a waiter's own data stays behind the waiter's personal views. */
-async function reviewer(ctx: Parameters<typeof requirePermission>[0]) {
-  const user = await requirePermission(ctx, "sales.view", "sales");
+async function reviewer(ctx: Parameters<typeof requireSellingPointOrSales>[0]) {
+  const user = await requireSellingPointOrSales(ctx, "waiterOrders.view", "sales.view");
   if (isWaiterRole(user.role)) throw new ConvexError("Huna ruhusa ya kuona orodha ya wahudumu.");
   const scope = await resolveWriteScope(ctx, user);
   if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
@@ -77,7 +77,7 @@ export const summary = query({
   },
 });
 
-async function waiterInScope(ctx: Parameters<typeof requirePermission>[0], waiterId: Id<"users">) {
+async function waiterInScope(ctx: Parameters<typeof requireSellingPointOrSales>[0], waiterId: Id<"users">) {
   const { tenantId, branchId } = await reviewer(ctx);
   const waiter = await ctx.db.get("users", waiterId);
   if (!waiter || waiter.tenantId !== tenantId || waiter.branchId !== branchId || !isWaiterRole(waiter.role)) throw new ConvexError("Mhudumu hayupo kwenye biashara au tawi lako.");

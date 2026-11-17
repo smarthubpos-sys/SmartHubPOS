@@ -207,3 +207,29 @@ describe("cashier edits what was received and where a debt was directed", () => 
     await t.run(async (ctx) => { for (const e of await ctx.db.query("journalEntries").collect()) expect(Math.abs(e.totalDebit - e.totalCredit)).toBeLessThan(0.01); });
   });
 });
+
+describe("Selling Point stands on its own and a paid customer debt leaves the Bills list", () => {
+  it("a cashier works with the Selling Point module only (no Sales module)", async () => {
+    const { t, tenantId, asCashier, orderId, clientId } = await creditSale();
+    await t.run((ctx) => ctx.db.patch("tenants", tenantId, { modules: ["waiterOrders", "stock", "accounts"] }));
+    await asCashier.mutation(api.customerDebt.assignOrdersToCustomer, { orderIds: [orderId], clientId });
+    const open = await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId });
+    expect(open.owes).toBe(4000);
+    await asCashier.mutation(api.customerDebt.receiveRepayment, { clientId, splits: [{ method: "cash", amount: 4000 }], allocations: [{ invoiceId: open.invoices[0]._id, amount: 4000 }] });
+    expect((await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId })).owes).toBe(0);
+  });
+
+  it("the bill stays on the Bills screen while the customer owes, and leaves it once the invoice is paid in full", async () => {
+    const { t, asCashier, orderId, clientId } = await creditSale();
+    await t.run((ctx) => ctx.db.patch("waiterOrders", orderId, { billSentAt: new Date().toISOString() }));
+    await asCashier.mutation(api.customerDebt.assignOrdersToCustomer, { orderIds: [orderId], clientId });
+    const ids = async () => (await asCashier.query(api.waiterOrders.listForBills, {})).map((o) => o._id);
+    expect(await ids()).toContain(orderId);
+    const open = await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId });
+    await asCashier.mutation(api.customerDebt.receiveRepayment, { clientId, splits: [{ method: "cash", amount: 1000 }], allocations: [{ invoiceId: open.invoices[0]._id, amount: 1000 }] });
+    expect(await ids()).toContain(orderId); // partly paid: still there
+    await asCashier.mutation(api.customerDebt.receiveRepayment, { clientId, splits: [{ method: "cash", amount: 3000 }], allocations: [{ invoiceId: open.invoices[0]._id, amount: 3000 }] });
+    expect(await ids()).not.toContain(orderId);
+    expect((await asCashier.query(api.waiterOrders.listForBills, { includePrinted: true })).map((o) => o._id)).toContain(orderId); // history keeps it
+  });
+});

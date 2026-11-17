@@ -1,7 +1,7 @@
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { isManagerRole, logAudit, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope } from "./access";
+import { isManagerRole, logAudit, normalizeRole, requirePermission, requireSellingPointOrSales, resolveWriteScope, roleHasPermission } from "./access";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
 import { bumpStats } from "./stats";
 import { assertDate, assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal } from "./ledger";
@@ -25,9 +25,9 @@ const collectable = (o: Doc<"waiterOrders">) => !o.cancelledAt && (o.status === 
 
 /** A cashier or a manager of this business (the same people who may receive customer payments). Never a waiter, never a bare Super Admin. */
 async function cashierScope(ctx: MutationCtx | QueryCtx) {
-  const user = await requireActiveUser(ctx, "sales");
+  const user = await requireSellingPointOrSales(ctx, "waiterOrders.manage"); // Selling Point alone is enough; Sales is not needed
   if (isWaiter(user.role)) throw new ConvexError("Cashier pekee ndiye anaelekeza deni kwa mteja au kupokea marejesho.");
-  if (normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user))) throw new ConvexError("Forbidden: cashier permission required.");
+  if (normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user)) && !(await roleHasPermission(ctx, user, "waiterOrders.manage"))) throw new ConvexError("Forbidden: cashier permission required.");
   const scope = await resolveWriteScope(ctx, user, { tenantWide: true });
   if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
   return { user, tenantId: scope.tenantId, branchId: scope.branchId };

@@ -4,7 +4,7 @@ import { v, type Infer, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import type { UserLike } from "./access";
-import { canAccessRecord, isSuperAdmin, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, resolveWriteScope, getCompanySettings, logAudit } from "./access";
+import { canAccessRecord, isSuperAdmin, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, requireSellingPointOrSales, resolveWriteScope, getCompanySettings, logAudit } from "./access";
 import { bumpStats } from "./stats";
 import { waiterOwes } from "./waiterMath";
 import { autoProduceForSale } from "./autoProduce";
@@ -563,10 +563,10 @@ export const returnItems = mutation({
 type PaymentArgs = { invoiceId: Id<"invoices">; amount?: number; paymentMethod?: string; splits?: Infer<typeof splitValidator>[]; paymentDate: string; reference?: string; notes?: string };
 /** The ONE place a customer payment is validated and recorded (payments, journal, invoice balance, stats). Used by recordPayment and settleInvoices. */
 export async function applyCustomerPayment(ctx: MutationCtx, args: PaymentArgs, opts: { tenantWide?: boolean } = {}) {
-  const user = await requireActiveUser(ctx, "sales");
+  const user = await requireSellingPointOrSales(ctx, "waiterOrders.manage"); // Selling Point alone is enough; the Sales module is not needed
   assertDate(args.paymentDate, "Tarehe ya malipo");
   const role = normalizeRole(user.role);
-  if (role !== "cashier" && !(await isManagerRole(ctx, user))) throw new ConvexError("Forbidden: cashier permission required to receive customer payments");
+  if (role !== "cashier" && !(await isManagerRole(ctx, user)) && !(!["waiter", "waitress"].includes(normalizeRole(user.role)) && (await roleHasPermission(ctx, user, "waiterOrders.manage")))) throw new ConvexError("Forbidden: cashier permission required to receive customer payments");
   const invoice = await ctx.db.get("invoices", args.invoiceId);
   // `tenantWide` (repayments book): a cashier who works for the WHOLE business may take money for any department of his own business; a user tied to one department still only his own.
   const reach = (rec: Parameters<typeof canAccessRecord>[1]) => opts.tenantWide ? !!rec && !!user.tenantId && rec.tenantId === user.tenantId && (!user.branchId || rec.branchId === user.branchId) : canAccessRecord(user, rec);
@@ -608,8 +608,8 @@ export const settleInvoices = mutation({
   },
   handler: async (ctx, args) => {
     try {
-      const user = await requireActiveUser(ctx, "sales");
-      if (normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user))) throw new ConvexError("Forbidden: cashier permission required to receive customer payments");
+      const user = await requireSellingPointOrSales(ctx, "waiterOrders.manage");
+      if (normalizeRole(user.role) !== "cashier" && !(await isManagerRole(ctx, user)) && !(!["waiter", "waitress"].includes(normalizeRole(user.role)) && (await roleHasPermission(ctx, user, "waiterOrders.manage")))) throw new ConvexError("Forbidden: cashier permission required to receive customer payments");
       if (args.allocations.length === 0) throw new ConvexError("Chagua angalau invoice moja.");
       if (args.allocations.length > 50) throw new ConvexError("Invoice nyingi mno kwa mara moja (kikomo 50).");
       if (new Set(args.allocations.map((a) => String(a.invoiceId))).size !== args.allocations.length) throw new ConvexError("Invoice moja imechaguliwa mara mbili.");

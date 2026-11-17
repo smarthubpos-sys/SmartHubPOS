@@ -181,6 +181,22 @@ export async function requirePermission(ctx: QueryCtx, permission: string, modul
 }
 
 /**
+ * Selling Point / Cashier work stands on its own: the "waiterOrders" module with its own permission is enough, so a cashier who was given
+ * Selling Point only does not need the Sales module. The Sales module still works as before (optionally with a Sales permission).
+ */
+export async function requireSellingPointOrSales(ctx: QueryCtx, sellingPointPermission: string, salesPermission?: string) {
+  try {
+    return await requirePermission(ctx, sellingPointPermission, "waiterOrders");
+  } catch (sellingPointError) {
+    try {
+      const user = await requireActiveUser(ctx, "sales");
+      if (salesPermission && !(await roleHasPermission(ctx, user, salesPermission))) throw new ConvexError(`Forbidden: permission "${salesPermission}" required`);
+      return user;
+    } catch { throw sellingPointError; }
+  }
+}
+
+/**
  * Managers/admins always pass. Any other role passes when it was given `permission` (Role Management or the Users form),
  * so a custom role such as "Store keeper" with only `stock.manage` can work without being made a manager.
  */

@@ -704,10 +704,21 @@ export const listForBills = query({
     if (!scope.tenantId) return [];
     const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId)).collect();
     const needle = (args.table ?? "").trim().toLowerCase();
-    return rows
+    const shown = rows
       .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || !r.billSentAt) && billVisible(user, r))
       .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
+    // A bill the cashier directed to a customer leaves the active list once that customer has paid its invoice in full (the history view still has it).
+    if (args.includePrinted) return shown;
+    const keep = [];
+    for (const r of shown) {
+      if (r.assignedInvoiceId) {
+        const inv = await ctx.db.get("invoices", r.assignedInvoiceId);
+        if (inv && inv.status === "posted" && inv.outstanding <= 0.004 && Math.abs(inv.total - (r.assignedAmount ?? 0)) < 0.005) continue;
+      }
+      keep.push(r);
+    }
+    return keep;
   },
 });
 
