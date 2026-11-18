@@ -232,6 +232,55 @@ export function effectiveModules(tenantModules: string[] | undefined, menuAccess
 }
 
 
+/**
+ * Which sidebar module a permission belongs to (first part of the key, plus a few exceptions).
+ * The Users form uses this to open the "what may he see in Stock / Accounts / ..." window when a module is ticked.
+ */
+const PERMISSION_PREFIX_MODULE: Record<string, string> = {
+  dashboard: "dashboard", sales: "sales", waiterOrders: "waiterOrders", bills: "bills", stock: "stock",
+  suppliers: "purchasing", purchasing: "purchasing", accounts: "accounts", payroll: "payroll", attendance: "payroll",
+  leave: "leave", maintenance: "maintenance", system: "maintenance",
+};
+export function permissionModule(key: string): string | undefined {
+  return PERMISSION_PREFIX_MODULE[key.split(".")[0]];
+}
+/**
+ * Permissions that are never ticked one person at a time in the Users form: manager status and role management belong to the role,
+ * the kiosk is a whole account type, and the Super-Admin-only ones have their own rule.
+ */
+export const NOT_PER_USER_PERMISSIONS = ["system.manager", "maintenance.roles", "attendance.kiosk", ...SUPER_ADMIN_ONLY_PERMISSIONS];
+/** Permission items of one module, in the order of the Role Management screen, that may be ticked for one user. */
+export function modulePermissionItems(moduleKey: string): { key: string; label: string }[] {
+  return PERMISSION_GROUPS.flatMap((g) => g.items).filter((i) => permissionModule(i.key) === moduleKey && !NOT_PER_USER_PERMISSIONS.includes(i.key));
+}
+
+/**
+ * The permission each card of a module screen (Stock, Accounts, Sales ...) needs. A card without the permission is hidden for that user,
+ * so ticking / unticking a permission in the Users window really changes which cards he sees. The server still refuses the action itself.
+ * Exact paths win; the prefix rules cover the whole report lists.
+ */
+export const CARD_PERMISSION: Record<string, string> = {
+  "/sales/invoicing": "sales.manage", "/sales/clients": "sales.manage", "/sales/clients/list": "sales.view",
+  "/stock/products": "stock.view", "/stock/production": "stock.manage", "/stock/warehouses": "stock.store.view", "/stock/import": "stock.manage",
+  "/stock/adjustment": "stock.adjust", "/stock/groups": "stock.view", "/stock/item-quantity": "stock.view", "/stock/transactions": "stock.view",
+  "/stock/item-history": "stock.view", "/stock/barcodes": "stock.print",
+  "/purchasing/entry": "purchasing.manage", "/purchasing/orders": "purchasing.view", "/purchasing/grn": "purchasing.view", "/purchasing/returns": "purchasing.view",
+  "/purchasing/payments": "purchasing.manage", "/purchasing/suppliers": "suppliers.view",
+  "/accounts/capital": "accounts.view", "/accounts/chart": "accounts.view", "/accounts/periods": "accounts.view", "/accounts/journals": "accounts.manage",
+  "/accounts/transfer": "accounts.manage", "/accounts/expenses": "accounts.manage", "/accounts/reconciliation": "accounts.manage",
+  "/accounts/period-report": "accounts.reports.view", "/accounts/method-report": "accounts.reports.view",
+  "/payroll/sign-in": "payroll.view", "/payroll/sign-out": "payroll.view", "/payroll/schedules": "payroll.view", "/payroll/deductions": "payroll.view",
+  "/payroll/process": "payroll.manage", "/payroll/employees": "payroll.manage", "/payroll/placement": "payroll.manage", "/payroll/payslip": "payroll.view",
+};
+export const CARD_PERMISSION_PREFIXES: [string, string][] = [
+  ["/sales/reports/", "sales.reports.view"], ["/stock/reports/", "stock.reports.view"], ["/purchasing/reports/", "purchasing.reports.view"],
+  ["/accounts/reports/", "accounts.reports.view"], ["/payroll/reports/", "payroll.reports.view"],
+];
+/** The permission a card needs, or undefined when the card is not tied to one (it stays visible). */
+export function cardPermission(path: string): string | undefined {
+  return CARD_PERMISSION[path] ?? CARD_PERMISSION_PREFIXES.find(([prefix]) => path.startsWith(prefix))?.[1];
+}
+
 /** Permissions that allow custom roles to open manager-only module screens. Everyday Sales access is intentionally excluded. */
 export const MODULE_MANAGE_PERMISSION: Record<string, string> = {
   stock: "stock.manage",

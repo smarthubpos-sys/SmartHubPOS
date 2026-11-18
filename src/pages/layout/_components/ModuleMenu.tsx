@@ -4,6 +4,9 @@ import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils.ts";
 import { tr } from "@/lib/i18n.ts";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { cardPermission } from "@/convex/permissions";
 
 type MenuItem = {
   label: string;
@@ -26,8 +29,15 @@ type Props = {
   children?: ReactNode;
 };
 
-export default function ModuleMenu({ title, sections, onClose, variant = "default", children }: Props) {
+export default function ModuleMenu({ title, sections: allSections, onClose, variant = "default", children }: Props) {
   const navigate = useNavigate();
+  // Each card needs one permission (see CARD_PERMISSION). While the list loads nothing is hidden; the server refuses the action anyway.
+  const permissions = useQuery(api.maintenance.myPermissions, {});
+  const sections = permissions
+    ? allSections
+        .map((s) => ({ ...s, items: s.items.filter((item) => { const need = cardPermission(item.path); return !need || permissions.includes(need); }) }))
+        .filter((s) => s.items.length > 0)
+    : allSections;
 
   return (
     <div className="max-w-6xl mx-auto">

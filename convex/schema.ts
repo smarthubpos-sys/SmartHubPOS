@@ -54,6 +54,7 @@ export default defineSchema({
     lastLogin: v.optional(v.string()),
     menuAccess: v.optional(v.array(v.string())), // sidebar modules this user may open (missing = all the business has)
     extraPermissions: v.optional(v.array(v.string())), // permissions given to this ONE user on top of his role (e.g. "sales.void")
+    deniedPermissions: v.optional(v.array(v.string())), // permissions of his role that were switched OFF for this ONE user (Users form > module window)
     ownDataOnly: v.optional(v.boolean()), // staff mode: sees only his own sales/bills and a personal dashboard
     pinLoginEnabled: v.optional(v.boolean()),
     pinHash: v.optional(v.string()),

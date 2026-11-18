@@ -5,7 +5,7 @@ import { ALL_PERMISSION_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, effect
 import { planStatus, tzToday } from "./plans";
 
 /** The parts of a user the access helpers read. A real user (Doc<"users">) fits; tests may pass a lighter object. */
-export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "extraPermissions" | "ownDataOnly" | "branchPicked" | "branchIds" | "allDepartments">> & { departmentsActive?: boolean };
+export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "extraPermissions" | "deniedPermissions" | "ownDataOnly" | "branchPicked" | "branchIds" | "allDepartments">> & { departmentsActive?: boolean };
 /**
  * Departments a user is limited to when he was given SEVERAL (e.g. Bar + Kitchen): he works in one at a time and may switch
  * only between these. null = no such list (one department, or all departments).
@@ -155,7 +155,8 @@ export async function permissionsOfRole(ctx: QueryCtx, tenantId: Id<"tenants"> |
 export async function effectivePermissionsOf(ctx: QueryCtx, user: MaybeUser): Promise<string[]> {
   if (isSuperAdmin(user)) return [...ALL_PERMISSION_KEYS];
   const extra = (user?.extraPermissions ?? []).filter((k) => ALL_PERMISSION_KEYS.includes(k));
-  return [...new Set([...(await permissionsOfRole(ctx, user?.tenantId, String(user?.role ?? ""))), ...extra])];
+  const denied = new Set(user?.deniedPermissions ?? []); // switched off for this one person
+  return [...new Set([...(await permissionsOfRole(ctx, user?.tenantId, String(user?.role ?? ""))), ...extra])].filter((k) => !denied.has(k));
 }
 
 /** True for the shared attendance device account (its only permission is the kiosk one). */
@@ -165,6 +166,8 @@ export async function isKioskOnlyUser(ctx: QueryCtx, user: MaybeUser): Promise<b
 
 export async function roleHasPermission(ctx: QueryCtx, user: MaybeUser, permission: string) {
   if (isSuperAdmin(user)) return true;
+  // A permission of his role that the administrator switched off for this one person (Users form > module window).
+  if (user?.deniedPermissions?.includes(permission)) return false;
   // A permission given to this one user directly (Users form), limited to the grantable list.
   if (user?.extraPermissions?.includes(permission) && ALL_PERMISSION_KEYS.includes(permission)) return true;
   const name = normalizeRole(user?.role);
@@ -219,6 +222,8 @@ export async function requireSellingPointOrSales(ctx: QueryCtx, sellingPointPerm
  */
 export async function requireManagerOrPermission(ctx: QueryCtx, permission: string, module?: string) {
   const user = await requireActiveUser(ctx, module);
+  // A permission switched off for this one person (Users form) also stops a manager-role account; Super Admin is never limited.
+  if (!isSuperAdmin(user) && user.deniedPermissions?.includes(permission)) throw new ConvexError(`Forbidden: permission "${permission}" was switched off for this account`);
   if (await isManagerRole(ctx, user)) return user;
   if (await roleHasPermission(ctx, user, permission)) return user;
   throw new ConvexError(`Forbidden: manager permission required (or permission "${permission}")`);

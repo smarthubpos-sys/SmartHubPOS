@@ -11,7 +11,7 @@ import {
   activeDepartments, findRoleRow, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
   requireSuperAdminUser, resolveWriteScope, roleHasPermission, scopedRows, effectivePermissionsOf, permissionsOfRole } from "./access";
 import type { UserLike } from "./access";
-import { ALL_PERMISSION_KEYS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
+import { ALL_PERMISSION_KEYS, NOT_PER_USER_PERMISSIONS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
 
 const LOGIN_DOMAIN = "login.smarthub.invalid";
 /**
@@ -361,6 +361,13 @@ function cleanExtraPermissions(keys: string[]) {
   return [...new Set(keys)];
 }
 
+/** Permissions of his role that are switched OFF for one person. Unknown keys are refused; keys that are never per-person (manager, roles, kiosk, Super-Admin-only) are ignored. */
+function cleanDeniedPermissions(keys: string[]) {
+  const bad = keys.filter((k) => !ALL_PERMISSION_KEYS.includes(k));
+  if (bad.length) throw new ConvexError(`Ruhusa isiyojulikana kwa mtumiaji: ${bad.join(", ")}`);
+  return [...new Set(keys.filter((k) => !NOT_PER_USER_PERMISSIONS.includes(k)))];
+}
+
 async function allowedMenu(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, wanted: string[]) {
   const tenant = tenantId ? await ctx.db.get("tenants", tenantId) : null;
   const keys = cleanModules(wanted);
@@ -424,7 +431,7 @@ export const listAssignableRoles = query({
     const rows = await rolesOfBusiness(ctx, actor.tenantId);
     const byName = new Map(rows.map((r) => [r.name, r]));
     const names = [...SYSTEM_ROLES.map((r) => ({ name: r.name, displayName: byName.get(r.name)?.displayName ?? r.displayName })), ...rows.filter((r) => !SYSTEM_ROLES.some((x) => x.name === r.name)).map((r) => ({ name: r.name, displayName: r.displayName }))];
-    const out: { name: string; displayName: string; assignable: boolean }[] = [];
+    const out: { name: string; displayName: string; assignable: boolean; permissions: string[] }[] = [];
     for (const r of names) {
       let assignable = true;
       if (!isSuperAdmin(actor)) {
@@ -432,7 +439,8 @@ export const listAssignableRoles = query({
         const rolePermissions = withoutSuperOnly(await permissionsOfRole(ctx, actor.tenantId, r.name));
         assignable = isManagerActor(actor) && ROLES_ABOVE_MANAGER.includes(normalizeRole(r.name)) ? false : managerStaffRole(actor, r.name) || rolePermissions.every((k) => mine.has(k));
       }
-      out.push({ ...r, assignable });
+      // The permission list lets the Users form pre-tick what the role already gives (and show what was switched off for one person).
+      out.push({ ...r, assignable, permissions: withoutSuperOnly(await permissionsOfRole(ctx, actor.tenantId, r.name)) });
     }
     return out;
   },
@@ -448,7 +456,7 @@ export const listUsers = query({
     // A user tied to one department only manages (and sees) the users of that department.
     const limit = departmentLimit(user);
     const visible = limit ? tenantRows.filter((r) => insideLimit(departmentScope(r), limit)) : tenantRows;
-    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], ownDataOnly: r.ownDataOnly === true, pinLoginEnabled: r.pinLoginEnabled === true, hasPin: !!r.pinHash, staffCode: r.staffCode ?? "" }));
+    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], deniedPermissions: r.deniedPermissions ?? [], ownDataOnly: r.ownDataOnly === true, pinLoginEnabled: r.pinLoginEnabled === true, hasPin: !!r.pinHash, staffCode: r.staffCode ?? "" }));
   },
 });
 
@@ -672,6 +680,7 @@ export const updateUser = mutation({
     branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()),
     isActive: v.optional(v.boolean()), requirePasswordChange: v.optional(v.boolean()),
     menuAccess: v.optional(v.array(v.string())), clearMenuAccess: v.optional(v.boolean()), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())),
+    deniedPermissions: v.optional(v.array(v.string())), // permissions of his role switched off for this one person
   },
   handler: async (ctx, a) => {
     const actor = await requirePermission(ctx, "maintenance.users");
@@ -725,13 +734,14 @@ export const updateUser = mutation({
     if (a.isActive === true && target.isActive === false && !isSuperAdmin(actor) && !isSuperAdmin(target)) await assertUserSeatFree(ctx, target.tenantId); // switching a user back on takes a place again
     if (a.isActive !== undefined) patch.isActive = a.isActive;
     if (a.requirePasswordChange !== undefined) patch.requirePasswordChange = a.requirePasswordChange;
-    if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined || a.extraPermissions !== undefined) {
+    if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined || a.extraPermissions !== undefined || a.deniedPermissions !== undefined) {
       if (String(actor._id) === String(target._id)) throw new ConvexError("Huwezi kubadilisha menyu au ruhusa za data za akaunti yako mwenyewe.");
       if (isSuperAdmin(target)) throw new ConvexError("Huwezi kubadilisha menyu ya Super Admin.");
     }
     if (a.clearMenuAccess) patch.menuAccess = undefined;
     else if (a.menuAccess !== undefined) patch.menuAccess = await allowedMenu(ctx, a.tenantId ?? target.tenantId, a.menuAccess);
     if (a.ownDataOnly !== undefined) patch.ownDataOnly = a.ownDataOnly ? true : undefined;
+    if (a.deniedPermissions !== undefined) patch.deniedPermissions = a.deniedPermissions.length ? cleanDeniedPermissions(a.deniedPermissions) : undefined;
     if (a.extraPermissions !== undefined) {
       assertSuperAdminKeysUnchanged(actor, target.extraPermissions, a.extraPermissions);
       const extras = cleanExtraPermissions(a.extraPermissions);
@@ -878,12 +888,13 @@ export const usernameStatus = internalQuery({
 });
 
 export const finishUserSetup = internalMutation({
-  args: { userId: v.id("users"), actorId: v.id("users"), name: v.string(), username: v.string(), role: v.string(), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()), requirePasswordChange: v.boolean(), menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())) },
+  args: { userId: v.id("users"), actorId: v.id("users"), name: v.string(), username: v.string(), role: v.string(), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()), requirePasswordChange: v.boolean(), menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())), deniedPermissions: v.optional(v.array(v.string())) },
   handler: async (ctx, a) => {
     const acc = resolveDepartmentAccess({ branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments });
     await ctx.db.patch("users", a.userId, {
       name: a.name, username: a.username, role: normalizeRole(a.role), tenantId: a.tenantId, branchId: acc.branchId, branchIds: acc.branchIds, allDepartments: acc.allDepartments, branchPicked: acc.branchPicked, isActive: true, requirePasswordChange: a.requirePasswordChange,
       menuAccess: a.menuAccess ? await allowedMenu(ctx, a.tenantId, a.menuAccess) : undefined, ownDataOnly: a.ownDataOnly ? true : undefined, extraPermissions: a.extraPermissions?.length ? cleanExtraPermissions(a.extraPermissions) : undefined,
+      deniedPermissions: a.deniedPermissions?.length ? cleanDeniedPermissions(a.deniedPermissions) : undefined,
     });
     const actor = await ctx.db.get("users", a.actorId);
     await logAudit(ctx, actor, { action: "create_user", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${a.username} (${a.role})` });
@@ -901,6 +912,7 @@ export const createUser = action({
     tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
     branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()),
     menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())),
+    deniedPermissions: v.optional(v.array(v.string())),
     // Staff who sign in with a PIN only (waiter / waitress): the PIN is saved together with the account, after the system checked nobody else has it.
     pin: v.optional(v.string()), pinLoginEnabled: v.optional(v.boolean()),
   },
@@ -947,7 +959,7 @@ export const createUser = action({
     }
     await ctx.runMutation(internal.maintenance.finishUserSetup, {
       userId, actorId: auth.actorId, name: a.name.trim() || username, username, role: a.role,
-      tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, requirePasswordChange: pinOnlyRole ? false : auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly, extraPermissions: a.extraPermissions,
+      tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, requirePasswordChange: pinOnlyRole ? false : auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly, extraPermissions: a.extraPermissions, deniedPermissions: a.deniedPermissions,
     });
     if (newPin && newPinLookup) {
       await ctx.runMutation(internal.maintenance.saveStaffPin, { userId, actorId: auth.actorId, pinHash: await hashStaffPin(newPin), pinLookup: newPinLookup, enabled: a.pinLoginEnabled ?? true });
