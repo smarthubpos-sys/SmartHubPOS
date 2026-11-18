@@ -18,6 +18,16 @@ describe("report core", () => {
     expect(s.counts).toEqual({ entries: 4, invoices: 1, voids: 0, returns: 1 });
     expect(s.daily.find((d) => d.date === "2026-10-14")).toMatchObject({ sales: 90000, cogs: 54000, expenses: 20000, profit: 16000 });
   });
+  it("stock adjustments (shrinkage / gain) are not counted as expenses", () => {
+    const adj: JEntry = { entryDate: "2026-10-14", sourceType: "stock_adjustment", lines: [
+      { code: "5200", name: "Stock shrinkage expense", type: "expense", debit: 7000, credit: 0 },
+      { code: "1200", name: "Inventory", type: "asset", debit: 0, credit: 7000 },
+    ] };
+    const base = summarize(build(entries));
+    const withAdj = summarize(build([...entries, adj]));
+    expect(withAdj.totalExpenses).toBe(base.totalExpenses);
+    expect(withAdj.netProfit).toBe(base.netProfit);
+  });
   it("adding chunks gives the same answer as one pass", () => {
     const merged = mergeRows(mergeRows(new Map<string, Row>(), build(entries.slice(0, 2))), build(entries.slice(2)));
     expect(summarize(accRows(merged))).toEqual(summarize(build(entries)));

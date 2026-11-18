@@ -143,7 +143,8 @@ export const deleteAccount=mutation({args:{accountId:v.id("accounts")},handler:a
 /** Income statement from posted ledger entries only. */
 export const profitAndLoss = query({ args: { startDate: v.string(), endDate: v.string() }, handler: async (ctx, a) => {
  const u = await requirePermission(ctx, "accounts.reports.view", "accounts"); if (a.endDate < a.startDate) throw new ConvexError("Date range si sahihi.");
- const entries = await postedEntries(ctx, u, a.startDate, a.endDate);
+ // Stock adjustments / stock-take corrections are not a business expense: kept out of the income statement.
+ const entries = (await postedEntries(ctx, u, a.startDate, a.endDate)).filter((e) => e.sourceType !== "stock_adjustment");
  const accounts = (await visibleAccounts(ctx, u)); const accountMap = new Map(accounts.map(x => [String(x._id), x]));
  const totals = new Map<string, {accountId:string;code:string;name:string;type:string;amount:number}>();
  for (const l of await linesOf(ctx, entries)) { const ac = accountMap.get(String(l.accountId)); if (!ac || !["revenue","expense"].includes(ac.type)) continue; const sign = ac.type === "revenue" ? l.credit-l.debit : l.debit-l.credit; const row=totals.get(String(ac._id)) ?? {accountId:String(ac._id),code:ac.code,name:ac.name,type:ac.type,amount:0}; row.amount=roundMoney(row.amount+sign); totals.set(String(ac._id),row); }

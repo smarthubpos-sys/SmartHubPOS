@@ -80,7 +80,7 @@ export const chunk = query({
         if (ac) {
           lines.push({ code: ac.code, name: ac.name, type: ac.type, subtype: ac.subtype, debit: l.debit, credit: l.credit, channel: ac.subtype === "payment_method" && kindOf.has(k) ? channelOfKind(kindOf.get(k)) : undefined });
           // Every operating expense exactly as it was entered (date, who/what, category, amount); cost of goods is not an expense line.
-          if (ac.type === "expense" && ac.code !== "5000") {
+          if (ac.type === "expense" && ac.code !== "5000" && e.sourceType !== "stock_adjustment") {
             const amount = round2((l.debit || 0) - (l.credit || 0));
             if (amount !== 0) { const list = itemsBy.get(bk) ?? []; list.push({ bk, d: e.entryDate, t: (e.description || "").slice(0, 160), c: ac.name, a: amount }); itemsBy.set(bk, list); }
           }

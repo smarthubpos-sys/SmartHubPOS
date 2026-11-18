@@ -57,6 +57,9 @@ export function entryRows(e: JEntry, acc: Acc = new Map()): Acc {
   // Selling Point (waiter) money: the journal is dated the day the money was RECEIVED, but a sale belongs to the day it was SOLD.
   // So for these entries only the MONEY (CASH / LIPA / BANK) is read here; their sales and cost of goods come from the orders (see waiterSalesOf).
   const moneyOnly = isWaiterMoneyEntry(e.sourceType);
+  // Stock adjustments / stock-take corrections only fix the quantity (and the Inventory value in the ledger): they are NOT a business expense, so their
+  // expense lines (5100 gain / 5200 shrinkage) never reach the report.
+  const stockAdjustment = e.sourceType === "stock_adjustment";
   if (e.sourceType === "sale") row("stat", "invoices", "", 1);
   if (e.sourceType === "sale_void") row("stat", "voids", "", 1);
   if (e.sourceType === "sale_return") row("stat", "returns", "", 1);
@@ -64,6 +67,7 @@ export function entryRows(e: JEntry, acc: Acc = new Map()): Acc {
   for (const l of e.lines) {
     const debit = l.debit || 0, credit = l.credit || 0;
     if (moneyOnly && !isMoneyLine(l)) continue;
+    if (stockAdjustment && l.type === "expense") continue;
     if (l.type === "revenue") {
       const amount = credit - debit;
       row("rev", l.code, l.name, amount);
