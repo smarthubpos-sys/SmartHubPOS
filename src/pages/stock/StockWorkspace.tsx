@@ -23,7 +23,7 @@ async function save(fn: () => Promise<unknown>, okMessage = tr("Taarifa zimehifa
 
 /* ───────────────────────── Add / Modify Stock (product catalog + prices) ───────────────────────── */
 
-const emptyProduct = { itemCode: "", partNumber: "", name: "", description: "", barcode: "", groupId: "", unitId: "", sellingPrice: "0", openingQty: "0", openingCost: "0", reorderLevel: "", minStockLevel: "", trackSerialNumbers: "false", showInSales: "true", trackBatchNumbers: "false", trackExpiry: "false", isActive: "true" };
+const emptyProduct = { itemCode: "", partNumber: "", name: "", description: "", barcode: "", groupId: "", unitId: "", sellingPrice: "0", openingQty: "0", openingCost: "0", lastCost: "", reorderLevel: "", minStockLevel: "", trackSerialNumbers: "false", showInSales: "true", trackBatchNumbers: "false", trackExpiry: "false", isActive: "true" };
 
 function ProductsScreen() {
   const data = useQuery(api.inventory.stockRegisters, { light: true });
@@ -49,7 +49,7 @@ function ProductsScreen() {
     setEditingId(p?._id ?? "");
     setF(p ? {
       itemCode: p.itemCode, partNumber: p.partNumber, name: p.name, description: p.description, barcode: p.barcode,
-      groupId: p.groupId ?? "", unitId: p.unitId ?? "", sellingPrice: String(p.sellingPrice), openingQty: String(p.openingQty), openingCost: "0",
+      groupId: p.groupId ?? "", unitId: p.unitId ?? "", sellingPrice: String(p.sellingPrice), openingQty: String(p.openingQty), openingCost: "0", lastCost: p.lastPurchaseCost ? String(p.lastPurchaseCost) : "",
       reorderLevel: p.reorderLevel === null ? "" : String(p.reorderLevel), minStockLevel: p.minStockLevel === null ? "" : String(p.minStockLevel),
       trackSerialNumbers: String(p.trackSerialNumbers), trackBatchNumbers: String(p.trackBatchNumbers), trackExpiry: String(p.trackExpiry), isActive: String(p.isActive), showInSales: String(p.onMenu),
     } : { ...emptyProduct, itemCode: nextCode });
@@ -66,6 +66,7 @@ function ProductsScreen() {
       barcode: f.barcode.trim() || undefined, groupId: f.groupId ? (f.groupId as Id<"productGroups">) : undefined, unitId: f.unitId ? (f.unitId as Id<"unitsOfMeasure">) : undefined,
       sellingPrice: num(f.sellingPrice),
       openingQty: editingId ? undefined : num(f.openingQty), openingCost: editingId ? undefined : num(f.openingCost),
+      lastCost: editingId && f.lastCost.trim() !== "" ? num(f.lastCost) : undefined,
       reorderLevel: f.reorderLevel === "" ? undefined : num(f.reorderLevel), minStockLevel: f.minStockLevel === "" ? undefined : num(f.minStockLevel),
       trackSerialNumbers: f.trackSerialNumbers === "true", trackBatchNumbers: f.trackBatchNumbers === "true", trackExpiry: f.trackExpiry === "true", isActive: f.isActive === "true", showInSales: f.showInSales === "true",
     }), editingId ? tr("Bidhaa imebadilishwa.") : tr("Bidhaa mpya imesajiliwa."));
@@ -110,11 +111,14 @@ function ProductsScreen() {
           {field(tr("Reorder Level"), "reorderLevel", "number", tr("Ripoti ya Reorder itaonyesha bidhaa zilizo chini au sawa na kiwango hiki."))}
           {field(tr("Minimum Stock Level"), "minStockLevel", "number")}
           {editingId ? (
+            <>
             <div className="rounded-md border bg-muted/30 p-3 text-sm md:col-span-2">
               
               {tr("Stock iliyopo sasa:")} <b>{fmt(editing?.currentQty ?? 0, 4)} {editing?.unitName}</b>  {tr("· Cost wastani:")} <b>{fmt(editing?.cost ?? 0)}</b>.
               <div className="mt-1 text-xs text-muted-foreground">{tr("Idadi haibadilishwi hapa. Ongeza stock kupitia Purchase, na rekebisha idadi kupitia Quantity Adjustment ili kila badiliko lirekodiwe kwenye ripoti.")}</div>
             </div>
+            {field(tr("Last Cost (gharama ya mwisho kwa kipande)"), "lastCost", "number", tr("Ukiiweka, inahifadhiwa kama gharama ya mwisho ya ununuzi. Kama bidhaa haina cost bado, pia inatumika kuhesabu thamani ya stock na faida ya mauzo yajayo; mauzo yaliyopita hayabadiliki."))}
+            </>
           ) : (
             <>
               {field(tr("Opening Quantity (stock ya kuanzia)"), "openingQty", "number", tr("Itarekodiwa kama movement ya 'opening'."))}

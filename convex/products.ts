@@ -83,6 +83,8 @@ export const upsert = mutation({
     // After that, stock changes only through Purchase, Sales and Quantity Adjustment.
     openingQty: v.optional(v.number()),
     openingCost: v.optional(v.number()),
+    // Last cost per unit: only used when EDITING an existing product (see below).
+    lastCost: v.optional(v.number()),
     sellingPrice: v.number(),
     minStockLevel: v.optional(v.number()),
     reorderLevel: v.optional(v.number()),
@@ -104,13 +106,14 @@ export const upsert = mutation({
     if (args.id && (!editing || !canEditCatalogItem(user, editing))) throw new ConvexError("Forbidden: record is outside your office/branch");
     const duplicateScope: Scope = editing ? { tenantId: editing.tenantId, branchId: editing.branchId } : writeScope;
 
-    const { id, openingQty, openingCost, ...data } = args;
+    const { id, openingQty, openingCost, lastCost, ...data } = args;
     const itemCode = data.itemCode.trim();
     const name = data.name.trim();
     const barcode = data.barcode?.trim() || undefined;
     if (!itemCode || !name) throw new ConvexError("Item code na jina la bidhaa vinahitajika.");
     if (!Number.isFinite(data.sellingPrice) || data.sellingPrice < 0) throw new ConvexError("Bei ya kuuzia si sahihi.");
     for (const n of [data.minStockLevel, data.reorderLevel]) if (n !== undefined && (!Number.isFinite(n) || n < 0)) throw new ConvexError("Reorder/minimum level si sahihi.");
+    if (lastCost !== undefined && (!Number.isFinite(lastCost) || lastCost < 0)) throw new ConvexError("Last cost si sahihi.");
     const clean = { ...data, itemCode, name, barcode };
 
     // Duplicate checks are limited to the user's own office/branch.
@@ -126,11 +129,16 @@ export const upsert = mutation({
     if (id) {
       const existingRecord = editing;
       if (!existingRecord) throw new ConvexError("Forbidden: record is outside your office/branch");
-      await ctx.db.patch("products", id, clean); // never touches currentQty / openingQty / cost
+      await ctx.db.patch("products", id, clean); // never touches currentQty / openingQty
+      // LAST COST typed on the edit form: saved as the product's last purchase cost. The average cost (what stock value and profit use) is only
+      // set from it when the product has no cost yet; otherwise the average keeps being worked out from purchases.
+      const costChanged = lastCost !== undefined && lastCost !== (existingRecord.lastPurchaseCost ?? 0);
+      if (costChanged) await ctx.db.patch("products", id, { lastPurchaseCost: (lastCost ?? 0) > 0 ? lastCost : undefined, ...(!(existingRecord.weightedAvgCost ?? 0) && (lastCost ?? 0) > 0 ? { weightedAvgCost: lastCost } : {}) });
       if (existingRecord.sellingPrice !== clean.sellingPrice) await syncRecipePrices(ctx, existingRecord.tenantId, [id]);
       const changes: string[] = [];
       if (existingRecord.sellingPrice !== clean.sellingPrice) changes.push(`bei ${existingRecord.sellingPrice} -> ${clean.sellingPrice}`);
       if (existingRecord.name !== clean.name) changes.push(`jina ${existingRecord.name} -> ${clean.name}`);
+      if (costChanged) changes.push(`last cost ${existingRecord.lastPurchaseCost ?? 0} -> ${lastCost}`);
       if (existingRecord.isActive !== clean.isActive) changes.push(clean.isActive ? "imewashwa" : "imezimwa");
       await ctx.db.insert("auditLogs", { userId: user._id, userName: user.name ?? user.email ?? "user", action: "modify_product", module: "inventory", referenceId: String(id), referenceType: "product", details: `${clean.name}${changes.length ? ": " + changes.join("; ") : ""}`, timestamp: new Date().toISOString(), result: "success" });
       return id;
