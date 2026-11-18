@@ -938,6 +938,7 @@ export default defineSchema({
     method: v.string(),
     methodId: v.optional(v.id("paymentMethods")),
     reference: v.optional(v.string()),
+    voided: v.optional(v.boolean()), // payment taken back (unpaid): kept for history, no longer counts as paid
     createdBy: v.id("users"),
   }) .index("by_scope", ["tenantId", "branchId"]).index("by_bill", ["billId"]),
 

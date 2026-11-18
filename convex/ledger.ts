@@ -7,7 +7,7 @@ type Scope = { tenantId?: Id<"tenants">; branchId?: Id<"branches"> };
 
 export async function getSystemAccount(ctx: MutationCtx, scope: Scope, code: string, name: string, type: string) {
   const accounts = await ctx.db.query("accounts").withIndex("by_tenant_code", (q) => q.eq("tenantId", scope.tenantId).eq("code", code)).collect();
-  const account = accounts.find((a) => a.branchId === scope.branchId && a.isActive);
+  const account = accounts.find((a) => a.branchId === scope.branchId && a.isActive) ?? accounts.find((a) => !a.branchId && a.isActive); // the department's own account first, else the business-wide ("All locations") one
   if (account) return account._id;
   return await ctx.db.insert("accounts", { ...scope, code, name, type, subtype: "system", balance: 0, isActive: true, isSystem: true, description: "System account created for automatic posting" });
 }

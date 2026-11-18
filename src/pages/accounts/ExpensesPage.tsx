@@ -22,6 +22,7 @@ export default function ExpensesPage() {
   const bills = useQuery(api.bills.list);
   const create = useMutation(api.bills.create);
   const pay = useMutation(api.bills.pay);
+  const unpay = useMutation(api.bills.unpayBill);
   const voidBill = useMutation(api.bills.voidBill);
   const update = useMutation(api.bills.update);
   const addExpenseAccount = useMutation(api.bills.addExpenseAccount);
@@ -123,7 +124,7 @@ export default function ExpensesPage() {
             <Button disabled={busy || !p.amount} onClick={async () => { const ok = await run(() => pay({ billId: current._id, amount: Number(p.amount), ...methodArgs(methods, pickMethodKey(methods, p.method)), paymentDate: p.date, reference: p.reference || undefined }), tr("Malipo yamehifadhiwa.")); if (ok) { setP({ ...p, amount: "", reference: "" }); if (Number(p.amount) >= current.amount - current.paidAmount) setPayFor(null); } }}>{tr("Hifadhi Malipo")}</Button>
             <Button variant="outline" onClick={() => setP({ ...p, amount: String(current.amount - current.paidAmount) })}>{tr("Lipa deni lote")}</Button>
           </div>
-          {payments && payments.length > 0 && <div className="mt-4"><Table head={[tr("Tarehe"), tr("Kiasi"), tr("Njia ya malipo"), tr("Namba ya rejea")]}>{payments.map((x) => <tr key={x._id}><td>{formatDate(x.paymentDate)}</td><td>{money(x.amount)}</td><td>{methodLabel(x.method)}</td><td>{x.reference}</td></tr>)}</Table></div>}
+          {payments && payments.length > 0 && <div className="mt-4"><Table head={[tr("Tarehe"), tr("Kiasi"), tr("Njia ya malipo"), tr("Namba ya rejea"), ""]}>{payments.map((x) => <tr key={x._id} className={x.voided ? "text-muted-foreground line-through" : ""}><td>{formatDate(x.paymentDate)}</td><td>{money(x.amount)}</td><td>{methodLabel(x.method)}</td><td>{x.reference}</td><td className="text-right no-underline">{x.voided ? <span className="text-xs">{tr("Imerudishwa")}</span> : <Button size="sm" variant="outline" disabled={busy} onClick={() => { if (window.confirm(tr("Rudisha malipo ya {0}? Fedha itarudi kwenye njia ya malipo na bili itadaiwa tena.", [money(x.amount)]))) void run(() => unpay({ paymentId: x._id }), tr("Malipo yamerudishwa.")); }}>{tr("Rudisha (Unpay)")}</Button>}</td></tr>)}</Table></div>}
         </Panel>
       )}
 

@@ -29,6 +29,7 @@ function sourceLabel(sourceType: string): string {
     case "sale_void": return tr("Mauzo yaliyofutwa (marejesho)");
     case "sale_return": return tr("Marejesho ya mauzo");
     case "payment_edit": return tr("Malipo yaliyobadilishwa (marekebisho)");
+    case "payment_void": case "bill_payment_void": return tr("Malipo yaliyorudishwa (Unpay)");
     case "manual": return tr("Journal / uhamisho wa mkono");
     default: return sourceType;
   }

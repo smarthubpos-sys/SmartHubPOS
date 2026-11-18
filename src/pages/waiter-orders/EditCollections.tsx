@@ -74,6 +74,7 @@ function ReceiptsEditor({ methods }: { methods: PayMethod[] }) {
 function CustomerPaymentsEditor({ methods }: { methods: PayMethod[] }) {
   const rows = useQuery(api.customerDebt.recentCustomerPayments);
   const save = useMutation(api.customerDebt.editCustomerPayment);
+  const unpay = useMutation(api.customerDebt.unpayCustomerPayment);
   const [editKey, setEditKey] = useState("");
   const [lines, setLines] = useState<SplitLine[]>([]);
   const [payDate, setPayDate] = useState("");
@@ -89,6 +90,17 @@ function CustomerPaymentsEditor({ methods }: { methods: PayMethod[] }) {
     } catch (e) { toast.error(errorText(e, tr("Imeshindikana kubadilisha malipo. Hakuna kilichobadilishwa."))); }
     finally { setBusy(false); }
   };
+  const undo = async (r: NonNullable<typeof rows>[number]) => {
+    if (!r.receiptNo) return;
+    if (!window.confirm(tr("Rudisha malipo ya {0} ya {1}? Deni litarudi kwa mteja na fedha itatolewa kwenye njia ya malipo.", [money(r.total), r.clientName]))) return;
+    setBusy(true);
+    try {
+      const res = await unpay({ invoiceId: r.invoiceId, receiptNo: r.receiptNo });
+      toast.success(tr("Malipo yamerudishwa. Deni la {0}: {1}.", [res.invoiceNo, money(res.outstanding)]));
+      setEditKey("");
+    } catch (e) { toast.error(errorText(e, tr("Imeshindikana kurudisha malipo. Hakuna kilichobadilishwa."))); }
+    finally { setBusy(false); }
+  };
   return (
     <div className="space-y-2">
       <p className="text-xs text-muted-foreground">{tr("Malipo ya wateja ya karibuni. Unaweza kubadilisha njia za malipo, kiasi na tarehe; deni la mteja litarekebishwa lenyewe.")}</p>
@@ -100,7 +112,7 @@ function CustomerPaymentsEditor({ methods }: { methods: PayMethod[] }) {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span>{r.date} · {r.clientName} · {r.invoiceNo} · {r.splits.map((s) => `${s.method} ${money(s.amount)}`).join(" + ")} · {tr("Deni lililobaki")}: {money(r.outstanding)}</span>
               <span className="flex items-center gap-2"><strong className="tabular-nums">{money(r.total)}</strong>
-                {r.editable ? <Button size="sm" variant="outline" disabled={busy} onClick={() => { if (editKey === key) setEditKey(""); else { setEditKey(key); setLines(toLines(r.splits, methods)); setPayDate(r.date); } }}>{tr("Hariri")}</Button> : <span className="text-xs text-muted-foreground">{tr("Malipo ya zamani, hayahaririwi")}</span>}
+                {r.editable ? <><Button size="sm" variant="outline" disabled={busy} onClick={() => { if (editKey === key) setEditKey(""); else { setEditKey(key); setLines(toLines(r.splits, methods)); setPayDate(r.date); } }}>{tr("Hariri")}</Button><Button size="sm" variant="destructive" disabled={busy} onClick={() => void undo(r)}>{tr("Rudisha (Unpay)")}</Button></> : <span className="text-xs text-muted-foreground">{tr("Malipo ya zamani, hayahaririwi")}</span>}
               </span>
             </div>
             {editKey === key && (

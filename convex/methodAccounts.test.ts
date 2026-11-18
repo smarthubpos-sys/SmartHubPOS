@@ -155,3 +155,78 @@ describe("expense bills use the business's Chart of Accounts", () => {
     await t.run(async (ctx) => { const ls = await ctx.db.query("journalLines").collect(); expect(ls.filter((l) => l.accountId === mishahara._id).reduce((n, l) => n + l.debit - l.credit, 0)).toBe(0); });
   });
 });
+
+describe("Chart of Accounts: locations, edit and delete", () => {
+  async function twoDepartments() {
+    const base = await setup();
+    const { t, tenantId } = base;
+    const now = new Date().toISOString();
+    const bar = await t.run((ctx) => ctx.db.insert("branches", { tenantId, name: "Bar", code: "BAR", isActive: true, createdAt: now }));
+    const kitchen = await t.run((ctx) => ctx.db.insert("branches", { tenantId, name: "Kitchen", code: "KIT", isActive: true, createdAt: now }));
+    const barMgr = await t.run((ctx) => ctx.db.insert("users", { name: "BarMgr", username: "barmgr", role: "admin", tenantId, branchId: bar, isActive: true }));
+    const kitMgr = await t.run((ctx) => ctx.db.insert("users", { name: "KitMgr", username: "kitmgr", role: "admin", tenantId, branchId: kitchen, isActive: true }));
+    return { ...base, bar, kitchen, asBar: t.withIdentity({ subject: barMgr, tokenIdentifier: "x|2" }), asKitchen: t.withIdentity({ subject: kitMgr, tokenIdentifier: "x|3" }) };
+  }
+
+  it("an 'All locations' account is usable by every department, and each department keeps only its own figures", async () => {
+    const { asMgr, asBar, asKitchen } = await twoDepartments();
+    const shared = await asMgr.mutation(api.accounting.createAccount, { code: "6500", name: "Shared expense", type: "expense", location: "all" });
+    const mine = await asBar.mutation(api.accounting.createAccount, { code: "6600", name: "Bar only", type: "expense" });
+    expect((await asBar.query(api.accounting.listAccounts, {})).map((a) => a.code).sort()).toEqual(["6500", "6600"]);
+    expect((await asKitchen.query(api.accounting.listAccounts, {})).map((a) => a.code)).toEqual(["6500"]); // sees shared, never the Bar's own
+    expect((await asBar.query(api.bills.expenseAccounts, {})).map((a) => a.code)).toEqual(["6500", "6600"]);
+    // each department books a bill on the shared account; each sees only its own amount
+    await asBar.mutation(api.bills.create, { vendor: "A", category: "x", expenseAccountId: shared, billDate: date, dueDate: date, amount: 1000 });
+    await asKitchen.mutation(api.bills.create, { vendor: "B", category: "x", expenseAccountId: shared, billDate: date, dueDate: date, amount: 400 });
+    const pl = async (as: typeof asBar) => (await as.query(api.accounting.profitAndLoss, { startDate: date, endDate: date })).totalExpenses;
+    expect([await pl(asBar), await pl(asKitchen), await pl(asMgr)]).toEqual([1000, 400, 1400]);
+    await expect(asKitchen.mutation(api.bills.create, { vendor: "C", category: "x", expenseAccountId: (await asBar.query(api.accounting.listAccounts, {})).find((a) => a.code === "6600")!._id, billDate: date, dueDate: date, amount: 1 })).rejects.toThrow(/Account ya matumizi/);
+    void mine;
+  });
+
+  it("moves an account to another department, to all locations, and refuses unsafe moves", async () => {
+    const { asMgr, asBar, bar, kitchen } = await twoDepartments();
+    const id = await asBar.mutation(api.accounting.createAccount, { code: "6700", name: "Matangazo", type: "expense" });
+    await expect(asBar.mutation(api.accounting.updateAccount, { accountId: id, location: "all" })).rejects.toThrow(/All departments/); // a department user cannot relocate
+    await asMgr.mutation(api.accounting.updateAccount, { accountId: id, location: (await asMgr.query(api.accounting.listAccounts, {})).length ? kitchen : kitchen });
+    expect((await asMgr.query(api.accounting.listAccounts, {})).find((a) => a.code === "6700")?.branchId).toBe(kitchen);
+    await asMgr.mutation(api.accounting.updateAccount, { accountId: id, location: "all", name: "Matangazo yote" });
+    const row = (await asMgr.query(api.accounting.listAccounts, {})).find((a) => a.code === "6700");
+    expect(row).toMatchObject({ name: "Matangazo yote" });
+    expect(row?.branchId).toBeUndefined();
+    // posted by Bar, then it cannot be locked to Kitchen
+    await asBar.mutation(api.bills.create, { vendor: "A", category: "x", expenseAccountId: id, billDate: date, dueDate: date, amount: 50 });
+    await expect(asMgr.mutation(api.accounting.updateAccount, { accountId: id, location: kitchen })).rejects.toThrow(/idara nyingine/);
+    await asMgr.mutation(api.accounting.updateAccount, { accountId: id, location: bar }); // all its postings are Bar's: allowed
+    // same code in the destination is refused
+    await asMgr.mutation(api.accounting.createAccount, { code: "6800", name: "K", type: "expense", location: kitchen });
+    const other = await asMgr.mutation(api.accounting.createAccount, { code: "6800", name: "B", type: "expense", location: bar });
+    await expect(asMgr.mutation(api.accounting.updateAccount, { accountId: other, location: "all" })).rejects.toThrow(/tayari/);
+  });
+
+  it("deletes an unused account, and refuses one with postings (it can be switched off instead)", async () => {
+    const { asMgr, asBar } = await twoDepartments();
+    const unused = await asMgr.mutation(api.accounting.createAccount, { code: "6900", name: "Haitumiki", type: "expense", location: "all" });
+    await asMgr.mutation(api.accounting.deleteAccount, { accountId: unused });
+    expect((await asMgr.query(api.accounting.listAccounts, {})).some((a) => a.code === "6900")).toBe(false);
+    const used = await asMgr.mutation(api.accounting.createAccount, { code: "6901", name: "Inatumika", type: "expense", location: "all" });
+    await asBar.mutation(api.bills.create, { vendor: "A", category: "x", expenseAccountId: used, billDate: date, dueDate: date, amount: 10 });
+    await expect(asMgr.mutation(api.accounting.deleteAccount, { accountId: used })).rejects.toThrow(/miamala|inatumiwa/);
+    await asMgr.mutation(api.accounting.updateAccount, { accountId: used, isActive: false });
+    expect((await asMgr.query(api.accounting.listAccounts, {})).find((a) => a.code === "6901")?.isActive).toBe(false);
+  });
+
+  it("unpay: an expense payment goes back to its method and the bill owes it again", async () => {
+    const { t, asMgr } = await setup();
+    const acc = await asMgr.mutation(api.bills.addExpenseAccount, { name: "Umeme" });
+    const billId = await asMgr.mutation(api.bills.create, { vendor: "Tanesco", category: "x", expenseAccountId: acc.accountId, billDate: date, dueDate: date, amount: 3000 });
+    const payId = await asMgr.mutation(api.bills.pay, { billId, amount: 3000, method: "cash", paymentDate: date });
+    expect((await t.run((ctx) => ctx.db.get("bills", billId)))?.status).toBe("paid");
+    await asMgr.mutation(api.bills.unpayBill, { paymentId: payId });
+    expect(await t.run((ctx) => ctx.db.get("bills", billId))).toMatchObject({ paidAmount: 0, status: "unpaid" });
+    const led = await ledger(t);
+    expect(Object.values(led).filter((x) => x.code === "1000").reduce((n, x) => n + x.net, 0)).toBe(0); // cash back where it was
+    await expect(asMgr.mutation(api.bills.unpayBill, { paymentId: payId })).rejects.toThrow(/sharudishwa/);
+    await asMgr.mutation(api.bills.pay, { billId, amount: 3000, method: "cash", paymentDate: date }); // can be paid again
+  });
+});

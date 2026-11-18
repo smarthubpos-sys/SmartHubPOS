@@ -206,6 +206,7 @@ export const repairOldPayments = mutation({
 
     // bill payments and capital received
     for (const p of await scopedRows(ctx, user, "billPayments")) {
+      if (p.voided) continue;
       const scope = scopeOf(p);
       await fix(scope, `BILLPAY-${String(p._id)}`, String(p._id), "credit", [{ accountId: await methodAccount(ctx, scope, { methodId: p.methodId, method: p.method }), amount: p.amount }]);
     }

@@ -2,7 +2,7 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { canAccessRecord, filterScoped, logAudit, requireActiveUser, requireManager, requireManagerOrPermission, resolveWriteScope, scopedRows, requirePermission } from "./access";
+import { canAccessRecord, canUseAccount, filterScoped, logAudit, requireActiveUser, requireManager, requireManagerOrPermission, resolveWriteScope, scopedRows, requirePermission, visibleAccounts } from "./access";
 import { getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits } from "./paymentMethods";
 
@@ -38,7 +38,7 @@ export const expenseAccounts = query({
   handler: async (ctx) => {
     const user = await requirePermission(ctx, "accounts.view", "accounts");
     if (!user.tenantId) return [];
-    const rows = (await scopedRows(ctx, user, "accounts")).filter((a) => a.type === "expense" && a.isActive);
+    const rows = (await visibleAccounts(ctx, user)).filter((a) => a.type === "expense" && a.isActive);
     const seen = new Set<string>();
     const out: Array<{ _id: Id<"accounts">; code: string; name: string }> = [];
     for (const a of rows.sort((x, y) => x.code.localeCompare(y.code) || x.name.localeCompare(y.name))) {
@@ -53,7 +53,7 @@ export const expenseAccounts = query({
 /** An expense account picked from the Chart of Accounts: it must belong to this business (and department) and still be an active expense account. */
 async function chosenExpenseAccount(ctx: QueryCtx, user: Parameters<typeof canAccessRecord>[0], scope: { tenantId?: Id<"tenants">; branchId?: Id<"branches"> }, accountId: Id<"accounts">) {
   const acc = await ctx.db.get("accounts", accountId);
-  if (!acc || acc.tenantId !== scope.tenantId || acc.type !== "expense" || !acc.isActive || !canAccessRecord(user, acc) || (acc.branchId && acc.branchId !== scope.branchId)) throw new ConvexError("Account ya matumizi si sahihi. Chagua account kutoka Chart of Accounts ya biashara hii.");
+  if (!acc || acc.tenantId !== scope.tenantId || acc.type !== "expense" || !acc.isActive || !canUseAccount(user, acc) || (acc.branchId && acc.branchId !== scope.branchId)) throw new ConvexError("Account ya matumizi si sahihi. Chagua account kutoka Chart of Accounts ya biashara hii.");
   return acc;
 }
 
@@ -192,6 +192,28 @@ export const pay = mutation({
     await postSystemJournal(ctx, { scope, userId: user._id, date: a.paymentDate, reference: `BILLPAY-${String(paymentId)}`, description: `Bill payment ${bill.billNumber}`, sourceType: "bill_payment", sourceId: String(paymentId), lines: [{ accountId: payable, debit: amount, credit: 0 }, { accountId: cash, debit: 0, credit: amount }] });
     await logAudit(ctx, user, { action: "pay_bill", module: "bills", referenceId: String(a.billId), details: `${bill.billNumber} ${amount}` });
     return paymentId;
+  },
+});
+
+/** UNPAY an expense payment (paid by mistake / wrong bill): the money goes back to the method it left, the bill owes it again. Nothing is erased. */
+export const unpayBill = mutation({
+  args: { paymentId: v.id("billPayments") },
+  handler: async (ctx, a) => {
+    const user = await requireManager(ctx, "accounts");
+    const p = await ctx.db.get("billPayments", a.paymentId);
+    const bill = p ? await ctx.db.get("bills", p.billId) : null;
+    if (!p || !bill || !canAccessRecord(user, bill)) throw new ConvexError("Malipo hayapatikani.");
+    if (p.voided) throw new ConvexError("Malipo haya yamesharudishwa.");
+    if (bill.status === "void") throw new ConvexError("Bili hii imebatilishwa.");
+    const scope = { tenantId: bill.tenantId, branchId: bill.branchId };
+    const payable = await getSystemAccount(ctx, scope, "2100", "Accounts payable - bills", "liability");
+    const cash = await methodAccount(ctx, scope, { methodId: p.methodId, method: p.method });
+    await postSystemJournal(ctx, { scope, userId: user._id, date: today(), reference: `BILLUNPAY-${String(p._id)}`, description: `Bill payment taken back ${bill.billNumber}`, sourceType: "bill_payment_void", sourceId: String(p._id), lines: [{ accountId: cash, debit: p.amount, credit: 0 }, { accountId: payable, debit: 0, credit: p.amount }] });
+    await ctx.db.patch("billPayments", p._id, { voided: true });
+    const paid = roundMoney(Math.max(0, bill.paidAmount - p.amount));
+    await ctx.db.patch("bills", bill._id, { paidAmount: paid, status: paid >= bill.amount ? "paid" : paid > 0 ? "partial" : "unpaid" });
+    await logAudit(ctx, user, { action: "unpay_bill", module: "bills", referenceId: String(bill._id), details: `${bill.billNumber} ${p.amount} (${p.method})` });
+    return { billNumber: bill.billNumber, paidAmount: paid };
   },
 });
 

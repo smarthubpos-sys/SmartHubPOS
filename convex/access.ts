@@ -181,6 +181,23 @@ export async function requirePermission(ctx: QueryCtx, permission: string, modul
 }
 
 /**
+ * Accounts a user can see and use: those of his own department AND the business-wide ("All locations") ones.
+ * A business-wide account is shared, but every posting still carries the department of its entry, so each department keeps its own figures.
+ */
+export async function visibleAccounts(ctx: QueryCtx, user: UserLike): Promise<Doc<"accounts">[]> {
+  const own = await scopedRows(ctx, user, "accounts");
+  if (!user.tenantId || !user.branchId) return own;
+  const shared = await ctx.db.query("accounts").withIndex("by_scope", (q) => q.eq("tenantId", user.tenantId).eq("branchId", undefined)).collect();
+  return [...own, ...shared];
+}
+
+/** True for an account of the user's own department or a business-wide one. */
+export function canUseAccount(user: UserLike, account: Doc<"accounts"> | null | undefined): boolean {
+  if (!account) return false;
+  return canAccessRecord(user, account) || (!!user.tenantId && account.tenantId === user.tenantId && !account.branchId);
+}
+
+/**
  * Selling Point / Cashier work stands on its own: the "waiterOrders" module with its own permission is enough, so a cashier who was given
  * Selling Point only does not need the Sales module. The Sales module still works as before (optionally with a Sales permission).
  */

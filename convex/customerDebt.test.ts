@@ -233,3 +233,23 @@ describe("Selling Point stands on its own and a paid customer debt leaves the Bi
     expect((await asCashier.query(api.waiterOrders.listForBills, { includePrinted: true })).map((o) => o._id)).toContain(orderId); // history keeps it
   });
 });
+
+describe("unpay a customer payment", () => {
+  it("takes the receipt back: the invoice owes it again, the ledger balances, the old lines are kept voided", async () => {
+    const { t, asCashier, orderId, clientId } = await creditSale();
+    await asCashier.mutation(api.customerDebt.assignOrdersToCustomer, { orderIds: [orderId], clientId });
+    const open = await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId });
+    const invoiceId = open.invoices[0]._id;
+    await asCashier.mutation(api.customerDebt.receiveRepayment, { clientId, splits: [{ method: "cash", amount: 1000 }, { method: "mobile", amount: 500 }], allocations: [{ invoiceId, amount: 1500 }] });
+    const rows = await asCashier.query(api.customerDebt.recentCustomerPayments, {});
+    const r = await asCashier.mutation(api.customerDebt.unpayCustomerPayment, { invoiceId, receiptNo: rows[0].receiptNo! });
+    expect(r).toMatchObject({ total: 1500, outstanding: 4000 });
+    expect((await asCashier.query(api.customerDebt.openInvoicesOfCustomer, { clientId })).owes).toBe(4000);
+    expect(await asCashier.query(api.customerDebt.recentCustomerPayments, {})).toHaveLength(0);
+    await t.run(async (ctx) => {
+      for (const e of await ctx.db.query("journalEntries").collect()) expect(Math.abs(e.totalDebit - e.totalCredit)).toBeLessThan(0.01);
+      expect((await ctx.db.query("customerPayments").collect()).every((p) => p.voided)).toBe(true);
+    });
+    await expect(asCashier.mutation(api.customerDebt.unpayCustomerPayment, { invoiceId, receiptNo: rows[0].receiptNo! })).rejects.toThrow(/hayapatikani/);
+  });
+});

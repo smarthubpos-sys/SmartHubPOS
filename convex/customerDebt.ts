@@ -454,6 +454,40 @@ export const editCustomerPayment = mutation({
 });
 
 /**
+ * UNPAY a customer payment (one receipt of one invoice): the money was not really received / was saved by mistake.
+ * The payment lines are voided and reversed in the ledger on their own day; the invoice owes that amount again. Nothing is erased.
+ */
+export const unpayCustomerPayment = mutation({
+  args: { invoiceId: v.id("invoices"), receiptNo: v.string() },
+  handler: async (ctx, a) => {
+    try {
+      const { user, tenantId, branchId } = await cashierScope(ctx);
+      const invoice = await ctx.db.get("invoices", a.invoiceId);
+      if (!invoice || invoice.tenantId !== tenantId || (branchId && invoice.branchId !== branchId) || invoice.status !== "posted") throw new ConvexError("Invoice haipatikani au imeshafutwa.");
+      const old = (await ctx.db.query("customerPayments").withIndex("by_invoice", (q) => q.eq("invoiceId", a.invoiceId)).collect()).filter((p) => !p.voided && p.receiptNo === a.receiptNo);
+      if (!old.length) throw new ConvexError("Malipo hayo hayapatikani (huenda yameshabadilishwa au kufutwa). Fungua orodha upya.");
+      const total = r2(old.reduce((n, p) => n + p.amount, 0));
+      const scope = { tenantId: invoice.tenantId, branchId: invoice.branchId };
+      const receivable = await getSystemAccount(ctx, scope, "1100", "Accounts receivable", "asset");
+      for (const p of old) {
+        const accountId = await methodAccount(ctx, scope, { methodId: p.paymentMethodId, method: p.paymentMethod });
+        await postSystemJournal(ctx, { scope, userId: user._id, date: p.paymentDate, reference: `PAYUNDO-${String(p._id)}`, description: `Customer payment taken back for ${invoice.invoiceNo} (${p.paymentMethod})`, sourceType: "payment_void", sourceId: String(p._id), lines: [
+          { accountId: receivable, debit: p.amount, credit: 0, description: "Customer payment taken back - receivable restored" },
+          { accountId, debit: 0, credit: p.amount, description: `Payment taken back - ${p.paymentMethod}` },
+        ] });
+        await ctx.db.patch("customerPayments", p._id, { voided: true });
+        await bumpStats(ctx, scope, { receivable: p.amount, date: p.paymentDate, collected: -p.amount });
+      }
+      const paid = r2(Math.max(0, invoice.amountPaid - total));
+      const outstanding = r2(invoice.total - paid);
+      await ctx.db.patch("invoices", a.invoiceId, { amountPaid: paid, outstanding, paymentStatus: outstanding <= 0.004 ? "paid" : paid > 0.004 ? "partial" : "unpaid" });
+      await logAudit(ctx, user, { action: "unpay_customer_payment", module: "sales", referenceId: String(a.invoiceId), referenceType: "invoice", details: `${invoice.invoiceNo}; ${old.map((p) => `${p.paymentMethod} ${p.amount}`).join(" + ")} (${old[0].paymentDate}) taken back` });
+      return { invoiceNo: invoice.invoiceNo, total, outstanding };
+    } catch (e) { throw surfaceError(e); }
+  },
+});
+
+/**
  * Change WHICH customer a debt was directed to (the cashier picked the wrong customer). Only invoices made by "Elekeza deni kwa mteja" /
  * "Gawanya deni" can be moved. The invoice and its payments follow the right customer, so his statement, debt and reports are correct.
  * The amount and the ledger do not change (the receivable account is the business's, not the customer's).
