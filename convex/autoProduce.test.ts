@@ -58,6 +58,14 @@ describe("a recipe product is produced from its ingredients when it is sold", ()
     expect((await batches())[0].producedQty).toBe(2);
   });
 
+  it("a product already below zero is produced back to zero by the next sale (the minus is cleared)", async () => {
+    const { asWaiter, makange, mbuzi, t, get } = await setup();
+    await t.run(async (ctx) => { await ctx.db.patch("products", makange, { currentQty: -3 }); });
+    await asWaiter.mutation(api.waiterOrders.submit, { clientKey: "key-mk-cccccccc", mode: "send", lines: [{ productId: makange, qty: 1 }] });
+    expect((await get(makange)).currentQty).toBe(0); // 3 missing + 1 sold = 4 plates produced
+    expect((await get(mbuzi)).currentQty).toBe(2000 - 4 * 400);
+  });
+
   it("an ingredient that runs short refuses the order, names the ingredient, and changes nothing", async () => {
     const { asWaiter, makange, nyanya, mbuzi, t, get, batches } = await setup();
     await t.run(async (ctx) => { await ctx.db.patch("products", nyanya, { currentQty: 150 }); });

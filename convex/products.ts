@@ -126,6 +126,17 @@ export const upsert = mutation({
       if (sameBarcode.length) throw new ConvexError(`Barcode ${barcode} tayari inatumika na bidhaa nyingine.`);
     }
 
+    // ONE PRODUCT, ONE NAME: the same item (e.g. "Mbuzi Makange") cannot be created twice, so it can never appear twice on the selling menu
+    // and its stock / recipe stay in one place. Checked when a product is created, renamed or switched on again (old duplicates are not blocked
+    // from being edited). A business-wide product (no department) clashes with the same name in any department.
+    const normName = (x: string) => x.trim().replace(/\s+/g, " ").toLowerCase();
+    const nameMatters = !editing || normName(editing.name) !== normName(name) || (editing.isActive === false && data.isActive !== false);
+    if (nameMatters && data.isActive !== false) {
+      const sameName = (await ctx.db.query("products").withIndex("by_scope", (q) => q.eq("tenantId", duplicateScope.tenantId)).collect())
+        .filter((p) => p._id !== id && p.isActive !== false && normName(p.name) === normName(name) && (p.branchId === duplicateScope.branchId || p.branchId === undefined || duplicateScope.branchId === undefined));
+      if (sameName.length) throw new ConvexError(`Bidhaa "${name}" tayari ipo (msimbo ${sameName[0].itemCode}). Haiwezekani kutengeneza bidhaa ya menu yenye jina lile lile mara mbili; tumia ile iliyopo.`);
+    }
+
     if (id) {
       const existingRecord = editing;
       if (!existingRecord) throw new ConvexError("Forbidden: record is outside your office/branch");

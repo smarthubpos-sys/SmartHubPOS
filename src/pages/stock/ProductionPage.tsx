@@ -17,6 +17,7 @@ export default function ProductionPage() {
   const editBatch = useMutation(api.production.editBatch);
   const deleteBatch = useMutation(api.production.deleteBatch);
   const deleteRecipe = useMutation(api.production.deleteRecipe);
+  const clearNegativeStock = useMutation(api.production.clearNegativeStock);
   const [edit, setEdit] = useState<{ id: string; qty: string; notes: string } | null>(null);
   const [ret, setRet] = useState<{ id: string; qty: string; reason: string } | null>(null);
   const [outputProductId, setOutputProductId] = useState("");
@@ -32,9 +33,19 @@ export default function ProductionPage() {
     if (!outputProductId || ingredients.some(x => !x.productId || !(Number(x.qty) > 0)) || !(Number(outputQty) > 0)) return toast.error(tr("Jaza bidhaa ya mwisho, yield na malighafi zote."));
     setBusy(true);
     try {
-      await saveRecipe({ outputProductId: outputProductId as never, outputQty: Number(outputQty), active: true, autoOnSale, priceFromIngredients, ingredients: ingredients.map(x => ({ productId: x.productId as never, qty: Number(x.qty) })) });
-      toast.success(tr("Recipe imehifadhiwa."));
+      const saved = await saveRecipe({ outputProductId: outputProductId as never, outputQty: Number(outputQty), active: true, autoOnSale, priceFromIngredients, ingredients: ingredients.map(x => ({ productId: x.productId as never, qty: Number(x.qty) })) });
+      toast.success(tr("Recipe imehifadhiwa.") + (saved.clearedMinus > 0 ? " " + tr("Minus ya {0} imefutwa kutoka kwenye malighafi.", [String(Math.round(saved.clearedMinus * 1000) / 1000)]) : ""));
+      if (saved.clearError) toast.error(tr("Minus haikufutika: {0}", [saved.clearError]));
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuhifadhi recipe.")); }
+    finally { setBusy(false); }
+  };
+  const submitClearMinus = async () => {
+    setBusy(true);
+    try {
+      const r = await clearNegativeStock({});
+      if (!r.cleared.length && !r.skipped.length) toast.message(tr("Hakuna bidhaa ya recipe yenye minus."));
+      else toast.success(tr("Minus imefutwa: {0}", [r.cleared.map((c) => c.name).join(", ") || "—"]) + (r.skipped.length ? " | " + tr("Zimeshindikana: {0}", [r.skipped.map((c) => `${c.name} (${c.reason})`).join("; ")]) : ""));
+    } catch (e) { toast.error(errorText(e, "Kufuta minus kumeshindikana.")); }
     finally { setBusy(false); }
   };
   const submitBatch = async () => {
@@ -121,6 +132,7 @@ export default function ProductionPage() {
         <label className="space-y-1 text-sm">{tr("Bidhaa")}<select className={selectClass} value={batchProductId} onChange={e => setBatchProductId(e.target.value)}><option value="">{tr("-- Chagua bidhaa --")}</option>{productOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <label className="space-y-1 text-sm">{tr("Kiasi cha kutengeneza")}<Input type="number" min="0.001" step="any" value={batchQty} onChange={e => setBatchQty(e.target.value)} /></label>
         <Button disabled={busy} onClick={() => void submitBatch()}>Kamilisha Production</Button>
+        <Button variant="outline" disabled={busy} onClick={() => void submitClearMinus()}>{tr("Futa minus (tengeneza zilizouzwa)")}</Button>
       </div>
     </section>
     <section className="rounded-xl border p-4 space-y-3"><h2 className="text-lg font-semibold">{tr("Recipes zilizopo")}</h2>{recipes.length === 0 ? <p className="text-sm text-muted-foreground">{tr("Bado hakuna recipe.")}</p> : <div className="space-y-2">{recipes.map((r) => <div key={r._id} className="rounded-lg bg-muted/40 p-3"><div className="flex flex-wrap items-start justify-between gap-2"><div className="font-medium">{r.outputName} · yield {r.outputQty}{r.autoOnSale ? <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">{tr("Inatengenezwa yenyewe mauzoni")}</span> : null}</div><div className="flex gap-1"><Button size="sm" variant="outline" disabled={busy} onClick={() => loadRecipe(r)}>{tr("Hariri")}</Button><Button size="sm" variant="destructive" disabled={busy} onClick={() => void removeRecipe(String(r._id), r.outputName)}>{tr("Futa")}</Button></div></div><div className="text-sm text-muted-foreground">{r.ingredients.map((x) => `${x.productName}: ${x.qty}`).join(" · ")}</div><div className="mt-1 text-sm tabular-nums">{tr("Gharama")}: {r.computedCost.toLocaleString()} · {tr("Bei ya kuuzia")}: {(r.priceFromIngredients ? r.computedPrice : r.outputSellingPrice).toLocaleString()} · {tr("Faida")}: {((r.priceFromIngredients ? r.computedPrice : r.outputSellingPrice) - r.computedCost).toLocaleString()}{r.priceFromIngredients ? <span className="ml-2 rounded bg-sky-100 px-2 py-0.5 text-xs text-sky-800">{tr("Bei inafuata viungo")}</span> : null}</div></div>)}</div>}</section>

@@ -55,7 +55,7 @@ export async function assertAutoProducible(ctx: QueryCtx, scope: Scope, need: Ma
     const recipe = await autoRecipeFor(ctx, scope, product._id);
     if (!recipe) continue;
     handled.add(pid);
-    const shortfall = qty - Math.max(0, product.currentQty);
+    const shortfall = qty - product.currentQty; // a MINUS balance is cleared too: the sale and the missing quantity are produced together
     if (shortfall > EPS) await plan(ctx, scope, recipe, product.name, shortfall, allowNegativeStock, taken);
   }
   return handled; // products whose stock is "produced on sale": the plain stock check does not apply to them
@@ -71,7 +71,7 @@ export async function autoProduceForSale(
     if (!output) continue;
     const recipe = await autoRecipeFor(ctx, scope, output._id);
     if (!recipe) continue;
-    const shortfall = round(qty - Math.max(0, output.currentQty));
+    const shortfall = round(qty - output.currentQty); // current stock below zero: the minus is produced away as well, so the product ends at 0 and nothing stays negative
     if (shortfall <= EPS) continue; // already in stock (e.g. cooked ahead in a batch): the sale simply takes it
     const used = await plan(ctx, scope, recipe, output.name, shortfall, allowNegativeStock, new Map());
     const at = new Date().toISOString();
@@ -80,7 +80,7 @@ export async function autoProduceForSale(
     const batchId = await ctx.db.insert("productionBatches", {
       ...scope, outputProductId: output._id, plannedQty: shortfall, producedQty: shortfall, status: "completed",
       recipeSnapshot: used.map((l) => ({ productId: l.product._id, productName: l.product.name, qty: l.qty, unitCost: l.unitCost })),
-      totalCost, unitCost, notes: `Imetengenezwa yenyewe wakati wa mauzo (${ref.label})`, createdAt: at, createdBy: user._id,
+      totalCost, unitCost, notes: `Imetengenezwa yenyewe wakati wa mauzo (${ref.label})`, createdAt: at, createdBy: user._id, autoOnSale: true, settledQty: 0,
     });
     for (const l of used) {
       const fresh = (await ctx.db.get("products", l.product._id))!; // re-read: earlier lines of this sale may have used it

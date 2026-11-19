@@ -3,6 +3,7 @@ import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { applyRecipePrice, recipeUnitPrices } from "./recipePricing";
 import { logAudit, requireActiveUser, requireManagerOrPermission, resolveWriteScope } from "./access";
+import { autoProduceForSale } from "./autoProduce";
 
 type Scope = { tenantId?: Id<"tenants">; branchId?: Id<"branches"> };
 const now = () => new Date().toISOString();
@@ -64,7 +65,18 @@ export const saveRecipe = mutation({
     if (prior) await ctx.db.patch("productionRecipes", prior._id, record);
     const saved = await ctx.db.get("productionRecipes", recipeId);
     if (saved) await applyRecipePrice(ctx, saved);
-    return { ok: true };
+    // "Directed to stock": a product that went below zero BEFORE it had a recipe is made good now - the missing quantity is taken out of the
+    // ingredients (a batch is recorded, the product returns to 0). From here on every sale picks from stock / produces from the ingredients.
+    let clearedMinus = 0; let clearError: string | undefined;
+    const fresh = await ctx.db.get("products", output._id);
+    if (args.active && args.autoOnSale === true && fresh && fresh.currentQty < -1e-8) {
+      const deficit = -fresh.currentQty;
+      try {
+        await autoProduceForSale(ctx, user, scope, new Map([[String(output._id), 0]]), false, { id: "recipe", label: "recipe imeunganishwa na stock" });
+        clearedMinus = deficit;
+      } catch (e) { clearError = e instanceof ConvexError ? String(e.data) : "Minus haikufutika."; } // the recipe stays saved; ingredients were short
+    }
+    return { ok: true, clearedMinus, clearError };
   },
 });
 
@@ -85,7 +97,24 @@ export const produceBatch = mutation({
     const recipe = recipes.find(r => r.tenantId === scope.tenantId && r.branchId === scope.branchId && r.active)
       ?? recipes.find(r => r.tenantId === scope.tenantId && r.branchId === undefined && r.active);
     if (!recipe) throw new ConvexError("Bidhaa hii haina recipe hai.");
-    const factor = args.quantity / recipe.outputQty;
+    // NEVER PRODUCE TWICE: bills sold before this batch was recorded already made their dishes from the ingredients (auto on sale).
+    // This batch first covers those quantities (no second use of ingredients, no second stock entry) and only the rest is produced now.
+    const earlier = (await ctx.db.query("productionBatches").withIndex("by_output", q => q.eq("outputProductId", output._id)).collect())
+      .filter(b => belongsToScope(b, scope) && b.autoOnSale === true && b.status === "completed" && b.tenantId === scope.tenantId)
+      .sort((x, y) => x.createdAt.localeCompare(y.createdAt));
+    let toCover = args.quantity;
+    let settledNow = 0;
+    for (const b of earlier) {
+      if (toCover <= 1e-8) break;
+      const open = Math.max(0, round6(b.producedQty - (b.settledQty ?? 0)));
+      const take = Math.min(open, toCover);
+      if (take <= 1e-8) continue;
+      await ctx.db.patch("productionBatches", b._id, { settledQty: round6((b.settledQty ?? 0) + take) });
+      toCover = round6(toCover - take); settledNow = round6(settledNow + take);
+    }
+    const realQty = toCover;
+    if (realQty <= 1e-8) return { batchId: null, producedQty: 0, settledQty: settledNow, totalCost: 0, unitCost: 0 }; // everything was already made and sold: nothing new to produce
+    const factor = realQty / recipe.outputQty;
     const consumed = [];
     let totalCost = 0;
     // Validate all ingredient balances before writing any movement.
@@ -101,9 +130,9 @@ export const produceBatch = mutation({
     const createdAt = now();
     const snapshot = consumed.map(({ product, qty, unitCost }) => ({ productId: product._id, productName: product.name, qty, unitCost }));
     const batchId = await ctx.db.insert("productionBatches", {
-      ...scope, outputProductId: output._id, plannedQty: args.quantity, producedQty: args.quantity,
-      status: "completed", recipeSnapshot: snapshot, totalCost, unitCost: totalCost / args.quantity,
-      notes: args.notes?.trim() || undefined, createdAt, createdBy: user._id,
+      ...scope, outputProductId: output._id, plannedQty: realQty, producedQty: realQty,
+      status: "completed", recipeSnapshot: snapshot, totalCost, unitCost: totalCost / realQty,
+      notes: [args.notes?.trim(), settledNow > 0 ? `${settledNow} zilishahesabiwa wakati wa mauzo (hazikutengenezwa mara ya pili)` : ""].filter(Boolean).join(" · ") || undefined, createdAt, createdBy: user._id,
     });
     for (const item of consumed) {
       const balance = item.product.currentQty - item.qty;
@@ -114,15 +143,46 @@ export const produceBatch = mutation({
         qtyIn: 0, qtyOut: item.qty, runningBalance: balance, unitCost: item.unitCost, notes: `Production ya ${output.name}`, createdBy: user._id,
       });
     }
-    const outputBalance = output.currentQty + args.quantity;
-    await ctx.db.patch("products", output._id, { currentQty: outputBalance, weightedAvgCost: totalCost / args.quantity });
+    const outputBalance = output.currentQty + realQty;
+    await ctx.db.patch("products", output._id, { currentQty: outputBalance, weightedAvgCost: totalCost / realQty });
     await ctx.db.insert("stockMovements", {
       ...scope, movementDate: createdAt.slice(0, 10), productId: output._id,
       movementType: "production_output", referenceId: String(batchId), referenceType: "productionBatch",
-      qtyIn: args.quantity, qtyOut: 0, runningBalance: outputBalance, unitCost: totalCost / args.quantity,
+      qtyIn: realQty, qtyOut: 0, runningBalance: outputBalance, unitCost: totalCost / realQty,
       notes: "Bidhaa iliyokamilika kutoka production", createdBy: user._id,
     });
-    return { batchId, producedQty: args.quantity, totalCost, unitCost: totalCost / args.quantity };
+    return { batchId, producedQty: realQty, settledQty: settledNow, totalCost, unitCost: totalCost / realQty };
+  },
+});
+
+/**
+ * "Futa minus": menu products that went below zero (sold before any batch / before production) are made from their recipe
+ * (ingredients leave stock, a batch is recorded, the product comes back to 0). Only products whose recipe is auto-on-sale are touched.
+ * A product whose ingredients are short is skipped and reported; nothing is half-done for it.
+ */
+export const clearNegativeStock = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const user = await requireManagerOrPermission(ctx, "stock.manage", "stock");
+    const scope = await resolveWriteScope(ctx, user);
+    if (!scope.tenantId) throw new ConvexError("Chagua biashara kwanza.");
+    const recipes = (await ctx.db.query("productionRecipes").withIndex("by_tenant", q => q.eq("tenantId", scope.tenantId)).collect())
+      .filter(r => r.active && r.autoOnSale === true && belongsToScope(r, scope));
+    const cleared: Array<{ name: string; qty: number }> = [];
+    const skipped: Array<{ name: string; reason: string }> = [];
+    for (const r of recipes) {
+      const product = await ctx.db.get("products", r.outputProductId);
+      if (!product || !belongsToScope(product, scope) || product.currentQty >= -1e-8) continue;
+      const deficit = -product.currentQty;
+      try {
+        await autoProduceForSale(ctx, user, scope, new Map([[String(product._id), 0]]), false, { id: "futa-minus", label: "kufuta minus" });
+        cleared.push({ name: product.name, qty: deficit });
+      } catch (e) {
+        skipped.push({ name: product.name, reason: e instanceof ConvexError ? String(e.data) : "Imeshindikana" });
+      }
+    }
+    if (cleared.length) await logAudit(ctx, user, { action: "production_clear_negative", module: "stock", details: cleared.map(c => `${c.name} +${c.qty}`).join(", ") });
+    return { cleared, skipped };
   },
 });
 

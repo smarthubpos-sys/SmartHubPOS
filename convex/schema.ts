@@ -189,6 +189,8 @@ export default defineSchema({
     unitCost: v.number(),
     notes: v.optional(v.string()),
     returnedQty: v.optional(v.number()), // output returned to stock as ingredients (see production.returnToStock); the batch itself is never edited
+    autoOnSale: v.optional(v.boolean()), // true: made automatically at the moment of a sale (ingredients already used)
+    settledQty: v.optional(v.number()), // part of an auto-on-sale batch already covered by a later manual batch (never produced twice)
     createdAt: v.string(),
     createdBy: v.id("users"),
   }).index("by_scope", ["tenantId", "branchId"])
