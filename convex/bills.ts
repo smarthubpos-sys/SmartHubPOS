@@ -217,6 +217,29 @@ export const unpayBill = mutation({
   },
 });
 
+/** Who may approve expenses: a manager, or anyone given "accounts.approve". Used by the screen to show / hide the Approve button. */
+export const rights = query({
+  args: {},
+  handler: async (ctx) => {
+    try { await requireManagerOrPermission(ctx, "accounts.approve", "accounts"); return { canApprove: true }; } catch { return { canApprove: false }; }
+  },
+});
+
+/** APPROVE an expense. Only a mark: the bill keeps its status and stays in the list; no journal, no payment, no stock. Approving twice is harmless. */
+export const approve = mutation({
+  args: { billId: v.id("bills") },
+  handler: async (ctx, a) => {
+    const user = await requireManagerOrPermission(ctx, "accounts.approve", "accounts");
+    const bill = await ctx.db.get("bills", a.billId);
+    if (!bill || !canAccessRecord(user, bill)) throw new ConvexError("Bili haipatikani.");
+    if (bill.status === "void") throw new ConvexError("Bili iliyobatilishwa haiwezi kuidhinishwa.");
+    if (bill.approvedAt) return a.billId;
+    await ctx.db.patch("bills", a.billId, { approvedAt: new Date().toISOString(), approvedBy: user._id });
+    await logAudit(ctx, user, { action: "approve_bill", module: "bills", referenceId: String(a.billId), details: `${bill.billNumber} ${bill.amount}` });
+    return a.billId;
+  },
+});
+
 export const voidBill = mutation({
   args: { billId: v.id("bills") },
   handler: async (ctx, a) => {
@@ -264,7 +287,9 @@ export const update = mutation({
     const others = await scopedRows(ctx, user, "bills");
     if (others.some((b) => b._id !== bill._id && b.billNumber === billNumber && b.status !== "void")) throw new ConvexError("Namba ya bili imeshatumika.");
     const paid = bill.paidAmount;
-    await ctx.db.patch("bills", bill._id, { vendor: a.vendor.trim(), category, expenseAccountId, billNumber, billDate: a.billDate, dueDate: a.dueDate, amount, notes: a.notes, status: paid >= amount ? "paid" : paid > 0 ? "partial" : "unpaid" });
+    // Changing the amount of an approved expense takes the approval away: what was approved is no longer what is booked.
+    const reapprove = bill.approvedAt && amount !== bill.amount ? { approvedAt: undefined, approvedBy: undefined } : {};
+    await ctx.db.patch("bills", bill._id, { vendor: a.vendor.trim(), category, expenseAccountId, billNumber, billDate: a.billDate, dueDate: a.dueDate, amount, notes: a.notes, status: paid >= amount ? "paid" : paid > 0 ? "partial" : "unpaid", ...reapprove });
     if (amount !== bill.amount || newAcc !== oldAcc) {
       const payable = await getSystemAccount(ctx, scope, "2100", "Accounts payable - bills", "liability");
       await postSystemJournal(ctx, {

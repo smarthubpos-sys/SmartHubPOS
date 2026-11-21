@@ -6,9 +6,29 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { errorText, tr } from "@/lib/i18n.ts";
 
-type IngredientLine = { productId: string; qty: string };
+type IngredientLine = { productId: string; qty: string; small?: boolean };
+type UnitInfo = { label: string; small?: { label: string; factor: number } };
+/** Unit shown next to a quantity. kg -> can type grams (400 = 0.4 kg), litre -> can type ml. Stock itself always stays in the product's own unit. */
+function unitInfo(u?: { code: string; name: string }): UnitInfo {
+  const code = (u?.code ?? "").trim(); const name = (u?.name ?? "").trim();
+  const key = `${code} ${name}`.toLowerCase();
+  if (/\b(kg|kgs|kilo|kilogram|kilogramu)\b/.test(key)) return { label: code || name || "kg", small: { label: "g", factor: 1000 } };
+  if (/\b(l|lt|ltr|litre|liter|lita)\b/.test(key)) return { label: code || name || "L", small: { label: "ml", factor: 1000 } };
+  return { label: code || name };
+}
+/** What the person typed -> quantity in the product's own unit (the number that goes to stock). */
+const toBase = (raw: string, info: UnitInfo, small?: boolean) => (small && info.small ? Number(raw) / info.small.factor : Number(raw));
+function QtyInput({ value, onChange, info, small, onSmall, label }: { value: string; onChange: (v: string) => void; info: UnitInfo; small?: boolean; onSmall: (v: boolean) => void; label: string }) {
+  return <div className="flex items-center gap-1">
+    <Input type="number" inputMode="decimal" min="0" step="any" aria-label={label} value={value} onChange={e => onChange(e.target.value)} />
+    {info.small
+      ? <select aria-label={tr("Kipimo")} className="h-10 rounded-md border bg-background px-1 text-sm" value={small ? "small" : "base"} onChange={e => onSmall(e.target.value === "small")}><option value="base">{info.label}</option><option value="small">{info.small.label}</option></select>
+      : info.label ? <span className="min-w-8 text-xs text-muted-foreground">{info.label}</span> : null}
+  </div>;
+}
 export default function ProductionPage() {
   const products = useQuery(api.products.listActive, {});
+  const units = useQuery(api.products.listUnits, {});
   const recipes = useQuery(api.production.listRecipes, {});
   const batches = useQuery(api.production.recentBatches, {});
   const saveRecipe = useMutation(api.production.saveRecipe);
@@ -22,18 +42,24 @@ export default function ProductionPage() {
   const [ret, setRet] = useState<{ id: string; qty: string; reason: string } | null>(null);
   const [outputProductId, setOutputProductId] = useState("");
   const [outputQty, setOutputQty] = useState("1");
+  const [outputSmall, setOutputSmall] = useState(false);
   const [autoOnSale, setAutoOnSale] = useState(true);
   const [priceFromIngredients, setPriceFromIngredients] = useState(false); // default: the menu price is typed in by hand on the menu item; cost comes from the ingredients
   const [ingredients, setIngredients] = useState<IngredientLine[]>([{ productId: "", qty: "1" }]);
   const [batchProductId, setBatchProductId] = useState("");
   const [batchQty, setBatchQty] = useState("1");
+  const [batchSmall, setBatchSmall] = useState(false);
   const [busy, setBusy] = useState(false);
-  const productOptions = useMemo(() => (products ?? []).map((p) => ({ id: String(p._id), name: p.name, qty: p.currentQty })), [products]);
+  const productOptions = useMemo(() => {
+    const unitById = new Map((units ?? []).map((u) => [String(u._id), u]));
+    return (products ?? []).map((p) => ({ id: String(p._id), name: p.name, qty: p.currentQty, unit: unitInfo(p.unitId ? unitById.get(String(p.unitId)) : undefined) }));
+  }, [products, units]);
+  const infoOf = (id: string): UnitInfo => productOptions.find((p) => p.id === id)?.unit ?? { label: "" };
   const submitRecipe = async () => {
     if (!outputProductId || ingredients.some(x => !x.productId || !(Number(x.qty) > 0)) || !(Number(outputQty) > 0)) return toast.error(tr("Jaza bidhaa ya mwisho, yield na malighafi zote."));
     setBusy(true);
     try {
-      const saved = await saveRecipe({ outputProductId: outputProductId as never, outputQty: Number(outputQty), active: true, autoOnSale, priceFromIngredients, ingredients: ingredients.map(x => ({ productId: x.productId as never, qty: Number(x.qty) })) });
+      const saved = await saveRecipe({ outputProductId: outputProductId as never, outputQty: toBase(outputQty, infoOf(outputProductId), outputSmall), active: true, autoOnSale, priceFromIngredients, ingredients: ingredients.map(x => ({ productId: x.productId as never, qty: toBase(x.qty, infoOf(x.productId), x.small) })) });
       toast.success(tr("Recipe imehifadhiwa.") + (saved.clearedMinus > 0 ? " " + tr("Minus ya {0} imefutwa kutoka kwenye malighafi.", [String(Math.round(saved.clearedMinus * 1000) / 1000)]) : ""));
       if (saved.clearError) toast.error(tr("Minus haikufutika: {0}", [saved.clearError]));
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuhifadhi recipe.")); }
@@ -52,7 +78,7 @@ export default function ProductionPage() {
     if (!batchProductId || !(Number(batchQty) > 0)) return toast.error(tr("Chagua bidhaa na kiasi cha production."));
     setBusy(true);
     try {
-      const result = await produceBatch({ outputProductId: batchProductId as never, quantity: Number(batchQty) });
+      const result = await produceBatch({ outputProductId: batchProductId as never, quantity: toBase(batchQty, infoOf(batchProductId), batchSmall) });
       toast.success(tr("Production imekamilika. Gharama jumla: {0}", [result.totalCost.toLocaleString()]));
     } catch (e) { toast.error(errorText(e, "Production imeshindikana.")); }
     finally { setBusy(false); }
@@ -99,28 +125,28 @@ export default function ProductionPage() {
   };
   const loadRecipe = (r: NonNullable<typeof recipes>[number]) => {
     setOutputProductId(String(r.outputProductId));
-    setOutputQty(String(r.outputQty));
+    setOutputQty(String(r.outputQty)); setOutputSmall(false);
     setAutoOnSale(r.autoOnSale === true);
     setPriceFromIngredients(r.priceFromIngredients === true);
-    setIngredients(r.ingredients.map((x) => ({ productId: String(x.productId), qty: String(x.qty) })));
+    setIngredients(r.ingredients.map((x) => ({ productId: String(x.productId), qty: String(x.qty), small: false })));
     window.scrollTo({ top: 0, behavior: "smooth" });
     toast.message(tr("Recipe imepakiwa juu. Badilisha kisha bonyeza Hifadhi Recipe."));
   };
   const selectClass = "h-10 w-full rounded-md border bg-background px-3 text-sm";
-  if (products === undefined || recipes === undefined || batches === undefined) return <div className="p-6">{tr("Inapakia Production…")}</div>;
+  if (products === undefined || units === undefined || recipes === undefined || batches === undefined) return <div className="p-6">{tr("Inapakia Production…")}</div>;
   return <main className="mx-auto max-w-6xl space-y-6 p-4 md:p-6">
     <header><h1 className="text-2xl font-bold">{tr("Back Office · Production")}</h1><p className="mt-1 text-sm text-muted-foreground">{tr("Tengeneza recipes na uzalishe batch kwa kutumia stock ya malighafi.")}</p></header>
     <section className="rounded-xl border p-4 space-y-4">
       <div><h2 className="text-lg font-semibold">{tr("1. Recipe / Viambato")}</h2><p className="text-sm text-muted-foreground">{tr("Chagua bidhaa ya mwisho, kisha weka malighafi na kiasi kinachotumika kwa yield moja.")}</p></div>
       <div className="grid gap-3 md:grid-cols-2">
-        <label className="space-y-1 text-sm">{tr("Bidhaa inayotengenezwa")}<select className={selectClass} value={outputProductId} onChange={e => setOutputProductId(e.target.value)}><option value="">{tr("-- Chagua bidhaa --")}</option>{productOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-        <label className="space-y-1 text-sm">{tr("Yield ya recipe (idadi inayotengenezwa)")}<Input type="number" min="0.001" step="any" value={outputQty} onChange={e => setOutputQty(e.target.value)} /></label>
+        <label className="space-y-1 text-sm">{tr("Bidhaa inayotengenezwa")}<select className={selectClass} value={outputProductId} onChange={e => { setOutputProductId(e.target.value); setOutputSmall(false); }}><option value="">{tr("-- Chagua bidhaa --")}</option>{productOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label className="space-y-1 text-sm">{tr("Yield ya recipe (idadi inayotengenezwa)")}<QtyInput label={tr("Yield ya recipe (idadi inayotengenezwa)")} value={outputQty} onChange={setOutputQty} info={infoOf(outputProductId)} small={outputSmall} onSmall={setOutputSmall} /></label>
       </div>
       <label className="flex cursor-pointer items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 h-4 w-4 accent-primary" checked={autoOnSale} onChange={e => setAutoOnSale(e.target.checked)} /><span><b>{tr("Tengeneza yenyewe mauzo yanapofanyika")}</b><br /><span className="text-muted-foreground">{tr("Mhudumu akiuza bidhaa hii, mfumo unapunguza viungo kwenye stock yenyewe (bila kutengeneza batch kwanza).")}</span></span></label>
       <label className="flex cursor-pointer items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 h-4 w-4 accent-primary" checked={priceFromIngredients} onChange={e => setPriceFromIngredients(e.target.checked)} /><span><b>{tr("Bei ya kuuzia ichukuliwe kutoka kwa viungo (hiari)")}</b><br /><span className="text-muted-foreground">{tr("Kawaida: bei ya menu unaiweka mwenyewe kwenye bidhaa ya menu, na gharama inatoka kwenye bei za manunuzi za viungo vya stock. Washa hapa tu kama unataka bei ya menu ijijumlishe kutoka bei za kuuzia za viungo.")}</span></span></label>
-      <div className="space-y-2">{ingredients.map((line, i) => <div key={i} className="grid grid-cols-[1fr_120px_auto] gap-2">
-        <select className={selectClass} value={line.productId} onChange={e => setIngredients(prev => prev.map((x,j) => j === i ? {...x, productId:e.target.value} : x))}><option value="">{tr("-- Malighafi --")}</option>{productOptions.filter(p => p.id !== outputProductId).map(p => <option key={p.id} value={p.id}>{p.name} (stock {p.qty})</option>)}</select>
-        <Input type="number" min="0.001" step="any" aria-label={tr("Kiasi cha malighafi")} value={line.qty} onChange={e => setIngredients(prev => prev.map((x,j) => j === i ? {...x, qty:e.target.value} : x))} />
+      <div className="space-y-2">{ingredients.map((line, i) => <div key={i} className="grid grid-cols-[1fr_150px_auto] gap-2">
+        <select className={selectClass} value={line.productId} onChange={e => setIngredients(prev => prev.map((x,j) => j === i ? {...x, productId:e.target.value, small:false} : x))}><option value="">{tr("-- Malighafi --")}</option>{productOptions.filter(p => p.id !== outputProductId).map(p => <option key={p.id} value={p.id}>{p.name} (stock {p.qty})</option>)}</select>
+        <QtyInput label={tr("Kiasi cha malighafi")} value={line.qty} info={infoOf(line.productId)} small={line.small} onChange={v => setIngredients(prev => prev.map((x,j) => j === i ? {...x, qty:v} : x))} onSmall={v => setIngredients(prev => prev.map((x,j) => j === i ? {...x, small:v} : x))} />
         <Button variant="outline" disabled={ingredients.length === 1} onClick={() => setIngredients(prev => prev.filter((_,j) => j !== i))}>{tr("Ondoa")}</Button>
       </div>)}</div>
       <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setIngredients(prev => [...prev,{productId:"",qty:"1"}])}>{tr("+ Ongeza malighafi")}</Button><Button disabled={busy} onClick={() => void submitRecipe()}>Hifadhi Recipe</Button></div>
@@ -128,9 +154,9 @@ export default function ProductionPage() {
     </section>
     <section className="rounded-xl border p-4 space-y-4">
       <div><h2 className="text-lg font-semibold">{tr("2. Tengeneza Batch")}</h2><p className="text-sm text-muted-foreground">{tr("Mfumo hukagua stock yote kwanza, kisha hupunguza malighafi na kuongeza bidhaa iliyokamilika.")}</p></div>
-      <div className="grid gap-3 md:grid-cols-[1fr_180px_auto] items-end">
-        <label className="space-y-1 text-sm">{tr("Bidhaa")}<select className={selectClass} value={batchProductId} onChange={e => setBatchProductId(e.target.value)}><option value="">{tr("-- Chagua bidhaa --")}</option>{productOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-        <label className="space-y-1 text-sm">{tr("Kiasi cha kutengeneza")}<Input type="number" min="0.001" step="any" value={batchQty} onChange={e => setBatchQty(e.target.value)} /></label>
+      <div className="grid gap-3 md:grid-cols-[1fr_210px_auto] items-end">
+        <label className="space-y-1 text-sm">{tr("Bidhaa")}<select className={selectClass} value={batchProductId} onChange={e => { setBatchProductId(e.target.value); setBatchSmall(false); }}><option value="">{tr("-- Chagua bidhaa --")}</option>{productOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label className="space-y-1 text-sm">{tr("Kiasi cha kutengeneza")}<QtyInput label={tr("Kiasi cha kutengeneza")} value={batchQty} onChange={setBatchQty} info={infoOf(batchProductId)} small={batchSmall} onSmall={setBatchSmall} /></label>
         <Button disabled={busy} onClick={() => void submitBatch()}>Kamilisha Production</Button>
         <Button variant="outline" disabled={busy} onClick={() => void submitClearMinus()}>{tr("Futa minus (tengeneza zilizouzwa)")}</Button>
       </div>

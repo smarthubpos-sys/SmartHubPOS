@@ -10,6 +10,8 @@ import { assertDate, assertPeriodOpen } from "./ledger";
 
 /** East Africa Time business day of a timestamp (a bill made at 01:00 EAT belongs to that EAT day, like in the reports). */
 const eatDay = (iso: string) => new Date(Date.parse(iso) + 3 * 3600000).toISOString().slice(0, 10);
+/** A printed bill the waiter re-sent that the cashier has not printed again yet. */
+const resendPending = (o: { billResentAt?: string; billReprintedAt?: string }) => !!o.billResentAt && (!o.billReprintedAt || o.billReprintedAt < o.billResentAt);
 
 
 // Normalised like everywhere else (case / spaces / hyphens): a role label such as "Waitress " must still be limited to its OWN orders.
@@ -705,7 +707,7 @@ export const listForBills = query({
     const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId)).collect();
     const needle = (args.table ?? "").trim().toLowerCase();
     const shown = rows
-      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt) && (!isWaiter(user.role) || !r.billSentAt) && billVisible(user, r))
+      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt || resendPending(r)) && (!isWaiter(user.role) || !r.billSentAt) && billVisible(user, r))
       .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
     // A bill the cashier directed to a customer leaves the active list once that customer has paid its invoice in full (the history view still has it).
@@ -768,8 +770,62 @@ export const markBillPrinted = mutation({
             billPrintedAt: now,
             updatedAt: now,
           });
+        } else if (resendPending(order)) {
+          // the cashier printed a bill the waiter re-sent: the first print time stays, the reprint is recorded
+          await ctx.db.patch("waiterOrders", order._id, { billReprintedAt: now, updatedAt: now });
         }
       }
+      return true;
+    } catch (e) {
+      throw surfaceError(e);
+    }
+  },
+});
+
+/**
+ * The waiter's card "Bili zilizochapishwa leo": the bills of TODAY (East Africa Time) that were already printed.
+ * They are not in the open list; the waiter opens this card to RE-SEND one to the cashier. Own bills only (a waiter never sees another waiter's).
+ */
+export const printedBillsToday = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
+    const scope = await viewScope(ctx, user).catch((e) => { throw surfaceError(e); });
+    if (!scope.tenantId) return [];
+    const today = eatDay(new Date().toISOString());
+    const rows = await ctx.db.query("waiterOrders").withIndex("by_tenant_created", q => q.eq("tenantId", scope.tenantId)).order("desc").take(1500);
+    return rows
+      .filter(r => orderInScope(user, scope, r) && r.status !== "cancelled" && r.status !== "placed" && !!r.billPrintedAt && eatDay(r.billPrintedAt) === today && (isWaiter(user.role) ? r.waiterId === user._id : billVisible(user, r)))
+      .sort((a, b) => (b.billPrintedAt ?? "").localeCompare(a.billPrintedAt ?? ""))
+      .slice(0, 200)
+      .map(r => ({ _id: r._id, tableNumber: r.tableNumber, customerName: r.customerName, waiterName: r.waiterName, total: r.total, createdAt: r.createdAt, billPrintedAt: r.billPrintedAt as string, billResentAt: r.billResentAt, resendPending: resendPending(r), lines: r.lines.map(l => ({ productName: l.productName, qty: l.qty })) }));
+  },
+});
+
+/**
+ * RESEND a bill that was already printed (today) to the cashier, who then sees it on his Bills screen and can print it again.
+ * Waiter only, own bills only. Nothing about stock, payments or sales changes; it is written to the audit log. Re-sending twice is harmless.
+ */
+export const resendBill = mutation({
+  args: { orderIds: v.array(v.id("waiterOrders")) },
+  handler: async (ctx, args) => {
+    try {
+      const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
+      if (!isWaiter(user.role)) throw new ConvexError("Ni mhudumu pekee anayetuma tena bili kwa cashier.");
+      const scope = await viewScope(ctx, user);
+      if (args.orderIds.length === 0) throw new ConvexError("Chagua angalau bili moja.");
+      const now = new Date().toISOString();
+      const today = eatDay(now);
+      for (const id of [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[]) {
+        const order = await ctx.db.get("waiterOrders", id);
+        if (!order || !orderInScope(user, scope, order) || order.status === "cancelled" || order.status === "placed") throw new ConvexError("Oda haipo kwenye biashara au tawi lako.");
+        if (order.waiterId !== user._id) throw new ConvexError("Hii si bili yako.");
+        if (!order.billPrintedAt) throw new ConvexError("Bili hii bado haijachapishwa. Itume kwa cashier kwa njia ya kawaida.");
+        if (eatDay(order.billPrintedAt) !== today) throw new ConvexError("Unaweza kutuma tena bili za leo tu.");
+        if (resendPending(order)) continue; // already waiting for the cashier
+        await ctx.db.patch("waiterOrders", order._id, { billResentAt: now, billResentBy: user._id, billSentAt: order.billSentAt ?? now, updatedAt: now });
+      }
+      await logAudit(ctx, user, { action: "resend_bill_to_cashier", module: "sales", details: `bili ${args.orderIds.length}` });
       return true;
     } catch (e) {
       throw surfaceError(e);

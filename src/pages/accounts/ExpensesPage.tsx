@@ -23,6 +23,8 @@ export default function ExpensesPage() {
   const create = useMutation(api.bills.create);
   const pay = useMutation(api.bills.pay);
   const unpay = useMutation(api.bills.unpayBill);
+  const approve = useMutation(api.bills.approve);
+  const rights = useQuery(api.bills.rights); // who may approve: a manager, or a person given "accounts.approve"
   const voidBill = useMutation(api.bills.voidBill);
   const update = useMutation(api.bills.update);
   const addExpenseAccount = useMutation(api.bills.addExpenseAccount);
@@ -45,7 +47,7 @@ export default function ExpensesPage() {
   const payments = useQuery(api.bills.payments, payFor ? { billId: payFor } : "skip");
 
   const list = useMemo(() => bills ?? [], [bills]);
-  const status = (b: (typeof list)[number]) => b.status === "void" ? "void" : b.status === "paid" ? "paid" : b.dueDate < today ? "overdue" : b.status;
+  const status = (b: (typeof list)[number]) => b.status === "void" ? "void" : b.status === "paid" ? "paid" : b.approvedAt ? "approved" : b.dueDate < today ? "overdue" : b.status;
   const open = list.filter((b) => ["unpaid", "partial"].includes(b.status));
   const owed = open.reduce((s, b) => s + b.amount - b.paidAmount, 0);
   const overdue = open.filter((b) => b.dueDate < today);
@@ -54,7 +56,7 @@ export default function ExpensesPage() {
   const shown = useMemo(() => list.filter((b) => filter === "all" ? true : filter === "open" ? ["unpaid", "partial"].includes(b.status) : filter === "overdue" ? ["unpaid", "partial"].includes(b.status) && b.dueDate < today : b.status === "paid"), [list, filter, today]);
   const current = list.find((b) => b._id === payFor);
 
-  const pill = (s: string) => s === "paid" ? <Pill tone="green">{tr("Imelipwa")}</Pill> : s === "overdue" ? <Pill tone="rose">{tr("Imechelewa")}</Pill> : s === "partial" ? <Pill tone="amber">{tr("Imelipwa kiasi")}</Pill> : s === "void" ? <Pill>{tr("Imebatilishwa")}</Pill> : <Pill tone="blue">{tr("Haijalipwa")}</Pill>;
+  const pill = (s: string) => s === "paid" ? <Pill tone="green">{tr("Imelipwa")}</Pill> : s === "overdue" ? <Pill tone="rose">{tr("Imechelewa")}</Pill> : s === "partial" ? <Pill tone="amber">{tr("Imelipwa kiasi")}</Pill> : s === "void" ? <Pill>{tr("Imebatilishwa")}</Pill> : s === "approved" ? <Pill tone="green">{tr("Imeidhinishwa")}</Pill> : <Pill tone="blue">{tr("Haijalipwa")}</Pill>;
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -143,7 +145,7 @@ export default function ExpensesPage() {
                 <td>{pill(status(b))}</td>
                 <td className="whitespace-nowrap text-right">
                   {b.status !== "void" && <Button size="sm" variant="outline" disabled={busy} onClick={() => { setEditId(b._id); setF({ vendor: b.vendor, category: b.category, accountId: b.expenseAccountId ? String(b.expenseAccountId) : "", billNumber: b.billNumber, billDate: b.billDate, dueDate: b.dueDate, amount: String(b.amount), notes: b.notes ?? "" }); setShowForm(true); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{tr("Hariri")}</Button>}
-                  {["unpaid", "partial"].includes(b.status) && <Button size="sm" variant="outline" onClick={() => { setPayFor(b._id); setP({ ...p, amount: String(b.amount - b.paidAmount) }); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{tr("Lipa")}</Button>}
+                  {["unpaid", "partial"].includes(b.status) && !b.approvedAt && rights?.canApprove && <Button size="sm" disabled={busy} onClick={() => { if (window.confirm(tr("Idhinisha matumizi haya? Hali yake itakuwa Imeidhinishwa na itabaki kwenye orodha."))) void run(() => approve({ billId: b._id }), tr("Matumizi yameidhinishwa.")); }}>{tr("Idhinisha")}</Button>}
                   {b.status === "unpaid" && <Button size="sm" variant="ghost" className="text-destructive" disabled={busy} onClick={() => { if (window.confirm(tr("Batilisha bili hii?"))) void run(() => voidBill({ billId: b._id }), tr("Bili imebatilishwa.")); }}>{tr("Batilisha")}</Button>}
                 </td>
               </tr>

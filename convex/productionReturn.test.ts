@@ -18,7 +18,9 @@ async function setup() {
     return { tenantId, mgr, goat, tomato, makange, mgrUser };
   });
   const as = t.withIdentity({ subject: ids.mgr, tokenIdentifier: "x|mgr" });
-  const batch = await as.mutation(api.production.produceBatch, { outputProductId: ids.makange, quantity: 10 });
+  const produced = await as.mutation(api.production.produceBatch, { outputProductId: ids.makange, quantity: 10 });
+  if (produced.batchId === null) throw new Error("Setup: batch haikutengenezwa");
+  const batch = { ...produced, batchId: produced.batchId }; // batchId is now a plain Id, not Id | null
   const qty = (id: typeof ids.goat) => t.run(async (ctx) => (await ctx.db.get("products", id))?.currentQty);
   return { t, ids, as, batch, qty };
 }

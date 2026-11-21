@@ -28,6 +28,9 @@ export default function BillsPanel() {
   const markBillPrinted = useMutation(api.waiterOrders.markBillPrinted);
   const sendBillToCashier = useMutation(api.waiterOrders.sendBillToCashier);
   const [sending, setSending] = useState(false);
+  const resendBill = useMutation(api.waiterOrders.resendBill);
+  const [showPrinted, setShowPrinted] = useState(false); // the "Bili zilizochapishwa leo" card is closed until the waiter opens it
+  const [resending, setResending] = useState<string | null>(null);
   const user = useQuery(api.users.getCurrentUser);
   const settings = useQuery(api.maintenance.getSettings, {});
   const branding = brandingFromSettings(settings as Parameters<typeof brandingFromSettings>[0]);
@@ -36,6 +39,7 @@ export default function BillsPanel() {
   const groups = new Map<string, NonNullable<typeof orders>>();
   for (const o of orders ?? []) { const k = o.tableNumber?.trim() || ""; groups.set(k, [...(groups.get(k) ?? []), o]); }
   const waiter = isWaiterRole(user?.role);
+  const printedToday = useQuery(api.waiterOrders.printedBillsToday, waiter ? {} : "skip"); // today's already printed bills of this waiter (not in the open list)
   // Changing the ticked orders invalidates a generated bill: it must be generated again from the new selection.
   const setPicked = (next: string[] | ((p: string[]) => string[])) => { setGenerated(false); setPickedRaw(next); };
   const toggle = (id: string) => setPicked((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
@@ -70,9 +74,41 @@ export default function BillsPanel() {
     } finally { setSending(false); }
   }
 
+  async function resend(id: string) {
+    if (resending) return;
+    setResending(id);
+    try {
+      await resendBill({ orderIds: [id as Id<"waiterOrders">] });
+      toast.success(tr("Bili imetumwa tena kwa cashier. Ataiona na kuichapisha."));
+    } catch (error) {
+      toast.error(errorText(error, tr("Imeshindikana kutuma tena bili.")));
+    } finally { setResending(null); }
+  }
+
   return (
     <section className="space-y-3 rounded-2xl border p-4">
       <h2 className="text-lg font-semibold">{tr("Bills")}</h2>
+      {waiter && (
+        <div className="rounded-xl border bg-muted/30 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div><p className="font-semibold">{tr("Bili zilizochapishwa leo")} ({printedToday?.length ?? 0})</p><p className="text-xs text-muted-foreground">{tr("Ingia kutuma tena bili iliyochapishwa kwa cashier ili aichapishe tena.")}</p></div>
+            <Button size="sm" variant="outline" onClick={() => setShowPrinted((v) => !v)}>{showPrinted ? tr("Funga") : tr("Ingia")}</Button>
+          </div>
+          {showPrinted && (
+            <div className="mt-3 space-y-1">
+              {printedToday === undefined ? <p className="text-sm text-muted-foreground">{tr("Inapakia…")}</p>
+                : printedToday.length === 0 ? <p className="text-sm text-muted-foreground">{tr("Hakuna bili iliyochapishwa leo.")}</p>
+                : printedToday.map((b) => (
+                  <div key={b._id} className="flex min-h-11 items-center gap-3 rounded-lg border bg-background px-2 py-1">
+                    <span className="flex-1 text-sm">{b.tableNumber ? `${tr("Meza")} ${b.tableNumber} · ` : ""}{b.lines.map((l) => `${l.productName}×${l.qty}`).join(", ")}<span className="block text-xs text-muted-foreground">{tr("Imechapishwa")} {orderStamp(b.billPrintedAt)}{b.resendPending && <> · {tr("Imetumwa tena kwa cashier")}</>}</span></span>
+                    <strong className="tabular-nums">{money(b.total)}</strong>
+                    <Button size="sm" variant="outline" disabled={b.resendPending || resending !== null} onClick={() => void resend(String(b._id))}>{resending === String(b._id) ? tr("Inatuma...") : b.resendPending ? tr("Imetumwa") : tr("Tuma tena")}</Button>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      )}
       <Input placeholder={tr("Tafuta kwa namba ya meza au jina")} value={search} onChange={(e) => setSearch(e.target.value)} />
       {[...groups.entries()].map(([table, rows]) => (
         <div key={table || "none"} className="space-y-1 rounded-xl border p-2">
@@ -81,7 +117,7 @@ export default function BillsPanel() {
           {rows.map((o) => (
             <label key={o._id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 hover:bg-muted">
               <input type="checkbox" className="h-5 w-5" checked={picked.includes(String(o._id))} onChange={() => toggle(String(o._id))} />
-              <span className="flex-1 text-sm">{orderStamp(o.createdAt)} · {o.lines.map((l) => `${l.productName}×${l.qty}`).join(", ")}<span className="block text-xs text-muted-foreground">{tr(STATUS[o.status] ?? o.status)}{!mine(o) && <> · {tr("Mhudumu")}: {o.waiterName} · {tr("Imetumwa kwa cashier")}</>}{mine(o) && waiter && o.billSentAt && <> · {tr("Imetumwa kwa cashier")}</>}</span></span>
+              <span className="flex-1 text-sm">{orderStamp(o.createdAt)} · {o.lines.map((l) => `${l.productName}×${l.qty}`).join(", ")}<span className="block text-xs text-muted-foreground">{tr(STATUS[o.status] ?? o.status)}{o.billResentAt && (!o.billReprintedAt || o.billReprintedAt < o.billResentAt) && <> · {tr("Imetumwa tena kwa cashier")}</>}{!mine(o) && <> · {tr("Mhudumu")}: {o.waiterName} · {tr("Imetumwa kwa cashier")}</>}{mine(o) && waiter && o.billSentAt && <> · {tr("Imetumwa kwa cashier")}</>}</span></span>
               <strong className="tabular-nums">{money(o.total)}</strong>
             </label>
           ))}

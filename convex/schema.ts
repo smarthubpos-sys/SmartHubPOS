@@ -918,6 +918,8 @@ export default defineSchema({
     amount: v.number(),
     paidAmount: v.number(),
     status: v.string(), // unpaid | partial | paid | void
+    approvedAt: v.optional(v.string()), // a manager (or someone with "accounts.approve") approved this expense; it stays in the list, money is not touched
+    approvedBy: v.optional(v.id("users")),
     notes: v.optional(v.string()),
     createdBy: v.id("users"),
   }) .index("by_scope", ["tenantId", "branchId"])
@@ -1031,6 +1033,9 @@ export default defineSchema({
     billPrintedAt: v.optional(v.string()), // set only after a Bills-screen print succeeded; the order itself is never deleted
     billSentAt: v.optional(v.string()), // the waiter generated his bill and SENT it to the cashier: only then does the cashier see it on the Bills screen
     billSentBy: v.optional(v.id("users")),
+    billResentAt: v.optional(v.string()), // the waiter RE-sent an already printed bill so the cashier can print it again (the first billPrintedAt is kept)
+    billResentBy: v.optional(v.id("users")),
+    billReprintedAt: v.optional(v.string()), // the cashier printed the re-sent bill; a resend is waiting while billResentAt is later than this
     cancelledAt: v.optional(v.string()),
     cancelledBy: v.optional(v.id("users")),
     lines: v.array(v.object({
