@@ -18,6 +18,9 @@ export default defineConfig({
   test: {
     passWithNoTests: true,
     testTimeout: 30000,
+    // Fewer parallel workers: on a slow disk (OneDrive) too many starting at once time out with "Timeout waiting for worker to respond".
+    maxWorkers: 4,
+    hookTimeout: 60000,
     // Restore Vitest mocks before each test to reduce state leakage.
     restoreMocks: true,
     projects: [

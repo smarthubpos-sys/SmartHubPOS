@@ -91,11 +91,26 @@ export const chunk = query({
     }
     // The expenses of the period = the bills that are valid now (not cancelled), on their own bill date, at their current amount.
     const bills = await ctx.db.query("bills").withIndex("by_tenant_billdate", (q) => q.eq("tenantId", tenantId).gte("billDate", a.from).lte("billDate", a.to)).collect();
+    // Each bill shows under its OWN name in the report (luku, maji, ...), never lumped into "Other bills expense":
+    // the Chart of Accounts account it was booked to wins; the built-in types keep their own name; a type the business wrote itself uses that name.
+    const billAccounts = new Map<string, Doc<"accounts"> | null>();
+    const billReportLine = async (b: Doc<"bills">): Promise<{ code: string; name: string }> => {
+      if (b.expenseAccountId) {
+        const k = String(b.expenseAccountId);
+        if (!billAccounts.has(k)) billAccounts.set(k, await ctx.db.get("accounts", b.expenseAccountId));
+        const a = billAccounts.get(k);
+        if (a) return { code: a.code, name: a.name };
+      }
+      const cat = (b.category ?? "").trim();
+      const builtIn = EXPENSE[cat];
+      if (builtIn) return cat === "electricity" || cat === "water" || cat === "internet" ? { code: `${builtIn.code}-${cat}`, name: cat.charAt(0).toUpperCase() + cat.slice(1) } : builtIn;
+      return cat ? { code: `${EXPENSE.other.code}-${cat.toLowerCase()}`, name: cat } : EXPENSE.other;
+    };
     for (const b of bills) {
       if (b.status === "void") continue;
       const bk = bkey(b.branchId);
       if (sc.only && bk !== sc.only) continue;
-      const exp = EXPENSE[b.category] ?? EXPENSE.other;
+      const exp = await billReportLine(b);
       let acc = byBranch.get(bk); if (!acc) { acc = new Map(); byBranch.set(bk, acc); }
       entryRows({ entryDate: b.billDate, sourceType: "bill_current", lines: [{ code: exp.code, name: exp.name, type: "expense", debit: b.amount, credit: 0 }] }, acc);
       const list = itemsBy.get(bk) ?? []; list.push({ bk, d: b.billDate, t: `Bill ${b.billNumber}: ${b.vendor}`.slice(0, 160), c: exp.name, a: round2(b.amount) }); itemsBy.set(bk, list);
