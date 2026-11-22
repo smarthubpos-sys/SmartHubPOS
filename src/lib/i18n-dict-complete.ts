@@ -641,4 +641,7 @@ export const COMPLETE_DICT: Record<string, { sw: string; en: string }> = {
   "Idhinisha matumizi haya? Hali yake itakuwa Imeidhinishwa na itabaki kwenye orodha.": { sw: "Idhinisha matumizi haya? Hali yake itakuwa Imeidhinishwa na itabaki kwenye orodha.", en: "Approve this expense? Its status becomes Approved and it stays in the list." },
   "Matumizi yameidhinishwa.": { sw: "Matumizi yameidhinishwa.", en: "Expense approved." },
   "Imeidhinishwa": { sw: "Imeidhinishwa", en: "Approved" },
+  "Siku haijafungwa": { sw: "Siku haijafungwa", en: "Day not closed" },
+  "Imehifadhiwa": { sw: "Imehifadhiwa", en: "Saved" },
+  "Ripoti imeundwa na kuwekwa kwenye historia.": { sw: "Ripoti imeundwa na kuwekwa kwenye historia.", en: "Report created and added to the history." },
 };

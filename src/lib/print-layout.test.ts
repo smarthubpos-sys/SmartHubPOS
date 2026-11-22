@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { paperFromSetting, resolvePaper } from "./print-policy.ts";
 import { receiptCss, receiptScale } from "./receipt-layout.ts";
+import { printableWidth } from "./print-area.ts";
 
 describe("one print layout for every business", () => {
   it("a business with no saved setting prints on 80mm with the normal text size", () => {
@@ -12,5 +13,10 @@ describe("one print layout for every business", () => {
     expect(paperFromSetting("a4")).toBe("A4");
     expect(receiptCss("A4")).toContain("190mm");
     expect(receiptCss(paperFromSetting("a4"))).toContain("size:190mm");
+  });
+  it("an invoice on a roll is narrower than the roll, so the last letters of each line are not cut off", () => {
+    expect(printableWidth("80mm")).toBe("72mm");
+    expect(printableWidth("58mm")).toBe("52mm");
+    expect(printableWidth("A4")).toBe("100%");
   });
 });

@@ -10,6 +10,12 @@ export const readPaper = (): Paper => {
   }
 };
 
+/**
+ * Width of the print area inside the sheet. A receipt printer cannot print to the very edge of the paper, and the browser adds its own @page margin,
+ * so a column as wide as the whole roll loses the last letters of every line on the right. The column is a little narrower than the roll and centred.
+ */
+export const printableWidth = (paper: Paper) => (paper === "58mm" ? "52mm" : paper === "80mm" ? "72mm" : "100%");
+
 export const savePaper = (paper: Paper) => {
   try {
     localStorage.setItem("smarthub-print-paper", paper);
@@ -55,8 +61,8 @@ export function printElement(
     paper === "A4"
       ? `@page{size:A4 ${opts.landscape ? "landscape" : "portrait"};margin:10mm}
          .print-area{width:100%!important;max-width:none!important}`
-      : `@page{size:${paper} auto;margin:2mm}
-         .print-area{width:${paper}!important;max-width:${paper}!important}
+      : `@page{size:${paper} auto;margin:0}
+         .print-area{width:${printableWidth(paper)}!important;max-width:${printableWidth(paper)}!important;margin:0 auto!important;overflow-wrap:anywhere}
          table{width:100%;table-layout:fixed}
          th,td{overflow-wrap:anywhere;padding:2px 1px;font-size:10px}`;
 
@@ -171,7 +177,7 @@ export function buildReceiptHtml(
   const page =
     paper === "A4"
       ? "@page{size:A4 portrait;margin:10mm}.print-area{width:100%!important;max-width:none!important}"
-      : `@page{size:${paper} auto;margin:2mm}.print-area{width:${paper}!important;max-width:${paper}!important}`;
+      : `@page{size:${paper} auto;margin:0}.print-area{width:${printableWidth(paper)}!important;max-width:${printableWidth(paper)}!important;margin:0 auto!important;overflow-wrap:anywhere}`;
 
   return `<!doctype html>
 <html lang="${document.documentElement.lang || "sw"}">

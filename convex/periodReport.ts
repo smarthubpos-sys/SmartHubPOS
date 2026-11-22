@@ -271,8 +271,13 @@ const debtValidator = v.object({ bk: v.string(), name: v.string(), orders: v.num
 const sectionValidator = v.object({ bk: v.string(), name: v.string(), rows: v.array(v.object({ g: v.string(), k: v.string(), label: v.string(), a: v.number(), b: v.number(), c: v.number() })), items: v.optional(v.array(itemValidator)) });
 const debtsValidator = v.object({ waiters: v.array(debtValidator), customers: v.array(debtValidator), waiterSales: v.optional(v.array(v.object({ bk: v.string(), orders: v.number(), sales: v.number(), cost: v.number() }))), repaid: v.optional(v.array(v.object({ bk: v.string(), amount: v.number() }))), staffSales: v.optional(v.object({ sales: v.array(v.object({ bk: v.string(), amount: v.number() })), methods: v.array(v.object({ bk: v.string(), method: v.string(), amount: v.number() })) })) });
 
+/**
+ * Puts a report in the history. One line per report (same kind, dates and department): generating or saving it again updates that line instead of adding another.
+ * closeDay: false = just record what was generated (nothing else changes); the default (true) is the explicit save that also closes the day's waiter debts.
+ * A report that was already saved (closed) is not overwritten by a later plain generate.
+ */
 export const save = mutation({
-  args: { period: v.string(), startDate: v.string(), endDate: v.string(), scope: v.string(), scopeLabel: v.string(), title: v.string(), sections: v.array(sectionValidator), debts: v.optional(debtsValidator) },
+  args: { period: v.string(), startDate: v.string(), endDate: v.string(), scope: v.string(), scopeLabel: v.string(), title: v.string(), sections: v.array(sectionValidator), debts: v.optional(debtsValidator), closeDay: v.optional(v.boolean()) },
   handler: async (ctx, a) => {
     const user = await requirePermission(ctx, "accounts.reports.view", "accounts");
     if (!user.tenantId) throw new ConvexError("Chagua biashara kwanza.");
@@ -291,15 +296,21 @@ export const save = mutation({
     if (size() > MAX_SNAPSHOT) sections = sections.map((s) => ({ ...s, items: [] }));
     const data = JSON.stringify({ sections, debts: a.debts });
     if (data.length > MAX_SNAPSHOT) throw new ConvexError("Ripoti ni kubwa mno kuhifadhiwa; chagua kipindi kifupi au idara moja.");
-    const id = await ctx.db.insert("reportRuns", {
-      tenantId: user.tenantId, period: a.period, startDate: a.startDate, endDate: a.endDate, scope: a.scope, scopeLabel: a.scopeLabel.slice(0, 120), title: a.title.slice(0, 160),
-      netProfit: all.profitAfter, netSales: all.sales, totalExpenses: all.expenses, data,
-      createdBy: user._id, createdByName: user.name ?? user.username ?? user.email ?? "user", createdAt: new Date().toISOString(),
-    });
+    const close = a.closeDay !== false;
+    const tenantId = user.tenantId;
+    const existing = (await ctx.db.query("reportRuns").withIndex("by_tenant_period_start", (q) => q.eq("tenantId", tenantId).eq("period", a.period).eq("startDate", a.startDate)).collect()).find((r) => r.endDate === a.endDate && r.scope === a.scope);
+    if (existing && !close && existing.draft !== true) return existing._id; // already saved (closed): a plain generate never rewrites it
+    const fields = {
+      scopeLabel: a.scopeLabel.slice(0, 120), title: a.title.slice(0, 160), netProfit: all.profitAfter, netSales: all.sales, totalExpenses: all.expenses, data,
+      createdBy: user._id, createdByName: user.name ?? user.username ?? user.email ?? "user", createdAt: new Date().toISOString(), draft: !close,
+    };
+    let id: Doc<"reportRuns">["_id"];
+    if (existing) { id = existing._id; await ctx.db.patch("reportRuns", id, fields); }
+    else id = await ctx.db.insert("reportRuns", { tenantId, period: a.period, startDate: a.startDate, endDate: a.endDate, scope: a.scope, ...fields });
     // CLOSING THE DAY: the waiters' unpaid orders of this day report are listed in the report as debts, so they leave the cashier's normal
     // "Receive waiters' money" list and wait under "Closed debts", where the cashier can still receive them later. Nothing is deleted or settled.
-    if (a.period === "day") await closeDayDebts(ctx, user.tenantId, sc, a.startDate, a.endDate, id);
-    await logAudit(ctx, user, { action: "generate_period_report", module: "accounts", referenceId: String(id), referenceType: "reportRun", details: `${a.period} ${a.startDate}..${a.endDate} ${a.scopeLabel}` });
+    if (close && a.period === "day") await closeDayDebts(ctx, user.tenantId, sc, a.startDate, a.endDate, id);
+    await logAudit(ctx, user, { action: close ? "generate_period_report" : "record_period_report", module: "accounts", referenceId: String(id), referenceType: "reportRun", details: `${a.period} ${a.startDate}..${a.endDate} ${a.scopeLabel}` });
     return id;
   },
 });
@@ -318,7 +329,7 @@ async function closeDayDebts(ctx: MutationCtx, tenantId: Doc<"users">["tenantId"
 }
 const CLOSE_CAP = 3000;
 
-/** Newest saved reports first (a user tied to one department sees only that department's reports). */
+/** Reports lined up by their DATE, newest date first (a user tied to one department sees only that department's reports). */
 export const history = query({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, a) => {
@@ -326,8 +337,9 @@ export const history = query({
     const tenantId = user.tenantId;
     if (!tenantId) return [];
     const sc = await reportScope(ctx, user, undefined);
-    const rows = await ctx.db.query("reportRuns").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).order("desc").take(Math.min(Math.max(Math.floor(a.limit ?? 30), 1), 100));
-    return rows.filter((r) => !sc.only || r.scope === sc.only).map((r) => ({ _id: r._id, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scopeLabel: r.scopeLabel, netSales: r.netSales, totalExpenses: r.totalExpenses, netProfit: r.netProfit, createdByName: r.createdByName, createdAt: r.createdAt }));
+    const rows = await ctx.db.query("reportRuns").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).order("desc").take(Math.min(Math.max(Math.floor(a.limit ?? 200), 1), 400));
+    rows.sort((x, y) => y.startDate.localeCompare(x.startDate) || y.endDate.localeCompare(x.endDate) || y.createdAt.localeCompare(x.createdAt));
+    return rows.filter((r) => !sc.only || r.scope === sc.only).map((r) => ({ _id: r._id, draft: r.draft === true, title: r.title, period: r.period, startDate: r.startDate, endDate: r.endDate, scopeLabel: r.scopeLabel, netSales: r.netSales, totalExpenses: r.totalExpenses, netProfit: r.netProfit, createdByName: r.createdByName, createdAt: r.createdAt }));
   },
 });
 

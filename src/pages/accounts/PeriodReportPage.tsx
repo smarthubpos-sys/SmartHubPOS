@@ -6,7 +6,7 @@ import { api } from "@/convex/_generated/api.js";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import { Empty, FormField, PageHeader, Panel, SelectBox, Table } from "@/components/page-kit.tsx";
+import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, Table } from "@/components/page-kit.tsx";
 import { formatDate, formatNumber, localDate } from "@/lib/format.ts";
 import { errorText, getLang, getLocale, tr } from "@/lib/i18n.ts";
 import { printElement } from "@/lib/print-area.ts";
@@ -340,10 +340,13 @@ export default function PeriodReportPage() {
       const sections: Section[] = (wanted.length ? wanted : ["none"]).map((bk) => ({ bk, name: departments.length === 0 ? header.businessName || tr("Biashara") : nameOf(bk), rows: [...(byBranch.get(bk)?.values() ?? [])].map((r) => ({ ...r, a: Math.round(r.a * 100) / 100, b: Math.round(r.b * 100) / 100, c: Math.round(r.c * 100) / 100 })), items: itemsBy.get(bk) ?? [] }));
       const meta: Meta = { period, from, to, scopeLabel, title: `${periodName(period)} — ${periodText(period, from, to)} — ${scopeLabel}`, generatedAt: new Date().toISOString(), preparedBy: header.preparedBy };
       setResult({ meta, sections, debts, scope: effectiveScope }); setSaved(false);
-      toast.success(tr("Ripoti imeundwa. Bonyeza \"Hifadhi Ripoti\" kuihifadhi kwenye historia."));
+      // Every generated report is put in the history (one line per date); this does NOT close the day, that stays the explicit "Historia ya mfumo (funga siku)" step.
+      let recorded = true;
+      try { await save({ period, startDate: from, endDate: to, scope: effectiveScope, scopeLabel, title: meta.title, sections, debts, closeDay: false }); } catch { recorded = false; }
+      toast.success(recorded ? tr("Ripoti imeundwa na kuwekwa kwenye historia.") : tr("Ripoti imeundwa. Bonyeza \"Hifadhi Ripoti\" kuihifadhi kwenye historia."));
     } catch (e) { toast.error(errorText(e, "Imeshindikana kuunda ripoti.")); }
     finally { setBusy(false); }
-  }, [convex, header, period, anchor, effectiveScope, departments, nameOf, scopeLabel]);
+  }, [convex, save, header, period, anchor, effectiveScope, departments, nameOf, scopeLabel]);
 
   // Coming from the "Maliza siku" switch on the Expenses page: build today's report straight away.
   useEffect(() => {
@@ -428,7 +431,7 @@ export default function PeriodReportPage() {
 
       <Panel title={tr("Historia ya ripoti zilizoundwa")}>
         {!history ? <p className="text-sm text-muted-foreground">{tr("Inapakia…")}</p> : history.length === 0 ? <Empty>{tr("Hakuna ripoti iliyoundwa bado.")}</Empty> : (
-          <Table head={[tr("Ripoti"), tr("Aina"), tr("Idara"), tr("Mauzo"), tr("Matumizi"), tr("Faida halisi"), tr("Ameunda"), ""]}>
+          <Table head={[tr("Ripoti"), tr("Aina"), tr("Idara"), tr("Mauzo"), tr("Matumizi"), tr("Faida halisi"), tr("Hali"), tr("Ameunda"), ""]}>
             {history.map((h) => (
               <tr key={h._id}>
                 <td className="font-medium">{periodText(h.period as Period, h.startDate, h.endDate)}</td>
@@ -436,6 +439,7 @@ export default function PeriodReportPage() {
                 <td className="whitespace-nowrap tabular-nums">{formatNumber(h.netSales, header?.decimalPlaces ?? 0)}</td>
                 <td className="whitespace-nowrap tabular-nums">{formatNumber(h.totalExpenses, header?.decimalPlaces ?? 0)}</td>
                 <td className={`whitespace-nowrap tabular-nums font-semibold ${h.netProfit < 0 ? "text-destructive" : ""}`}>{acct(h.netProfit, header?.decimalPlaces ?? 0)}</td>
+                <td>{h.draft ? <Pill tone="amber">{tr("Siku haijafungwa")}</Pill> : <Pill tone="green">{tr("Imehifadhiwa")}</Pill>}</td>
                 <td className="whitespace-nowrap text-xs text-muted-foreground">{h.createdByName}<br />{new Date(h.createdAt).toLocaleString(getLocale())}</td>
                 <td className="text-right">
   <div className="flex justify-end gap-2">

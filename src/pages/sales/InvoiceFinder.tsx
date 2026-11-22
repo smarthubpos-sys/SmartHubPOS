@@ -37,7 +37,7 @@ function printInvoice(d: Full) {
       <div style="margin-top:4px;font-weight:700">${esc(tr("Invoice"))} ${esc(inv.invoiceNo)}${(inv.revision ?? 0) > 0 ? ` (${esc(tr("Imesahihishwa"))} #${inv.revision})` : ""}</div>
     </div>
     <div>${esc(tr("Tarehe"))}: ${esc(inv.invoiceDate)}</div><div>${esc(tr("Mteja"))}: ${esc(d.clientName)}</div>${d.department ? `<div>${esc(tr("Idara"))}: ${esc(d.department)}</div>` : ""}
-    <table style="width:100%;border-collapse:collapse;margin-top:6px"><thead><tr style="border-bottom:1px solid #000"><th style="text-align:left">${esc(tr("Bidhaa"))}</th><th style="text-align:right">${esc(tr("Qty"))}</th><th style="text-align:right">${esc(tr("Bei"))}</th><th style="text-align:right">${esc(tr("Jumla"))}</th></tr></thead><tbody>${rows}</tbody></table>
+    <table style="width:100%;border-collapse:collapse;margin-top:6px;table-layout:fixed"><thead><tr style="border-bottom:1px solid #000"><th style="text-align:left;width:38%">${esc(tr("Bidhaa"))}</th><th style="text-align:right;width:14%">${esc(tr("Qty"))}</th><th style="text-align:right;width:24%">${esc(tr("Bei"))}</th><th style="text-align:right;width:24%">${esc(tr("Jumla"))}</th></tr></thead><tbody>${rows}</tbody></table>
     <div style="border-top:1px dashed #000;margin-top:6px;padding-top:6px">
       <div style="display:flex;justify-content:space-between"><span>${esc(tr("Subtotal"))}</span><span>${esc(m(inv.subtotal))}</span></div>
       ${inv.discount > 0 ? `<div style="display:flex;justify-content:space-between"><span>${esc(tr("Discount"))}</span><span>-${esc(m(inv.discount))}</span></div>` : ""}

@@ -843,6 +843,7 @@ export default defineSchema({
     createdBy: v.id("users"),
     createdByName: v.string(),
     createdAt: v.string(),
+    draft: v.optional(v.boolean()), // true = recorded automatically when the report was generated (day NOT closed yet); absent/false = saved with "Historia ya mfumo (funga siku)"
   }).index("by_tenant", ["tenantId"]).index("by_tenant_period_start", ["tenantId", "period", "startDate"]),
 
   // ── AUDIT LOG ────────────────────────────────────────────────
