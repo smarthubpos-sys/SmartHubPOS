@@ -31,7 +31,7 @@ function printInvoice(d: Full) {
   el.className = "print-area";
   el.innerHTML = `<section style="font-size:12px;padding:6px 0">
     <div style="text-align:center;border-bottom:1px dashed #000;padding-bottom:6px;margin-bottom:6px">
-      <div style="font-size:15px;font-weight:700">${esc(d.company.name || tr("Biashara"))}</div>
+      ${d.company.logoUrl ? `<img src="${esc(d.company.logoUrl)}" alt="" style="display:block;margin:0 auto 4px;max-height:18mm;max-width:45%;object-fit:contain;filter:grayscale(1)">` : ""}<div style="font-size:15px;font-weight:700">${esc(d.company.name || tr("Biashara"))}</div>
       ${d.company.address ? `<div>${esc(d.company.address)}</div>` : ""}${d.company.phone ? `<div>${esc(d.company.phone)}</div>` : ""}
       ${d.company.taxId ? `<div>TIN: ${esc(d.company.taxId)}</div>` : ""}
       <div style="margin-top:4px;font-weight:700">${esc(tr("Invoice"))} ${esc(inv.invoiceNo)}${(inv.revision ?? 0) > 0 ? ` (${esc(tr("Imesahihishwa"))} #${inv.revision})` : ""}</div>

@@ -19,7 +19,7 @@ import { toast } from "sonner";
 type Section = { bk: string; name: string; rows: Row[]; items?: ExpenseItem[] };
 type Debts = DebtsData;
 type Meta = { period: Period; from: string; to: string; scopeLabel: string; title: string; generatedAt: string; preparedBy: string };
-type Header = { businessName: string; address: string; phone: string; email: string; tin: string; currencySymbol: string; decimalPlaces: number; preparedBy: string };
+type Header = { logoUrl?: string; businessName: string; address: string; phone: string; email: string; tin: string; currencySymbol: string; decimalPlaces: number; preparedBy: string };
 
 const CHUNK_DAYS = 7;
 /** Accounting style: negatives in brackets, zero as a dash. */
@@ -111,10 +111,13 @@ function ReportDocument({ meta, sections, debts, header, innerRef }: { meta: Met
     <div ref={innerRef} className="mx-auto w-full max-w-3xl space-y-6 rounded-lg border border-neutral-200 bg-white p-6 text-[12px] leading-snug text-neutral-900 shadow-sm md:p-10">
       {/* Letterhead */}
       <header className="flex items-end justify-between gap-4 border-b-2 pb-3" style={{ borderColor: INK }}>
-        <div>
+        <div className="flex items-center gap-3">
+          {header.logoUrl && <img src={header.logoUrl} alt="" className="max-h-14 max-w-[90px] shrink-0 object-contain" />}
+          <div>
           <p className="text-xl font-bold tracking-tight" style={{ color: INK }}>{header.businessName || tr("Biashara")}</p>
           <p className="text-[11px] text-neutral-500">{[header.address, header.phone, header.email].filter(Boolean).join(" · ")}</p>
           {header.tin && <p className="text-[11px] text-neutral-500">TIN: {header.tin}</p>}
+          </div>
         </div>
         <div className="text-right">
           <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-neutral-500">{periodName(meta.period)}</p>

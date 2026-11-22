@@ -376,5 +376,8 @@ export async function activeDepartments(ctx: QueryCtx, tenantId: Id<"tenants"> |
 export async function getCompanySettings(ctx: QueryCtx, user: UserLike) {
   if (!user.tenantId) return null;
   const rows = await ctx.db.query("companySettings").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect();
-  return rows.find((r) => user.branchId && r.branchId === user.branchId) ?? rows.find((r) => !r.branchId) ?? rows[0] ?? null;
+  const row = rows.find((r) => user.branchId && r.branchId === user.branchId) ?? rows.find((r) => !r.branchId) ?? rows[0] ?? null;
+  // The logo belongs to the business: if the chosen row (e.g. a department's own row) has none, use the one saved on the business-wide row.
+  if (row && !row.logoUrl) { const logoUrl = rows.find((r) => r.logoUrl)?.logoUrl; if (logoUrl) return { ...row, logoUrl }; }
+  return row;
 }

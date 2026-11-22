@@ -262,7 +262,8 @@ export const header = query({
     const tenant = await ctx.db.get("tenants", user.tenantId);
     const rows = await ctx.db.query("companySettings").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect();
     const c = rows.find((r) => !r.branchId) ?? rows[0] ?? null;
-    return { businessName: c?.companyName || tenant?.name || "", address: c?.address ?? "", phone: c?.phone ?? "", email: c?.email ?? "", tin: c?.taxId ?? "", currencySymbol: c?.currencySymbol ?? "TSh", decimalPlaces: c?.decimalPlaces ?? 0, preparedBy: user.name ?? user.username ?? user.email ?? "" };
+    const logoUrl = c?.logoUrl || rows.find((r) => r.logoUrl)?.logoUrl || "";
+    return { logoUrl, businessName: c?.companyName || tenant?.name || "", address: c?.address ?? "", phone: c?.phone ?? "", email: c?.email ?? "", tin: c?.taxId ?? "", currencySymbol: c?.currencySymbol ?? "TSh", decimalPlaces: c?.decimalPlaces ?? 0, preparedBy: user.name ?? user.username ?? user.email ?? "" };
   },
 });
 

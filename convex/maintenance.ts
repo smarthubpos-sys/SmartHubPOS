@@ -68,7 +68,13 @@ export const getSettings = query({
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
     const scope = await resolveWriteScope(ctx, user, { tenantWide: true }).catch(() => ({} as Awaited<ReturnType<typeof resolveWriteScope>>));
-    const company = (await scopedRows(ctx, user, "companySettings"))[0] ?? null;
+    const companyRows = await scopedRows(ctx, user, "companySettings");
+    const first = companyRows[0] ?? null;
+    // the logo belongs to the business: use the one saved on any of its rows when this row has none
+    const tenantId = user.tenantId;
+    const allRows = first && !first.logoUrl && tenantId ? await ctx.db.query("companySettings").withIndex("by_tenant", (q) => q.eq("tenantId", tenantId)).collect() : [];
+    const logoUrl = first && !first.logoUrl ? allRows.find((r) => r.logoUrl)?.logoUrl : undefined;
+    const company = first && logoUrl ? { ...first, logoUrl } : first;
     const app = await readSettingsMap(ctx, scope);
     // Printer setup is saved once for the business. A cashier tied to a department/branch must still see it,
     // otherwise Print asks to "choose a QZ Tray printer" although one is already configured.
