@@ -114,6 +114,46 @@ describe("bills across departments", () => {
   });
 });
 
+describe("bills for a user given only some departments", () => {
+  it("can combine bills of the departments given, never the others", async () => {
+    const t = convexTest(schema, modules);
+    const d = await t.run(async (ctx) => {
+      const tenantId = await ctx.db.insert("tenants", { name: "Club", code: "C", isActive: true, createdByToken: "t", createdAt: "2026-01-01" });
+      const bar = await ctx.db.insert("branches", { tenantId, name: "Bar", code: "C-D1", isActive: true, createdAt: "x" });
+      const jiko = await ctx.db.insert("branches", { tenantId, name: "Jiko", code: "C-D2", isActive: true, createdAt: "x" });
+      const lounge = await ctx.db.insert("branches", { tenantId, name: "Lounge", code: "C-D3", isActive: true, createdAt: "x" });
+      // given Bar + Jiko only, and no "bills.all_departments" permission
+      const two = await ctx.db.insert("users", { name: "Neema", username: "neema", role: "cashier", tenantId, branchId: bar, branchIds: [bar, jiko], isActive: true });
+      const mk = async (branchId: Id<"branches">, no: string, total: number) => {
+        const scope = { tenantId, branchId };
+        const c = await ctx.db.insert("clients", { ...scope, code: "M5", name: "Meza 5", openingBalance: 0, creditPolicy: "allow", isActive: true });
+        const p = await ctx.db.insert("products", { ...scope, itemCode: "I" + no, name: "Bidhaa " + no, sellingPrice: total, openingQty: 1, currentQty: 1, isActive: true });
+        const id = await ctx.db.insert("invoices", { ...scope, invoiceNo: no, invoiceDate: "2026-03-01", clientId: c, subtotal: total, discount: 0, taxAmount: 0, total, amountPaid: 0, outstanding: total, paymentStatus: "unpaid", status: "posted", createdBy: two });
+        await ctx.db.insert("invoiceLines", { invoiceId: id, productId: p, qty: 1, qtyStr: "1", unitPrice: total, unitPriceStr: String(total), lineTotal: total, lineTotalStr: String(total), costAtSale: 0, discount: 0 });
+        return { c, id };
+      };
+      return { two, bar: await mk(bar, "BAR-1", 3000), jiko: await mk(jiko, "JIKO-1", 7000), lounge: await mk(lounge, "LOUNGE-1", 9000) };
+    });
+    const as = t.withIdentity({ subject: d.two, tokenIdentifier: "x|1" });
+
+    const access = await as.query(api.customerBills.access, {});
+    expect(access.allDepartments).toBe(true);
+    expect(access.departments.map((x) => x.name).sort()).toEqual(["Bar", "Jiko"]); // Lounge is not offered
+
+    expect((await as.query(api.customerBills.invoicesForClient, { clientId: d.bar.c })).map((i) => i.invoiceNo)).toEqual(["BAR-1"]);
+    const both = await as.query(api.customerBills.invoicesForClient, { clientId: d.bar.c, allDepartments: true });
+    expect(both.map((i) => i.invoiceNo).sort()).toEqual(["BAR-1", "JIKO-1"]);
+
+    const bill = await as.query(api.customerBills.billData, { invoiceIds: [d.bar.id, d.jiko.id] });
+    expect(bill.totals.total).toBe(10000);
+    await as.mutation(api.customerBills.create, { invoiceIds: [d.bar.id, d.jiko.id] });
+
+    // a department he was not given can never be added
+    await expect(as.query(api.customerBills.billData, { invoiceIds: [d.bar.id, d.lounge.id] })).rejects.toThrow(/haipatikani/);
+    await expect(as.mutation(api.customerBills.create, { invoiceIds: [d.bar.id, d.lounge.id] })).rejects.toThrow();
+  });
+});
+
 describe("receipt payment details (configurable by the business)", () => {
   it("prints only the configured payment lines and rejects over-long text", async () => {
     const { t, as, i1 } = await setup();

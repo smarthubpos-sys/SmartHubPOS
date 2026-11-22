@@ -22,6 +22,7 @@ import type * as capital from "../capital.js";
 import type * as clients from "../clients.js";
 import type * as crons from "../crons.js";
 import type * as customerBills from "../customerBills.js";
+import type * as customerBillsSwitch from "../customerBillsSwitch.js";
 import type * as customerDebt from "../customerDebt.js";
 import type * as dashboard from "../dashboard.js";
 import type * as hr from "../hr.js";
@@ -93,6 +94,7 @@ declare const fullApi: ApiFromModules<{
   clients: typeof clients;
   crons: typeof crons;
   customerBills: typeof customerBills;
+  customerBillsSwitch: typeof customerBillsSwitch;
   customerDebt: typeof customerDebt;
   dashboard: typeof dashboard;
   hr: typeof hr;

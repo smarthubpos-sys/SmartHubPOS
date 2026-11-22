@@ -10,11 +10,21 @@ const money = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const MAX_INVOICES = 50;
 const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
 
-/** A user allowed to combine bills across departments sees the whole business (for bills only), not just one department. */
+/**
+ * Who may combine bills across departments:
+ *  - a user with the "bills.all_departments" permission and no department list sees the whole business (for bills only);
+ *  - a user who was given 2 or more departments may combine exactly those departments (`limit` holds their ids). Being given
+ *    several departments is itself the right to combine them, so the permission is not needed, and nothing outside the list is shown.
+ * `canSee` must be used instead of canAccessRecord(wide, ...) so the department list is always respected.
+ */
 async function crossAccess(ctx: QueryCtx, user: UserLike) {
-  // Not for a user limited to a few departments: this view is business-wide, so it would show departments he was not given.
-  const allowed = !!user.tenantId && !isOwnDataOnly(user) && !allowedBranchIds(user) && (await roleHasPermission(ctx, user, "bills.all_departments"));
-  return { allowed, wide: allowed ? { ...user, branchId: undefined, allDepartments: true as const } : user };
+  const own = !!user.tenantId && !isOwnDataOnly(user);
+  const list = own ? allowedBranchIds(user) : null;
+  const limit = list ? new Set(list.map(String)) : null;
+  const allowed = own && (!!limit || (await roleHasPermission(ctx, user, "bills.all_departments")));
+  const wide = allowed ? { ...user, branchId: undefined, allDepartments: true as const } : user;
+  const canSee = (rec: Parameters<typeof canAccessRecord>[1]) => canAccessRecord(wide, rec) && (!allowed || !limit || (!!rec?.branchId && limit.has(String(rec.branchId))));
+  return { allowed, wide, limit, canSee };
 }
 /** Same customer in another department = same code or same name (customers are kept per department). */
 const sameCustomer = (a: Pick<Doc<"clients">, "_id" | "name" | "code">, b: Pick<Doc<"clients">, "_id" | "name" | "code">) => String(a._id) === String(b._id) || norm(a.name) === norm(b.name) || (!!a.code && norm(a.code) === norm(b.code));
@@ -24,8 +34,8 @@ export const access = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx, "bills");
-    const { allowed } = await crossAccess(ctx, user);
-    const departments = allowed ? (await activeDepartments(ctx, user.tenantId)).map((b) => ({ _id: b._id, name: b.name })) : [];
+    const { allowed, limit } = await crossAccess(ctx, user);
+    const departments = allowed ? (await activeDepartments(ctx, user.tenantId)).filter((b) => !limit || limit.has(String(b._id))).map((b) => ({ _id: b._id, name: b.name })) : [];
     return { allDepartments: allowed && departments.length > 1, departments };
   },
 });
@@ -43,15 +53,15 @@ export const invoicesForClient = query({
     const user = await requireActiveUser(ctx, "bills");
     const client = await ctx.db.get("clients", a.clientId);
     if (!client || !canAccessRecord(user, client)) return [];
-    const { allowed, wide } = await crossAccess(ctx, user);
+    const { allowed, wide, canSee } = await crossAccess(ctx, user);
     const cross = allowed && !!a.allDepartments;
-    const clients = cross ? (await scopedRows(ctx, wide, "clients")).filter((c) => sameCustomer(client, c)).slice(0, 20) : [client];
+    const clients = cross ? (await scopedRows(ctx, wide, "clients")).filter((c) => canSee(c) && sameCustomer(client, c)).slice(0, 20) : [client];
     const names = new Map((await ctx.db.query("branches").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId!)).collect()).map((b) => [String(b._id), b.name]));
     const out = [];
     for (const c of clients) {
       const rows = await ctx.db.query("invoices").withIndex("by_client", (q) => q.eq("clientId", c._id)).order("desc").take(300);
       for (const i of rows) {
-        if ((i.status !== "posted" && i.status !== "cancelled") || !canAccessRecord(cross ? wide : user, i) || (a.onlyOpen && i.outstanding <= 0)) continue;
+        if ((i.status !== "posted" && i.status !== "cancelled") || !(cross ? canSee(i) : canAccessRecord(user, i)) || (a.onlyOpen && i.outstanding <= 0)) continue;
         if ((isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) && i.createdBy !== user._id) continue; // staff/waiters: own sales only
         out.push({ _id: i._id, invoiceNo: i.invoiceNo, date: i.invoiceDate, total: i.total, amountPaid: i.amountPaid, outstanding: i.outstanding, paymentStatus: i.paymentStatus, status: i.status, alreadyBilled: !!i.customerBillId, eligible: i.status === "posted" && !i.customerBillId, department: i.branchId ? names.get(String(i.branchId)) ?? "" : "", _t: i._creationTime });
       }
@@ -67,16 +77,16 @@ export const historyForClient = query({
     const user = await requireActiveUser(ctx, "bills");
     const client = await ctx.db.get("clients", a.clientId);
     if (!client || !canAccessRecord(user, client)) return [];
-    const { allowed, wide } = await crossAccess(ctx, user);
-    const who = allowed ? wide : user;
+    const { allowed, canSee } = await crossAccess(ctx, user);
+    const see = (rec: Parameters<typeof canAccessRecord>[1]) => (allowed ? canSee(rec) : canAccessRecord(user, rec));
     const rows = await ctx.db.query("customerBills").withIndex("by_client", (q) => q.eq("clientId", a.clientId)).collect();
     const out = [];
     for (const bill of rows) {
-      if (!canAccessRecord(who, bill)) continue;
+      if (!see(bill)) continue;
       const invoices = [];
       for (const id of bill.invoiceIds) {
         const invoice = await ctx.db.get("invoices", id);
-        if (!invoice || !canAccessRecord(who, invoice) ||
+        if (!invoice || !see(invoice) ||
           ((isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) && invoice.createdBy !== user._id)) {
           invoices.length = 0;
           break;
@@ -106,12 +116,12 @@ export const create = mutation({
     if (a.invoiceIds.length === 0 || a.invoiceIds.length > MAX_INVOICES) throw new ConvexError("Chagua invoice 1 hadi 50.");
     const ids = [...new Set(a.invoiceIds.map(String))];
     if (ids.length !== a.invoiceIds.length) throw new ConvexError("Invoice imechaguliwa zaidi ya mara moja.");
-    const { allowed, wide } = await crossAccess(ctx, user);
-    const who = allowed ? wide : user;
+    const { allowed, canSee } = await crossAccess(ctx, user);
+    const see = (rec: Parameters<typeof canAccessRecord>[1]) => (allowed ? canSee(rec) : canAccessRecord(user, rec));
     const invoices = [];
     for (const id of a.invoiceIds) {
       const inv = await ctx.db.get("invoices", id);
-      if (!inv || !canAccessRecord(who, inv) || inv.status !== "posted" ||
+      if (!inv || !see(inv) || inv.status !== "posted" ||
         ((isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) && inv.createdBy !== user._id)) {
         throw new ConvexError("Invoice haipatikani au haiwezi kuwekwa kwenye bili.");
       }
@@ -127,11 +137,11 @@ export const create = mutation({
       throw new ConvexError("Baadhi ya invoice tayari zipo kwenye bili nyingine. Ondoa hizo kisha ujaribu tena.");
     }
     const client = await ctx.db.get("clients", invoices[0].clientId);
-    if (!client || !canAccessRecord(who, client)) throw new ConvexError("Mteja hapatikani.");
+    if (!client || !see(client)) throw new ConvexError("Mteja hapatikani.");
     for (const inv of invoices.slice(1)) {
       if (String(inv.clientId) === String(client._id)) continue;
       const other = await ctx.db.get("clients", inv.clientId);
-      if (!allowed || !other || !canAccessRecord(who, other) || !sameCustomer(client, other)) {
+      if (!allowed || !other || !see(other) || !sameCustomer(client, other)) {
         throw new ConvexError("Invoice za bili moja lazima ziwe za mteja mmoja.");
       }
     }
@@ -160,21 +170,21 @@ export const billData = query({
     if (a.invoiceIds.length === 0) throw new ConvexError("Chagua angalau invoice moja.");
     if (a.invoiceIds.length > MAX_INVOICES) throw new ConvexError("Bili moja isizidi invoice 50.");
     const unique = [...new Set(a.invoiceIds.map(String))];
-    const { allowed, wide } = await crossAccess(ctx, user);
-    const who = allowed ? wide : user;
+    const { allowed, canSee } = await crossAccess(ctx, user);
+    const see = (rec: Parameters<typeof canAccessRecord>[1]) => (allowed ? canSee(rec) : canAccessRecord(user, rec));
     const invoices = [];
     for (const id of a.invoiceIds.filter((x, i, arr) => arr.findIndex((y) => String(y) === String(x)) === i)) {
       const inv = await ctx.db.get("invoices", id);
-      if (!inv || !canAccessRecord(who, inv) || inv.status !== "posted" || ((isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) && inv.createdBy !== user._id)) throw new ConvexError("Invoice haipatikani.");
+      if (!inv || !see(inv) || inv.status !== "posted" || ((isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase())) && inv.createdBy !== user._id)) throw new ConvexError("Invoice haipatikani.");
       invoices.push(inv);
     }
     if (invoices.length !== unique.length) throw new ConvexError("Invoice haipatikani.");
     const client = await ctx.db.get("clients", invoices[0].clientId);
-    if (!client || !canAccessRecord(who, client)) throw new ConvexError("Mteja hapatikani.");
+    if (!client || !see(client)) throw new ConvexError("Mteja hapatikani.");
     for (const inv of invoices) {
       if (inv.clientId === client._id) continue;
       const other = await ctx.db.get("clients", inv.clientId); // another department's record of the same customer
-      if (!allowed || !other || !canAccessRecord(who, other) || !sameCustomer(client, other)) throw new ConvexError("Invoice za bili moja lazima ziwe za mteja mmoja.");
+      if (!allowed || !other || !see(other) || !sameCustomer(client, other)) throw new ConvexError("Invoice za bili moja lazima ziwe za mteja mmoja.");
     }
     invoices.sort((x, y) => x.invoiceDate.localeCompare(y.invoiceDate) || x._creationTime - y._creationTime);
 
