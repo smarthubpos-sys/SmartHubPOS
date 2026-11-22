@@ -8,6 +8,11 @@ import type { PaperChoice } from "./print-policy.ts";
 export type ReceiptScale = {
   /** CSS width of the page (A4 is printed on a 190mm column inside the 210mm sheet). */
   width: string;
+  /**
+   * Width of the text column, centred on the page. A roll printer cannot print to the very edge of the paper (80mm roll: about 72mm, 58mm roll: about 50mm),
+   * so a column as wide as the whole roll loses the end of every line. The page itself keeps the real paper width.
+   */
+  inner: string;
   base: number;
   company: number;
   title: number;
@@ -20,9 +25,9 @@ export type ReceiptScale = {
 
 export function receiptScale(paperIn: PaperChoice | string): ReceiptScale {
   const paper = String(paperIn).toLowerCase() === "a4" ? "A4" : String(paperIn).toLowerCase();
-  if (paper === "58mm") return { width: "58mm", base: 12, company: 14, title: 16, total: 15, label: "21mm", logoMax: "12mm", padX: "2mm" };
-  if (paper === "A4") return { width: "190mm", base: 14, company: 20, title: 24, total: 18, label: "42mm", logoMax: "26mm", padX: "0" };
-  return { width: "80mm", base: 15, company: 18, title: 20, total: 18, label: "30mm", logoMax: "18mm", padX: "3mm" };
+  if (paper === "58mm") return { width: "58mm", inner: "50mm", base: 12, company: 14, title: 16, total: 15, label: "21mm", logoMax: "12mm", padX: "0" };
+  if (paper === "A4") return { width: "190mm", inner: "190mm", base: 14, company: 20, title: 24, total: 18, label: "42mm", logoMax: "26mm", padX: "0" };
+  return { width: "80mm", inner: "72mm", base: 15, company: 18, title: 20, total: 18, label: "28mm", logoMax: "18mm", padX: "0" };
 }
 
 /** Stylesheet shared by every QZ Tray receipt. Class names: head, co, cname, logo, title, row, lab, between, qty, name, amount, total, sign, line, c. */
@@ -31,7 +36,7 @@ export function receiptCss(paperIn: PaperChoice | string): string {
   const paper = String(paperIn).toLowerCase();
   const logoPct = paper === "58mm" ? "28%" : "30%";
   return `@page{size:${s.width} auto;margin:0}*{box-sizing:border-box}
-    body{font:${s.base}px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0;width:${s.width};padding:0 ${s.padX};overflow-wrap:anywhere;color:#000}
+    body{font:${s.base}px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0 auto;width:${s.inner};padding:0 ${s.padX};overflow-wrap:anywhere;color:#000}
     .c{text-align:center}p{margin:0 0 3px}
     .title{font-size:${s.title}px;font-weight:800;margin:6px 0 2px;padding:3px 0;border-top:1px solid #000;border-bottom:1px solid #000}
     .head{display:flex;justify-content:space-between;align-items:flex-start;gap:4px}

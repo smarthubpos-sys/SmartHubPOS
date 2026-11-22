@@ -19,4 +19,12 @@ describe("one print layout for every business", () => {
     expect(printableWidth("58mm")).toBe("52mm");
     expect(printableWidth("A4")).toBe("100%");
   });
+  it("a bill is laid out inside the area a roll printer can really print, centred, so the end of each line is not cut", () => {
+    expect(receiptScale("80mm").inner).toBe("72mm");
+    expect(receiptScale("58mm").inner).toBe("50mm");
+    expect(receiptCss("80mm")).toContain("width:72mm");
+    expect(receiptCss("80mm")).toContain("margin:0 auto");
+    expect(receiptCss("80mm")).toContain("size:80mm"); // the page itself keeps the real roll width
+    expect(receiptCss("58mm")).toContain("width:50mm");
+  });
 });
