@@ -4,6 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { activeDepartments, allowedBranchIds, canAccessRecord, getCompanySettings, isOwnDataOnly, requireActiveUser, roleHasPermission, scopedRows, requirePermission, resolveWriteScope } from "./access";
 import type { UserLike } from "./access";
+import { requireCustomerBillsEnabled } from "./customerBillsSwitch.ts";
 
 const money = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const MAX_INVOICES = 50;
@@ -101,6 +102,7 @@ export const create = mutation({
     if (!(await roleHasPermission(ctx, user, "sales.view")) && !(await roleHasPermission(ctx, user, "sales.manage"))) {
       throw new ConvexError('Forbidden: permission "sales.view" required');
     }
+    await requireCustomerBillsEnabled(ctx, user.tenantId); // the Super Admin can switch customer bills off per business
     if (a.invoiceIds.length === 0 || a.invoiceIds.length > MAX_INVOICES) throw new ConvexError("Chagua invoice 1 hadi 50.");
     const ids = [...new Set(a.invoiceIds.map(String))];
     if (ids.length !== a.invoiceIds.length) throw new ConvexError("Invoice imechaguliwa zaidi ya mara moja.");

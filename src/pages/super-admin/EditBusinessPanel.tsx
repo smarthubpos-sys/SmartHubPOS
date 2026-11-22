@@ -46,6 +46,7 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
   const [waiterEnabled, setWaiterEnabled] = useState(false);
   const [waitressEnabled, setWaitressEnabled] = useState(false);
   const [waiterOrderMode, setWaiterOrderMode] = useState<"cashier" | "print">("cashier");
+  const [customerBillsEnabled, setCustomerBillsEnabled] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -61,6 +62,7 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
     setWaiterEnabled(data.waiterEnabled ?? false);
     setWaitressEnabled(data.waitressEnabled ?? false);
     setWaiterOrderMode(data.waiterOrderMode ?? "cashier");
+    setCustomerBillsEnabled(data.customerBillsEnabled ?? true);
     setLoaded(true);
   }
 
@@ -69,7 +71,7 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
     setBusy(true);
     try {
       const everything = ALL_MODULE_KEYS.every((k) => modules.includes(k));
-      await update({ tenantId, name, code, currency, maxUsers: maxUsers.trim() === "" ? null : Number(maxUsers), waiterEnabled, waitressEnabled, waiterOrderMode, ...(everything ? { allModules: true } : { modules }) });
+      await update({ tenantId, name, code, currency, maxUsers: maxUsers.trim() === "" ? null : Number(maxUsers), waiterEnabled, waitressEnabled, waiterOrderMode, customerBillsEnabled, ...(everything ? { allModules: true } : { modules }) });
       toast.success(tr("Biashara imesasishwa."));
       onDone?.();
     } catch (err) {
@@ -108,6 +110,11 @@ export default function EditBusinessPanel({ tenantId, onDone }: { tenantId: Id<"
             <label htmlFor="enable-waitress" className="cursor-pointer">{tr("Enable Waitress")}</label>
             <Switch id="enable-waitress" checked={waitressEnabled} onCheckedChange={setWaitressEnabled} aria-label={tr("Enable Waitress")} />
           </div>
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="enable-customer-bills" className="cursor-pointer">{tr("Bili za wateja (Bills)")}</label>
+            <Switch id="enable-customer-bills" checked={customerBillsEnabled} onCheckedChange={setCustomerBillsEnabled} aria-label={tr("Bili za wateja (Bills)")} />
+          </div>
+          {!customerBillsEnabled && <p className="text-xs opacity-80">{tr("Imezimwa: biashara hii haiwezi kutengeneza, kuchapisha wala kutuma bili za wateja.")}</p>}
         </div>
           <label className="grid gap-1">
             {tr("Namna ya kutuma oda")}

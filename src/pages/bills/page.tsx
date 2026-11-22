@@ -19,7 +19,7 @@ import ErrorBoundary from "@/components/error-boundary.tsx";
  * The cashier picks a customer, ticks the invoices (1, 2, 3 ...) and prints ONE bill for the ticked ones.
  * Running costs (rent, electricity, water ...) are recorded in Accounts > Expense Payments instead.
  */
-export default function BillsPage() {
+function BillsPageBody() {
   const clients = useQuery(api.clients.list, {});
   const { money } = useMoney();
   const [search, setSearch] = useState("");
@@ -165,4 +165,18 @@ export default function BillsPage() {
       {showBill && billInvoiceIds.length > 0 && <BillSheet invoiceIds={billInvoiceIds} paper={paper} onPrinted={() => { setShowBill(false); setBillInvoiceIds([]); setPicked(new Set()); toast.success(tr("Bili imechapishwa na kuondolewa kwenye orodha. Fungua tena kupitia \"Bili zilizopita\".")); }} whatsappEnabled={whatsappEnabled} setWhatsappEnabled={(value) => { setWhatsappEnabled(value); localStorage.setItem("smarthub-bill-whatsapp-enabled", String(value)); }} />}
     </div>
   );
+}
+
+/** The Super Admin can switch customer bills off for a business (Edit business > "Bili za wateja"). */
+export default function BillsPage() {
+  const business = useQuery(api.tenants.current);
+  if (business?.customerBillsEnabled === false) {
+    return (
+      <div className="mx-auto max-w-3xl space-y-4">
+        <PageHeader icon={Receipt} title={tr("Bills")} subtitle={tr("Bili za wateja")} />
+        <Panel><p className="py-6 text-center text-sm text-muted-foreground">{tr("Biashara hii imezuiwa kutengeneza bili za wateja. Wasiliana na Super Admin.")}</p></Panel>
+      </div>
+    );
+  }
+  return <BillsPageBody />;
 }

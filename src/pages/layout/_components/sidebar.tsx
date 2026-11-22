@@ -122,6 +122,7 @@ export default function Sidebar({
         };
         const needed = requiredPermission[item.module];
         if (needed && !permissions.includes(needed)) return false;
+        if (item.module === "bills" && tenant?.customerBillsEnabled === false) return false; // customer bills switched off for this business
         if (item.module === "bills" && !permissions.includes("waiterOrders.view") && !permissions.includes("sales.view")) return false;
         if (item.module === "cashier") return tenant?.waiterOrdersEnabled === true;
         return true;

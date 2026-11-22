@@ -19,4 +19,7 @@ export const IMPORT_DICT: Record<string, { sw: string; en: string }> = {
   "Selling Point settings": { sw: "Mipangilio ya Selling Point", en: "Selling Point settings" },
   "Enable Waiter": { sw: "Washa Waiter", en: "Enable Waiter" },
   "Enable Waitress": { sw: "Washa Waitress", en: "Enable Waitress" },
+  "Bili za wateja (Bills)": { sw: "Bili za wateja (Bills)", en: "Customer bills (Bills)" },
+  "Imezimwa: biashara hii haiwezi kutengeneza, kuchapisha wala kutuma bili za wateja.": { sw: "Imezimwa: biashara hii haiwezi kutengeneza, kuchapisha wala kutuma bili za wateja.", en: "Switched off: this business cannot create, print or send customer bills." },
+  "Biashara hii imezuiwa kutengeneza bili za wateja. Wasiliana na Super Admin.": { sw: "Biashara hii imezuiwa kutengeneza bili za wateja. Wasiliana na Super Admin.", en: "This business is not allowed to create customer bills. Contact the Super Admin." },
 };

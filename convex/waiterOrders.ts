@@ -1,3 +1,4 @@
+import { requireCustomerBillsEnabled } from "./customerBillsSwitch.ts";
 import { mutation, query, type MutationCtx } from "./_generated/server";
 import { orderHasPayment, reverseOrderPayments } from "./waiterRefund";
 import { v, ConvexError } from "convex/values";
@@ -754,6 +755,7 @@ export const markBillPrinted = mutation({
   handler: async (ctx, args) => {
     try {
       const user = await requirePermission(ctx, "waiterOrders.view", "waiterOrders");
+      await requireCustomerBillsEnabled(ctx, user.tenantId); // switched off per business by the Super Admin
       const scope = await viewScope(ctx, user);
       const now = new Date().toISOString();
 
@@ -811,6 +813,7 @@ export const resendBill = mutation({
   handler: async (ctx, args) => {
     try {
       const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
+      await requireCustomerBillsEnabled(ctx, user.tenantId); // switched off per business by the Super Admin
       if (!isWaiter(user.role)) throw new ConvexError("Ni mhudumu pekee anayetuma tena bili kwa cashier.");
       const scope = await viewScope(ctx, user);
       if (args.orderIds.length === 0) throw new ConvexError("Chagua angalau bili moja.");
@@ -843,6 +846,7 @@ export const sendBillToCashier = mutation({
   handler: async (ctx, args) => {
     try {
       const user = await requirePermission(ctx, "waiterOrders.manage", "waiterOrders");
+      await requireCustomerBillsEnabled(ctx, user.tenantId); // switched off per business by the Super Admin
       if (!isWaiter(user.role)) throw new ConvexError("Ni mhudumu pekee anayetuma bili kwa cashier.");
       const scope = await viewScope(ctx, user);
       if (args.orderIds.length === 0) throw new ConvexError("Chagua angalau oda moja.");
