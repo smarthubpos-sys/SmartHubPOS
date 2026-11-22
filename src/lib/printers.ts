@@ -5,6 +5,7 @@
  *  - "installed" printers are listed through QZ Tray (free helper app) when it is running;
  *  - "direct" printers are paired through WebUSB / Web Serial (wired, or Bluetooth SPP) / Web Bluetooth (wireless BLE).
  */
+import { sharpenReceiptLogo } from "./logo-image.ts";
 import { tr } from "./i18n.ts";
 
 export type DeviceKind = "usb" | "serial" | "bluetooth";
@@ -164,6 +165,15 @@ function receiptWidthCssPx(paper?: string): number {
 /** Extra blank paper left under the last line so the cutter does not slice through the text. */
 const RECEIPT_TAIL_MM = 6;
 
+/**
+ * The height is measured in the browser, but QZ Tray draws the text with its own fonts and spacing, usually a little taller.
+ * Without a reserve the last lines (footer, payment info) were cut off, so the roll height gets +10% and a few extra mm.
+ */
+export function rollHeightMm(contentHeightPx: number): number {
+  const px = Number.isFinite(contentHeightPx) && contentHeightPx > 0 ? contentHeightPx : 0;
+  return receiptHeightMm(px * 1.1) + 6;
+}
+
 /** CSS pixels -> millimetres (96dpi), rounded up, plus a small tail. Pure function (unit-tested). */
 export function receiptHeightMm(contentHeightPx: number): number {
   const px = Number.isFinite(contentHeightPx) && contentHeightPx > 0 ? contentHeightPx : 0;
@@ -200,7 +210,7 @@ export async function showReceiptPreview(html: string, paper?: string): Promise<
   const page = qzPageOptions(paper);
   const widthPx = receiptWidthCssPx(paper);
   const heightPx = await measureReceiptHeightPx(html, paper);
-  const heightMm = page.height ? page.height : receiptHeightMm(heightPx);
+  const heightMm = page.height ? page.height : rollHeightMm(heightPx);
   return new Promise<boolean>((resolve) => {
     const overlay = document.createElement("div");
     overlay.style.cssText = "position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.65);display:flex;flex-direction:column;align-items:center;padding:16px;gap:12px;";
@@ -241,7 +251,7 @@ const mmToIn = (mm: number) => Math.round((mm / 25.4) * 1000) / 1000;
 /** Pure, testable dimensions/options shared by QZ's page config and HTML renderer. */
 export function qzHtmlPrintSettings(paper: string | undefined, contentHeightPx: number) {
   const page = qzPageOptions(paper);
-  const heightMm = page.height || receiptHeightMm(contentHeightPx);
+  const heightMm = page.height || rollHeightMm(contentHeightPx);
   const widthIn = qzHtmlPageWidthInches(paper);
   const heightIn = mmToIn(heightMm);
   return {
@@ -283,14 +293,15 @@ async function sendHtmlToQz(printerName: string, html: string, paper?: string) {
  */
 export async function printHtmlViaQz(printerName: string, html: string, paper?: string): Promise<void> {
   if (!printerName.trim()) throw new Error(tr("Chagua printer ya QZ Tray kwenye mipangilio kwanza."));
-  await sendHtmlToQz(printerName, html, paper);
+  await sendHtmlToQz(printerName, await sharpenReceiptLogo(html), paper);
 }
 
 /**
  * The ONLY way to print an HTML receipt: shows the preview of this exact `html` string, and prints that same string
  * only after the person presses Chapa. Returns false when they close the preview (nothing is sent to the printer).
  */
-export async function previewAndPrintViaQz(printerName: string, html: string, paper?: string): Promise<boolean> {
+export async function previewAndPrintViaQz(printerName: string, rawHtml: string, paper?: string): Promise<boolean> {
+  const html = await sharpenReceiptLogo(rawHtml); // preview and printout use this same sharp-logo HTML
   if (!(await showReceiptPreview(html, paper))) return false;
   await sendHtmlToQz(printerName, html, paper);
   return true;

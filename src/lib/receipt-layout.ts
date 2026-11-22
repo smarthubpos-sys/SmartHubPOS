@@ -9,7 +9,7 @@ export type ReceiptScale = {
   /** CSS width of the page (A4 is printed on a 190mm column inside the 210mm sheet). */
   width: string;
   /**
-   * Width of the text column, centred on the page. A roll printer cannot print to the very edge of the paper (80mm roll: about 72mm, 58mm roll: about 50mm),
+   * Width of the text column, centred on the page. A roll printer cannot print to the very edge of the paper (80mm roll: about 68mm, 58mm roll: about 46mm; kept narrower so the price on the right is not cut),
    * so a column as wide as the whole roll loses the end of every line. The page itself keeps the real paper width.
    */
   inner: string;
@@ -25,9 +25,9 @@ export type ReceiptScale = {
 
 export function receiptScale(paperIn: PaperChoice | string): ReceiptScale {
   const paper = String(paperIn).toLowerCase() === "a4" ? "A4" : String(paperIn).toLowerCase();
-  if (paper === "58mm") return { width: "58mm", inner: "50mm", base: 12, company: 14, title: 16, total: 15, label: "21mm", logoMax: "12mm", padX: "0" };
+  if (paper === "58mm") return { width: "58mm", inner: "46mm", base: 12, company: 14, title: 16, total: 15, label: "21mm", logoMax: "12mm", padX: "0" };
   if (paper === "A4") return { width: "190mm", inner: "190mm", base: 14, company: 20, title: 24, total: 18, label: "42mm", logoMax: "26mm", padX: "0" };
-  return { width: "80mm", inner: "72mm", base: 15, company: 18, title: 20, total: 18, label: "28mm", logoMax: "18mm", padX: "0" };
+  return { width: "80mm", inner: "68mm", base: 15, company: 18, title: 20, total: 18, label: "28mm", logoMax: "18mm", padX: "0" };
 }
 
 /** Stylesheet shared by every QZ Tray receipt. Class names: head, co, cname, logo, title, row, lab, between, qty, name, amount, total, sign, line, c. */
@@ -36,18 +36,18 @@ export function receiptCss(paperIn: PaperChoice | string): string {
   const paper = String(paperIn).toLowerCase();
   const logoPct = paper === "58mm" ? "28%" : "30%";
   return `@page{size:${s.width} auto;margin:0}*{box-sizing:border-box}
-    body{font:${s.base}px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0 auto;width:${s.inner};padding:0 ${s.padX};overflow-wrap:anywhere;color:#000}
+    body{font:${s.base}px/1.35 Arial,Helvetica,sans-serif;font-weight:600;margin:0 auto;width:${s.inner};padding:0 ${s.padX};overflow-wrap:anywhere;color:#000;padding-bottom:6mm}
     .c{text-align:center}p{margin:0 0 3px}
     .title{font-size:${s.title}px;font-weight:800;margin:6px 0 2px;padding:3px 0;border-top:1px solid #000;border-bottom:1px solid #000}
     .head{display:flex;justify-content:space-between;align-items:flex-start;gap:4px}
     .co{flex:1;min-width:0;text-align:left}.cname{font-size:${s.company}px;font-weight:800;line-height:1.2}
-    .logo{flex:none;max-width:${logoPct};max-height:${s.logoMax};object-fit:contain;filter:grayscale(1)}
+    .logo{flex:none;max-width:${logoPct};max-height:${s.logoMax};object-fit:contain}
     hr{border:0;border-top:1px dashed #000;margin:6px 0}
     .row{display:flex;gap:2px}.lab{display:inline-block;min-width:${s.label}}.between{justify-content:space-between}
     table{width:100%;border-collapse:collapse;table-layout:fixed}
     th,td{padding:2px 1px;vertical-align:top;text-align:left;font-size:${s.base}px}th{font-weight:800}
-    .qty{width:12%;overflow-wrap:anywhere}.name{width:56%;overflow-wrap:anywhere;word-break:normal}.name.wide{width:68%}
-    .amount{width:32%;text-align:right;overflow-wrap:anywhere}th.amount{text-align:right}
+    .qty{width:12%;overflow-wrap:anywhere}.name{width:54%;overflow-wrap:anywhere;word-break:normal}.name.wide{width:66%}
+    .amount{width:34%;text-align:right;white-space:nowrap;padding-right:2px}th.amount{text-align:right}
     .total{display:flex;justify-content:space-between;font-weight:800;font-size:${s.total}px;margin:2px 0}
     .sign{display:flex;gap:2px;margin:12px 0 2px}.line{flex:1;border-bottom:1px solid #000}`;
 }

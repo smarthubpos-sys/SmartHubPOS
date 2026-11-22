@@ -18,3 +18,17 @@ describe("logo file recognition", () => {
     expect(fitSize(200, 100)).toEqual({ width: 200, height: 100 });
   });
 });
+
+import { otsuThreshold, sharpenReceiptLogo } from "./logo-image.ts";
+
+describe("logo for the receipt printer", () => {
+  it("finds a level between dark ink and white paper", () => {
+    const hist = new Array<number>(256).fill(0); hist[40] = 500; hist[250] = 1500;
+    const t = otsuThreshold(hist);
+    expect(t).toBeGreaterThanOrEqual(40); expect(t).toBeLessThan(250);
+  });
+  it("leaves the HTML alone when there is no logo", async () => {
+    const html = "<body><p>no logo</p></body>";
+    expect(await sharpenReceiptLogo(html)).toBe(html);
+  });
+});

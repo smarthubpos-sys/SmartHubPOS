@@ -76,3 +76,63 @@ export async function prepareLogo(file: File): Promise<{ dataUrl: string; resize
   }
   throw new Error("TOO_BIG");
 }
+
+
+/** Otsu threshold (0-255) of a grayscale histogram: the level that best separates "ink" from "paper". */
+export function otsuThreshold(hist: number[]): number {
+  const total = hist.reduce((a, b) => a + b, 0);
+  if (!total) return 128;
+  let sumAll = 0; for (let i = 0; i < 256; i++) sumAll += i * hist[i];
+  let wB = 0, sumB = 0, best = 128, max = -1;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue;
+    const wF = total - wB; if (!wF) break;
+    sumB += t * hist[t];
+    const between = wB * wF * (sumB / wB - (sumAll - sumB) / wF) ** 2;
+    if (between > max) { max = between; best = t; }
+  }
+  return best;
+}
+
+const printLogoCache = new Map<string, Promise<string>>();
+
+/**
+ * Logo -> sharp black-and-white picture for a receipt printer. Roll printers print in 1 bit (ink or no ink): a coloured or light-grey
+ * logo turns pale or vanishes. Every pixel becomes solid black or white (see-through = white), so the logo prints dark and clear.
+ * Never throws: when the picture cannot be processed the original is returned.
+ */
+export function logoForPrint(src: string): Promise<string> {
+  if (!src || typeof document === "undefined") return Promise.resolve(src);
+  const hit = printLogoCache.get(src); if (hit) return hit;
+  const job = (async () => {
+    try {
+      const img = await loadImage(src);
+      const { width, height } = fitSize(img.naturalWidth || img.width, img.naturalHeight || img.height, 400);
+      if (!width || !height) return src;
+      const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true }); if (!ctx) return src;
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, width, height);
+      ctx.imageSmoothingQuality = "high"; ctx.drawImage(img, 0, 0, width, height);
+      const frame = ctx.getImageData(0, 0, width, height); const d = frame.data;
+      const hist = new Array<number>(256).fill(0); const gray = new Uint8Array(width * height);
+      for (let i = 0, k = 0; i < d.length; i += 4, k++) { const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]); gray[k] = g; hist[g]++; }
+      // lean towards black: anything clearly darker than paper prints as ink, so pale logos do not fade away
+      const limit = Math.min(235, otsuThreshold(hist) + 30);
+      for (let i = 0, k = 0; i < d.length; i += 4, k++) { const v = gray[k] <= limit ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+      ctx.putImageData(frame, 0, 0);
+      return canvas.toDataURL("image/png");
+    } catch { return src; }
+  })();
+  printLogoCache.set(src, job);
+  if (printLogoCache.size > 20) printLogoCache.delete(printLogoCache.keys().next().value as string);
+  return job;
+}
+
+/** Replaces the receipt logo (<img class="logo">) inside a receipt HTML string by its sharp black-and-white version. */
+export async function sharpenReceiptLogo(html: string): Promise<string> {
+  const m = /(<img class="logo"[^>]*?\ssrc=")([^"]+)(")/.exec(html);
+  if (!m) return html;
+  const original = m[2].replace(/&amp;/g, "&");
+  const sharp = await logoForPrint(original);
+  return sharp === original ? html : html.replace(m[0], `${m[1]}${sharp}${m[3]}`);
+}

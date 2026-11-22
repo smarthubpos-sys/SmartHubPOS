@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { qzHtmlPageWidthInches, qzHtmlPrintSettings, qzPageOptions, receiptHeightMm } from "./printers.ts";
+import { qzHtmlPageWidthInches, qzHtmlPrintSettings, qzPageOptions, receiptHeightMm, rollHeightMm } from "./printers.ts";
 
 describe("QZ Tray HTML receipt width", () => {
   it("keeps physical page width in millimetres", () => {
@@ -24,17 +24,22 @@ describe("QZ Tray HTML receipt width", () => {
     expect(receiptHeightMm(0)).toBe(30);
     expect(receiptHeightMm(Number.NaN)).toBe(30);
   });
+
+  it("keeps a reserve under the roll receipt so the last lines (footer, payment info) are not cut off", () => {
+    expect(rollHeightMm(377)).toBeGreaterThanOrEqual(receiptHeightMm(377) + 10);
+    expect(rollHeightMm(0)).toBeGreaterThanOrEqual(30);
+  });
 });
 
 
 describe("QZ Tray HTML print settings", () => {
-  it("sends exact 80mm width and content-derived 118mm height to both render layers", () => {
+  it("sends exact 80mm width and content-derived 136mm height (content + safety reserve) to both render layers", () => {
     const settings = qzHtmlPrintSettings("80mm", 423);
     expect(settings.widthMm).toBe(80);
-    expect(settings.heightMm).toBe(118);
+    expect(settings.heightMm).toBe(136);
     expect(settings.config.units).toBe("in");
-    expect(settings.config.size).toEqual({ width: 3.15, height: 4.646 });
-    expect(settings.pixelOptions).toEqual({ pageWidth: 3.15, pageHeight: 4.646 });
+    expect(settings.config.size).toEqual({ width: 3.15, height: 5.354 });
+    expect(settings.pixelOptions).toEqual({ pageWidth: 3.15, pageHeight: 5.354 });
   });
 
   it("does not force rotation or scale content", () => {
