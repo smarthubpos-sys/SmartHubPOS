@@ -68,14 +68,14 @@ export default function ModuleMenu({ title, sections: allSections, onClose, vari
                 <button
                   key={item.path}
                   onClick={() => navigate(item.path)}
-                  className={variant === "accounts" ? "group flex min-h-[68px] items-center gap-3 rounded-xl border border-border/70 bg-card px-3 py-2.5 text-left transition-all hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" : "lift flex flex-col items-start gap-2 p-3.5 bg-card border border-border/60 rounded-2xl hover:border-primary/40 cursor-pointer text-left group"}
+                  className={variant === "accounts" ? "group flex min-h-[68px] min-w-0 items-center gap-3 overflow-hidden rounded-xl border border-border/70 bg-card px-3 py-2.5 text-left transition-all hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary" : "lift flex min-w-0 flex-col items-start gap-2 overflow-hidden p-3.5 bg-card border border-border/60 rounded-2xl hover:border-primary/40 cursor-pointer text-left group"}
                 >
                   <div className={variant === "accounts" ? "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors group-hover:bg-primary/10 group-hover:text-primary" : "p-2 rounded-xl bg-gradient-to-br from-primary/15 to-accent/15 text-primary group-hover:from-primary group-hover:to-accent group-hover:text-primary-foreground transition-colors"}>
                     <item.icon className="h-4 w-4" />
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-foreground leading-tight">{item.label}</p>
-                    <p className="mt-0.5 truncate text-xs leading-tight text-muted-foreground">{item.description}</p>
+                  <div className="w-full min-w-0 flex-1">
+                    <p className="break-words text-sm font-semibold text-foreground leading-tight">{item.label}</p>
+                    <p className="mt-0.5 line-clamp-2 break-words text-xs leading-tight text-muted-foreground" title={item.description}>{item.description}</p>
                   </div>
                   {variant === "accounts" && <span className="text-xs text-muted-foreground transition-transform group-hover:translate-x-0.5">→</span>}
                 </button>

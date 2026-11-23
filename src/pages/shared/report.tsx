@@ -49,9 +49,9 @@ export function DateRange({ startDate, endDate, onStart, onEnd, onApply, busy = 
 
 export function Stat({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-xl border p-4">
-      <div className="text-sm text-muted-foreground">{label}</div>
-      <div className="mt-1 text-xl font-bold">{typeof value === "number" ? fmt(value) : value}</div>
+    <div className="min-w-0 overflow-hidden rounded-xl border p-4">
+      <div className="break-words text-sm text-muted-foreground">{label}</div>
+      <div className="mt-1 break-words text-xl font-bold">{typeof value === "number" ? fmt(value) : value}</div>
     </div>
   );
 }

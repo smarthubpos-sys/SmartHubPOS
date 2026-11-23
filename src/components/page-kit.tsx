@@ -8,8 +8,8 @@ export function PageHeader({ title, subtitle, actions, icon: Icon }: { title: st
     <div className="flex flex-wrap items-center gap-3">
       {Icon && <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-accent text-primary-foreground shadow-lg shadow-primary/30"><Icon className="h-5 w-5" /></div>}
       <div className="min-w-0 flex-1">
-        <h1 className="text-xl font-bold tracking-tight md:text-2xl">{tr(title)}</h1>
-        {subtitle && <p className="text-sm text-muted-foreground">{tr(subtitle)}</p>}
+        <h1 className="break-words text-xl font-bold tracking-tight md:text-2xl">{tr(title)}</h1>
+        {subtitle && <p className="break-words text-sm text-muted-foreground">{tr(subtitle)}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
@@ -18,7 +18,7 @@ export function PageHeader({ title, subtitle, actions, icon: Icon }: { title: st
 
 export function Panel({ title, actions, children, className }: { title?: string; actions?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className={cn("rounded-2xl border border-border/60 bg-card p-4 shadow-[0_1px_2px_rgb(0_0_0/.04),0_10px_30px_-18px_rgb(40_40_120/.25)] md:p-5", className)}>
+    <section className={cn("min-w-0 rounded-2xl border border-border/60 bg-card p-4 shadow-[0_1px_2px_rgb(0_0_0/.04),0_10px_30px_-18px_rgb(40_40_120/.25)] md:p-5", className)}>
       {(title || actions) && (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           {title && <h2 className="text-sm font-semibold tracking-tight">{tr(title)}</h2>}
@@ -42,12 +42,12 @@ export type Tone = keyof typeof TONES;
 
 export function Stat({ label, value, sub, tone = "blue", icon: Icon }: { label: string; value: ReactNode; sub?: string; tone?: Tone; icon?: LucideIcon }) {
   return (
-    <div className="flex items-center gap-3 rounded-2xl border border-border/60 bg-card px-3 py-2.5 shadow-sm">
+    <div className="flex min-w-0 items-center gap-3 overflow-hidden rounded-2xl border border-border/60 bg-card px-3 py-2.5 shadow-sm">
       {Icon && <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br", TONES[tone])}><Icon className="h-4 w-4" /></div>}
       <div className="min-w-0">
-        <p className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tr(label)}</p>
-        <p className="truncate text-base font-bold leading-tight">{value}</p>
-        {sub && <p className="truncate text-[11px] text-muted-foreground">{sub}</p>}
+        <p className="line-clamp-2 break-words text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tr(label)}</p>
+        <p className="break-words text-base font-bold leading-tight">{value}</p>
+        {sub && <p className="line-clamp-2 break-words text-[11px] text-muted-foreground">{sub}</p>}
       </div>
     </div>
   );
