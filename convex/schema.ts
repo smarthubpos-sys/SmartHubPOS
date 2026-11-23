@@ -1036,6 +1036,8 @@ export default defineSchema({
     billSentBy: v.optional(v.id("users")),
     billResentAt: v.optional(v.string()), // the waiter RE-sent an already printed bill so the cashier can print it again (the first billPrintedAt is kept)
     billResentBy: v.optional(v.id("users")),
+    billHiddenAt: v.optional(v.string()), // an old unused bill was removed from the Bills list by a person holding "bills.clear_old"; the order, stock and money are untouched
+    billHiddenBy: v.optional(v.id("users")),
     billReprintedAt: v.optional(v.string()), // the cashier printed the re-sent bill; a resend is waiting while billResentAt is later than this
     cancelledAt: v.optional(v.string()),
     cancelledBy: v.optional(v.id("users")),

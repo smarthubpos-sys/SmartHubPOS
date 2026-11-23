@@ -708,7 +708,7 @@ export const listForBills = query({
     const rows = await ctx.db.query("waiterOrders").withIndex("by_scope_status", q => q.eq("tenantId", scope.tenantId)).collect();
     const needle = (args.table ?? "").trim().toLowerCase();
     const shown = rows
-      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billPrintedAt || resendPending(r)) && (!isWaiter(user.role) || !r.billSentAt) && billVisible(user, r))
+      .filter(r => orderInScope(user, scope, r) && (!isWaiter(user.role) || r.branchId === scope.branchId) && r.status !== "cancelled" && r.status !== "placed" && (args.includePrinted || !r.billHiddenAt) && (args.includePrinted || !r.billPrintedAt || resendPending(r)) && (!isWaiter(user.role) || !r.billSentAt) && billVisible(user, r))
       .filter(r => !needle || (r.tableNumber ?? "").toLowerCase().includes(needle) || r.customerName.toLowerCase().includes(needle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
     // A bill the cashier directed to a customer leaves the active list once that customer has paid its invoice in full (the history view still has it).
@@ -722,6 +722,41 @@ export const listForBills = query({
       keep.push(r);
     }
     return keep;
+  },
+});
+
+/** An order younger than this can never be removed from the Bills list: it may still be in use today. */
+export const CLEAR_OLD_BILLS_MIN_DAYS = 2;
+
+/**
+ * Removes old, unused bills from the Bills list so they stop piling up. This is a CLEAN-UP of the list only: the order itself, its stock,
+ * the waiter's money and the day reports are not touched (history still shows it). Needs the "bills.clear_old" permission, given to one trusted person.
+ */
+export const clearOldBills = mutation({
+  args: { orderIds: v.array(v.id("waiterOrders")) },
+  handler: async (ctx, args) => {
+    const user = await requirePermission(ctx, "bills.clear_old", "bills");
+    const scope = await viewScope(ctx, user).catch((e) => { throw surfaceError(e); });
+    const ids = [...new Set(args.orderIds.map(String))] as Id<"waiterOrders">[];
+    if (ids.length === 0) throw new ConvexError("Chagua angalau bili moja.");
+    if (ids.length > 200) throw new ConvexError("Ondoa hadi bili 200 kwa mara moja.");
+    const cutoff = new Date(Date.now() - CLEAR_OLD_BILLS_MIN_DAYS * 86400000).toISOString();
+    const orders = [];
+    for (const id of ids) {
+      const o = await ctx.db.get("waiterOrders", id);
+      if (!o || !orderInScope(user, scope, o) || o.status === "cancelled" || o.status === "placed") throw new ConvexError("Bili haipo kwenye biashara au tawi lako.");
+      if (o.createdAt > cutoff) throw new ConvexError(`Bili ya siku chini ya ${CLEAR_OLD_BILLS_MIN_DAYS} haiwezi kuondolewa.`);
+      orders.push(o);
+    }
+    const now = new Date().toISOString();
+    let removed = 0;
+    for (const o of orders) {
+      if (o.billHiddenAt) continue;
+      await ctx.db.patch("waiterOrders", o._id, { billHiddenAt: now, billHiddenBy: user._id });
+      removed++;
+    }
+    await logAudit(ctx, user, { action: "clear_old_bills", module: "bills", referenceId: String(orders[0]._id), referenceType: "waiterOrder", details: `Bili ${removed} za zamani zimeondolewa kwenye orodha ya Bills (oda, stock na pesa havijaguswa)` });
+    return { removed };
   },
 });
 

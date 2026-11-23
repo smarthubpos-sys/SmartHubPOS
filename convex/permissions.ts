@@ -3,7 +3,7 @@ export const PERMISSION_GROUPS: { group: string; items: { key: string; label: st
   { group: "Dashboard", items: [{ key: "dashboard.view", label: "View business dashboard and summary" }] },
   { group: "Sales", items: [{ key: "sales.view", label: "View sales and invoices" }, { key: "sales.manage", label: "Create invoices and receive customer payments" }, { key: "sales.edit", label: "Edit saved sales and invoices" }, { key: "sales.print", label: "Print receipts and invoices" }, { key: "sales.export", label: "Export sales data" }, { key: "sales.reports.view", label: "View sales reports" }, { key: "sales.void", label: "Delete / cancel orders (sales invoices): stock returns and money is refunded" }] },
   { group: "Selling Point", items: [{ key: "waiterOrders.view", label: "View Selling Point orders and cashier queue" }, { key: "waiterOrders.manage", label: "Create, send, print and receive Selling Point orders" }] },
-  { group: "Bills", items: [{ key: "bills.all_departments", label: "Combine customer bills across departments (e.g. Kitchen + Bar + Lounge)" }] },
+  { group: "Bills", items: [{ key: "bills.all_departments", label: "Combine customer bills across departments (e.g. Kitchen + Bar + Lounge)" }, { key: "bills.clear_old", label: "Remove old unused bills from the Bills list (tick one trusted person; Administrator has it by default)" }] },
   {
     group: "Stock",
     items: [
@@ -89,6 +89,7 @@ export const USER_GRANTABLE_PERMISSIONS: { key: string; label: string }[] = [
   { key: "leave.request", label: "Anaweza kuomba ruhusa / likizo na kuona ratiba yake" },
   { key: "leave.review", label: "HR: anapokea, anaona na kuamua maombi ya ruhusa yaliyotumwa kwa HR" },
   { key: "stock.adjust", label: "Anaweza kubadili / kufuta stock (adjustment, kuhariri bidhaa) â€” Super Admin pekee ndiye anayetoa" },
+  { key: "bills.clear_old", label: "Anaweza kuondoa bili za zamani zisizotumika kwenye orodha ya Bills" },
 ];
 
 /**
@@ -104,7 +105,7 @@ export const ALL_PERMISSION_KEYS = PERMISSION_GROUPS.flatMap((g) => g.items.map(
  * sales.view / sales.print are listed because the built-in Cashier used to be just ["sales.manage"]: a Cashier row saved in that era
  * (no knownKeys) would otherwise stay without them and every Sales screen would be refused. Rows saved later keep their own choice.
  */
-export const LATE_PERMISSIONS = ["dashboard.view", "sales.view", "sales.print", "sales.void", "waiterOrders.view", "waiterOrders.manage", "purchasing.edit", "purchasing.delete", "stock.adjust", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer"];
+export const LATE_PERMISSIONS = ["bills.clear_old", "dashboard.view", "sales.view", "sales.print", "sales.void", "waiterOrders.view", "waiterOrders.manage", "purchasing.edit", "purchasing.delete", "stock.adjust", "stock.store.view", "stock.store.manage", "stock.store.receive", "stock.store.transfer", "stock.store.dispatch", "stock.store.receive_transfer"];
 
 export const SYSTEM_ROLES: { name: string; displayName: string; permissions: string[] }[] = [
   { name: "admin", displayName: "Administrator", permissions: ALL_PERMISSION_KEYS.filter((k) => k !== "maintenance.roles" && !SUPER_ADMIN_ONLY_PERMISSIONS.includes(k)) },
