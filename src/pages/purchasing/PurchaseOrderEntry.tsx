@@ -9,6 +9,7 @@ import SearchSelect from "@/components/SearchSelect.tsx";
 import PurchaseOrderSheet from "@/pages/purchasing/PurchaseOrderSheet.tsx";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { localDate } from "@/lib/format.ts";
+import { productMatches } from "@/lib/product-search.ts";
 
 type Line = { productId: string; qty: string; unitCost: string; total: string };
 const num = (s: string) => { const n = Number(s); return Number.isFinite(n) ? n : 0; };
@@ -27,6 +28,8 @@ export default function PurchaseOrderEntry({ onSaved }: { onSaved?: () => void }
   const [expected, setExpected] = useState("");
   const [notes, setNotes] = useState("");
   const [edits, setEdits] = useState<Record<string, Partial<Pick<Line, "qty" | "unitCost">>>>({}); // what the person typed, per product; every other row comes straight from the product list
+  const [search, setSearch] = useState("");
+  const [filledOnly, setFilledOnly] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState<{ id: Id<"purchaseOrders">; ref: string } | null>(null);
 
@@ -36,6 +39,8 @@ export default function PurchaseOrderEntry({ onSaved }: { onSaved?: () => void }
     return { productId: id, qty, unitCost, total: String(num(qty) * num(unitCost)) };
   }), [products, edits]);
 
+  const productById = useMemo(() => new Map((products ?? []).map((p) => [String(p._id), p])), [products]);
+  const shownCount = lines.filter((l) => productMatches(productById.get(l.productId), search) && (!filledOnly || num(l.qty) > 0)).length;
   const active = lines.filter((l) => num(l.qty) > 0);
   const grand = active.reduce((s, l) => s + num(l.qty) * num(l.unitCost), 0);
   const patch = (i: number, p: Partial<Pick<Line, "qty" | "unitCost">>) => setEdits((old) => ({ ...old, [lines[i].productId]: { ...old[lines[i].productId], ...p } }));
@@ -74,12 +79,18 @@ export default function PurchaseOrderEntry({ onSaved }: { onSaved?: () => void }
           <label className="grid gap-1 text-sm">{tr("Tarehe ya kupokea (hiari)")}<Input type="date" value={expected} min={orderDate} onChange={(e) => setExpected(e.target.value)} /></label>
           <label className="grid gap-1 text-sm">{tr("Maelezo (hiari)")}<Input value={notes} maxLength={200} onChange={(e) => setNotes(e.target.value)} /></label>
         </div>
-        <div className="mt-6 overflow-x-auto">
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <Input className="max-w-sm" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder={tr("Tafuta bidhaa (jina au code)…")} aria-label={tr("Tafuta bidhaa")} />
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4" checked={filledOnly} onChange={(e) => setFilledOnly(e.target.checked)} />{tr("Zilizojazwa kiasi tu")}</label>
+          <span className="text-xs text-muted-foreground">{tr("Zinaonyeshwa")}: {shownCount} / {lines.length}</span>
+        </div>
+        <div className="mt-3 overflow-x-auto">
           <table className="w-full min-w-[640px] text-sm">
             <thead><tr className="border-b text-left"><th className="p-2">{tr("Bidhaa")}</th><th className="p-2">{tr("Unit")}</th><th className="p-2">{tr("Stock ya sasa")}</th><th className="p-2">{tr("Quantity ya kuagiza")}</th><th className="p-2">{tr("Cost")}</th><th className="p-2 text-right">{tr("Total")}</th></tr></thead>
             <tbody>
               {lines.map((line, i) => {
                 const p = (products ?? []).find((x) => String(x._id) === line.productId);
+                if (!productMatches(p, search) || (filledOnly && !(num(line.qty) > 0))) return null; // hidden rows keep what was typed
                 return (
                   <tr key={line.productId} className="border-b">
                     <td className="p-2 font-medium">{p?.name ?? "—"}</td>

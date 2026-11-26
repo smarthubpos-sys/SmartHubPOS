@@ -4,6 +4,7 @@
  * user (User Settings): purchasing.edit and purchasing.delete. The server checks them again on every call.
  */
 import { useState, type ReactNode } from "react";
+import SearchSelect from "@/components/SearchSelect.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { toast } from "sonner";
 import { api } from "@/convex/_generated/api.js";
@@ -35,7 +36,7 @@ function Overlay({ title, onClose, children }: { title: string; onClose: () => v
 type Line = { productId: string; qty: string; unitCost: string; total: string };
 const blankLine = (): Line => ({ productId: "", qty: "1", unitCost: "0", total: "0" });
 
-function LinesEditor({ lines, onChange, products }: { lines: Line[]; onChange: (l: Line[]) => void; products: Array<{ _id: Id<"products">; name: string }> }) {
+function LinesEditor({ lines, onChange, products }: { lines: Line[]; onChange: (l: Line[]) => void; products: Array<{ _id: Id<"products">; name: string; itemCode?: string }> }) {
   const set = (i: number, patch: Partial<Line>) => onChange(lines.map((l, x) => {
     if (x !== i) return l;
     const next = { ...l, ...patch };
@@ -59,10 +60,8 @@ function LinesEditor({ lines, onChange, products }: { lines: Line[]; onChange: (
             {lines.map((l, i) => (
               <tr key={i} className="border-b">
                 <td className="p-2">
-                  <select className="h-10 w-full min-w-44 rounded-md border bg-background px-2" value={l.productId} onChange={(e) => set(i, { productId: e.target.value })}>
-                    <option value="">{tr("-- Chagua bidhaa --")}</option>
-                    {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-                  </select>
+                  <SearchSelect className="min-w-44" value={l.productId} onChange={(v) => set(i, { productId: v })} placeholder={tr("-- Chagua bidhaa --")}
+                    options={products.map((p) => ({ value: String(p._id), label: p.name, hint: p.itemCode }))} />
                 </td>
                 <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.qty} onChange={(e) => set(i, { qty: e.target.value })} /></td>
                 <td className="p-2"><Input aria-label={tr("Last cost")} className="w-28" type="number" step="any" min="0" value={l.unitCost} onChange={(e) => set(i, { unitCost: e.target.value })} /></td>
@@ -98,7 +97,7 @@ function useSave(onClose: () => void) {
 
 // ───────────── edit dialogs ─────────────
 
-type Products = Array<{ _id: Id<"products">; name: string }>;
+type Products = Array<{ _id: Id<"products">; name: string; itemCode?: string }>;
 type Suppliers = Array<{ _id: Id<"suppliers">; name: string; isActive: boolean }>;
 const asLines = (lines: Array<{ productId: Id<"products">; qty: number; unitCost: number }>): Line[] => lines.map((l) => ({ productId: String(l.productId), qty: String(l.qty), unitCost: String(l.unitCost), total: String(l.qty * l.unitCost) }));
 
