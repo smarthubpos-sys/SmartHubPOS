@@ -6,6 +6,7 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import SearchSelect from "@/components/SearchSelect.tsx";
 import { DateRange, ReportTable, Stat } from "@/pages/shared/report.tsx";
 import { fmt, monthStart, num, round2, today, type Row } from "@/pages/shared/report-utils.ts";
 import { tr, errorText, trValue } from "@/lib/i18n.ts";
@@ -192,12 +193,11 @@ function AdjustmentScreen() {
   return (
     <div className="space-y-5">
       <h1 className="text-2xl font-bold">{tr("Quantity Adjustment")}</h1>
+      <p className="rounded-lg border bg-muted/30 p-3 text-sm">{tr("Hapa unaweza kupunguza au kuongeza stock bila kufuta bidhaa wala kuanza upya: chagua bidhaa, weka kiasi sahihi kipya (mfano 2000 → 20), andika sababu, kisha hifadhi. Kila badiliko linarekodiwa kwenye Item History.")}</p>
       <section className="grid gap-4 rounded-xl border p-5 md:grid-cols-2">
         <label className="grid gap-1 text-sm">{tr("Bidhaa")}
-          <select className={selectClass} value={productId} onChange={(e) => { setProductId(e.target.value); setCounted(""); }}>
-            <option value="">{tr("-- Chagua bidhaa --")}</option>
-            {data.products.filter((p) => p.isActive).map((p) => <option key={p._id} value={p._id}>{p.name} ({p.itemCode})</option>)}
-          </select>
+          <SearchSelect value={productId} onChange={(v) => { setProductId(v); setCounted(""); }} placeholder={tr("Andika jina au code kutafuta bidhaa…")}
+            options={data.products.filter((p) => p.isActive).map((p) => ({ value: String(p._id), label: `${p.name} (${p.itemCode})`, hint: p.itemCode }))} />
         </label>
         <div className="rounded-md border bg-muted/30 p-3 text-sm">{product ? <>{tr("Stock ya mfumo:")} <b>{fmt(product.currentQty, 4)} {product.unitName}</b>  {tr("· Cost:")} {fmt(product.cost)}</> : tr("Chagua bidhaa kuona stock ya mfumo.")}</div>
         <label className="grid gap-1 text-sm">{tr("Kiasi kilichohesabiwa (kipya)")}<Input type="number" step="any" min="0" value={counted} onChange={(e) => setCounted(e.target.value)} /></label>
@@ -399,7 +399,8 @@ function HistoryScreen() {
         return (
           <>
             <label className="grid max-w-md gap-1 text-sm">{tr("Bidhaa")}
-              <select className={selectClass} value={productId} onChange={(e) => setProductId(e.target.value)}><option value="">{tr("-- Chagua bidhaa --")}</option>{data.products.map((x) => <option key={x._id} value={x._id}>{x.name} ({x.itemCode})</option>)}</select>
+              <SearchSelect value={productId} onChange={setProductId} placeholder={tr("Andika jina au code kutafuta bidhaa…")}
+                options={data.products.map((x) => ({ value: String(x._id), label: `${x.name} (${x.itemCode})`, hint: x.itemCode }))} />
             </label>
             {p && <div className="grid gap-3 sm:grid-cols-3"><Stat label={tr("Stock iliyopo")} value={`${fmt(p.currentQty, 4)} ${p.unitName}`} /><Stat label={tr("Bei ya kuuzia")} value={p.sellingPrice} /><Stat label={tr("Cost")} value={p.cost} /></div>}
             {p ? <ReportTable title={tr("Historia — {0}", [p.name])} rows={rows} /> : <p className="text-sm text-muted-foreground">{tr("Chagua bidhaa kuona historia yake kamili.")}</p>}

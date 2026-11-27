@@ -19,6 +19,8 @@ export const IMPORT_DICT: Record<string, { sw: string; en: string }> = {
   "Selling Point settings": { sw: "Mipangilio ya Selling Point", en: "Selling Point settings" },
   "Enable Waiter": { sw: "Washa Waiter", en: "Enable Waiter" },
   "Enable Waitress": { sw: "Washa Waitress", en: "Enable Waitress" },
+  "Andika jina au code kutafuta bidhaa…": { sw: "Andika jina au code kutafuta bidhaa…", en: "Type a name or code to find an item…" },
+  "Hapa unaweza kupunguza au kuongeza stock bila kufuta bidhaa wala kuanza upya: chagua bidhaa, weka kiasi sahihi kipya (mfano 2000 → 20), andika sababu, kisha hifadhi. Kila badiliko linarekodiwa kwenye Item History.": { sw: "Hapa unaweza kupunguza au kuongeza stock bila kufuta bidhaa wala kuanza upya: chagua bidhaa, weka kiasi sahihi kipya (mfano 2000 → 20), andika sababu, kisha hifadhi. Kila badiliko linarekodiwa kwenye Item History.", en: "Here you can reduce or increase stock without deleting the item or starting over: pick the item, enter the correct new quantity (e.g. 2000 → 20), write a reason, then save. Every change is recorded in Item History." },
   "Hakuna invoice za hivi karibuni.": { sw: "Hakuna invoice za hivi karibuni.", en: "No recent invoices." },
   "Invoice za hivi karibuni": { sw: "Invoice za hivi karibuni", en: "Recent invoices" },
   "Chagua mteja huyu": { sw: "Chagua mteja huyu", en: "Pick this customer" },
