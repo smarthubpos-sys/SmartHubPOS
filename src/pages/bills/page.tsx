@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Empty, FormField, PageHeader, Panel, Pill, SelectBox, Stat, Table } from "@/components/page-kit.tsx";
 import { useMoney } from "@/hooks/use-money.ts";
-import { formatDate } from "@/lib/format.ts";
+import { formatDate, localDate } from "@/lib/format.ts";
 import { tr, errorText } from "@/lib/i18n.ts";
 import { toast } from "sonner";
 import BillSheet from "@/components/BillSheet.tsx";
@@ -24,6 +24,7 @@ function BillsPageBody() {
   const { money } = useMoney();
   const [search, setSearch] = useState("");
   const [clientId, setClientId] = useState("");
+  const [billDate, setBillDate] = useState(() => localDate()); // without a customer, the date is all the cashier has to pick (empty = recent days)
   const [onlyOpen, setOnlyOpen] = useState(false);
   const [showBilled, setShowBilled] = useState(false); // invoices already put on a bill leave the list; tick to see them again
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -40,7 +41,7 @@ function BillsPageBody() {
   const [whatsappEnabled, setWhatsappEnabled] = useState(() => localStorage.getItem("smarthub-bill-whatsapp-enabled") !== "false");
 
   const invoices = useQuery(api.customerBills.invoicesForClient, clientId ? { clientId: clientId as Id<"clients">, onlyOpen, allDepartments: combine } : "skip");
-  const recent = useQuery(api.customerBills.recentInvoices, clientId ? "skip" : { onlyOpen, allDepartments: combine }); // no customer chosen: newest invoices of the department(s)
+  const recent = useQuery(api.customerBills.recentInvoices, clientId ? "skip" : { onlyOpen, allDepartments: combine, date: billDate || undefined }); // no customer chosen: newest invoices of the department(s)
   const history = useQuery(api.customerBills.historyForClient, clientId ? { clientId: clientId as Id<"clients"> } : "skip");
   const needle = search.trim().toLowerCase();
   const visibleClients = useMemo(
@@ -103,6 +104,14 @@ function BillsPageBody() {
 
         <Panel>
           <div className="grid gap-3 md:grid-cols-3">
+            {!clientId && (
+              <FormField label={tr("Tarehe")}>
+                <div className="flex items-center gap-2">
+                  <Input type="date" value={billDate} onChange={(e) => { setBillDate(e.target.value); resetSelection(); }} />
+                  {billDate && <Button type="button" size="sm" variant="outline" onClick={() => { setBillDate(""); resetSelection(); }}>{tr("Siku zote")}</Button>}
+                </div>
+              </FormField>
+            )}
             <FormField label={tr("Tafuta mteja")}><Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={tr("Jina au msimbo wa mteja")} /></FormField>
             <FormField label={tr("Mteja")}>
               <SelectBox value={clientId} onChange={(e) => { setClientId(e.target.value); resetSelection(); }}>
@@ -126,11 +135,11 @@ function BillsPageBody() {
               </>
             )}
           </div>
-          {!clientId && <p className="mt-2 text-xs text-muted-foreground">{tr("Huhitaji kuchagua mteja. Bili moja ni ya mteja mmoja: ukiweka alama kwenye invoice ya mteja, za wateja wengine zinasubiri.")}</p>}
+          {!clientId && <p className="mt-2 text-xs text-muted-foreground">{tr("Huhitaji kuchagua mteja: chagua tarehe tu (na idara zote kama inahitajika). Bili moja ni ya mteja mmoja: ukiweka alama kwenye invoice ya mteja, za wateja wengine zinasubiri.")}</p>}
         </Panel>
 
         <Panel
-          title={clientId ? tr("Invoice za mteja") : tr("Invoice za hivi karibuni")}
+          title={clientId ? tr("Invoice za mteja") : billDate ? `${tr("Invoice za tarehe")} ${formatDate(billDate)}` : tr("Invoice za hivi karibuni")}
           actions={list.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {clientId && <Button size="sm" variant="outline" onClick={() => { setPicked(allPicked ? new Set() : new Set(eligible.map((i) => String(i._id)))); setShowBill(false); setBillInvoiceIds([]); }}>{allPicked ? tr("Ondoa zote") : tr("Chagua zote")}</Button>}
@@ -141,7 +150,7 @@ function BillsPageBody() {
           ) : undefined}
         >
           {source === undefined ? <Empty>{tr("Inapakia…")}</Empty>
-            : list.length === 0 ? <Empty>{clientId ? tr("Mteja huyu hana invoice.") : tr("Hakuna invoice za hivi karibuni.")}</Empty>
+            : list.length === 0 ? <Empty>{clientId ? tr("Mteja huyu hana invoice.") : billDate ? tr("Hakuna invoice za tarehe hii.") : tr("Hakuna invoice za hivi karibuni.")}</Empty>
             : (
               <Table head={["", tr("Invoice"), ...(!clientId ? [tr("Mteja")] : []), ...(combine ? [tr("Idara")] : []), tr("Tarehe"), tr("Jumla"), tr("Imelipwa"), tr("Deni"), tr("Hali")]}>
                 {list.map((i) => (

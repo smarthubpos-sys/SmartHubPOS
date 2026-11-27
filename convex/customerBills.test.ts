@@ -149,6 +149,9 @@ describe("bills for a user given only some departments", () => {
     const recent = await as.query(api.customerBills.recentInvoices, { allDepartments: true });
     expect(recent.map((i) => i.invoiceNo).sort()).toEqual(["BAR-1", "JIKO-1"]);
     expect(recent.every((i) => i.clientName === "Meza 5" && i.customerKey === "meza 5")).toBe(true);
+    // the date is the only thing to pick: that day's invoices of the departments he was given, nothing from other days
+    expect((await as.query(api.customerBills.recentInvoices, { allDepartments: true, date: "2026-03-01" })).map((i) => i.invoiceNo).sort()).toEqual(["BAR-1", "JIKO-1"]);
+    expect(await as.query(api.customerBills.recentInvoices, { allDepartments: true, date: "2026-03-02" })).toEqual([]);
 
     const bill = await as.query(api.customerBills.billData, { invoiceIds: [d.bar.id, d.jiko.id] });
     expect(bill.totals.total).toBe(10000);

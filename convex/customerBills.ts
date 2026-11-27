@@ -75,7 +75,7 @@ export const invoicesForClient = query({
  * "all departments", every department he may combine. Each row names its customer so the cashier can pick the customer from the row.
  */
 export const recentInvoices = query({
-  args: { onlyOpen: v.optional(v.boolean()), allDepartments: v.optional(v.boolean()) },
+  args: { onlyOpen: v.optional(v.boolean()), allDepartments: v.optional(v.boolean()), date: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const user = await requireActiveUser(ctx, "bills");
     if (!user.tenantId) return [];
@@ -83,7 +83,10 @@ export const recentInvoices = query({
     const cross = allowed && !!a.allDepartments;
     const staffOnly = isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase());
     const names = new Map((await ctx.db.query("branches").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId!)).collect()).map((b) => [String(b._id), b.name]));
-    const rows = await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", user.tenantId!)).order("desc").take(800);
+    const day = a.date && /^\d{4}-\d{2}-\d{2}$/.test(a.date) ? a.date : undefined; // the date is the only thing the cashier has to pick
+    const rows = day
+      ? await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", user.tenantId!).eq("invoiceDate", day)).order("desc").take(800)
+      : await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", user.tenantId!)).order("desc").take(800);
     const clientCache = new Map<string, { name: string; code?: string } | null>();
     const out = [];
     for (const i of rows) {
