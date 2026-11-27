@@ -144,6 +144,12 @@ describe("bills for a user given only some departments", () => {
     const both = await as.query(api.customerBills.invoicesForClient, { clientId: d.bar.c, allDepartments: true });
     expect(both.map((i) => i.invoiceNo).sort()).toEqual(["BAR-1", "JIKO-1"]);
 
+    // no customer chosen: his own department shows by itself, "all departments" shows only the departments he was given
+    expect((await as.query(api.customerBills.recentInvoices, {})).map((i) => i.invoiceNo)).toEqual(["BAR-1"]);
+    const recent = await as.query(api.customerBills.recentInvoices, { allDepartments: true });
+    expect(recent.map((i) => i.invoiceNo).sort()).toEqual(["BAR-1", "JIKO-1"]);
+    expect(recent.every((i) => i.clientName === "Meza 5" && i.customerKey === "meza 5")).toBe(true);
+
     const bill = await as.query(api.customerBills.billData, { invoiceIds: [d.bar.id, d.jiko.id] });
     expect(bill.totals.total).toBe(10000);
     await as.mutation(api.customerBills.create, { invoiceIds: [d.bar.id, d.jiko.id] });

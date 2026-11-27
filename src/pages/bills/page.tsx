@@ -40,6 +40,7 @@ function BillsPageBody() {
   const [whatsappEnabled, setWhatsappEnabled] = useState(() => localStorage.getItem("smarthub-bill-whatsapp-enabled") !== "false");
 
   const invoices = useQuery(api.customerBills.invoicesForClient, clientId ? { clientId: clientId as Id<"clients">, onlyOpen, allDepartments: combine } : "skip");
+  const recent = useQuery(api.customerBills.recentInvoices, clientId ? "skip" : { onlyOpen, allDepartments: combine }); // no customer chosen: newest invoices of the department(s)
   const history = useQuery(api.customerBills.historyForClient, clientId ? { clientId: clientId as Id<"clients"> } : "skip");
   const needle = search.trim().toLowerCase();
   const visibleClients = useMemo(
@@ -47,15 +48,26 @@ function BillsPageBody() {
     [clients, needle],
   );
 
-  const list = (invoices ?? []).filter((i) => (!combine || !deptFilter || i.department === deptFilter) && (showBilled || !i.alreadyBilled));
-  const eligible = list.filter((i) => i.eligible);
+  type BillRow = NonNullable<typeof invoices>[number] & { clientId?: Id<"clients">; clientName?: string; customerKey?: string };
+  const source = (clientId ? invoices : recent) as BillRow[] | undefined;
+  const list = (source ?? []).filter((i) => (!combine || !deptFilter || i.department === deptFilter) && (showBilled || !i.alreadyBilled));
+  // without a chosen customer a bill still belongs to ONE customer: once an invoice is ticked, other customers' invoices wait
+  const pickedKey = !clientId ? list.find((i) => picked.has(String(i._id)))?.customerKey : undefined;
+  const otherCustomer = (i: BillRow) => !clientId && !!pickedKey && i.customerKey !== pickedKey;
+  const eligible = list.filter((i) => i.eligible && !otherCustomer(i));
   const chosen = eligible.filter((i) => picked.has(String(i._id)));
   const sum = (k: "total" | "amountPaid" | "outstanding") => chosen.reduce((n, i) => n + i[k], 0);
   const pill = (s: string) => s === "paid" ? <Pill tone="green">{tr("Imelipwa")}</Pill> : s === "partial" ? <Pill tone="amber">{tr("Imelipwa kiasi")}</Pill> : <Pill tone="blue">{tr("Haijalipwa")}</Pill>;
 
+  // a click on the customer's name in the list opens all his invoices (his record in the user's own department)
+  const chooseCustomer = (i: BillRow) => {
+    const mine = (clients ?? []).find((c) => String(c._id) === String(i.clientId)) ?? (clients ?? []).find((c) => c.name.trim().toLowerCase().replace(/\s+/g, " ") === i.customerKey);
+    if (!mine) { toast.info(tr("Mteja huyu hayuko kwenye idara yako; weka alama kwenye invoice zake hapa chini.")); return; }
+    setClientId(String(mine._id)); resetSelection();
+  };
   const resetSelection = () => { setPicked(new Set()); setShowBill(false); setBillInvoiceIds([]); };
   const toggle = (id: string) => {
-    if (list.some((i) => String(i._id) === id && !i.eligible)) return;
+    if (list.some((i) => String(i._id) === id && (!i.eligible || otherCustomer(i)))) return;
     setPicked((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   };
   const allPicked = eligible.length > 0 && chosen.length === eligible.length;
@@ -79,7 +91,7 @@ function BillsPageBody() {
   return (
     <div className="mx-auto max-w-6xl space-y-4">
       <div className="print:hidden space-y-4">
-        <PageHeader icon={Receipt} title={tr("Bills")} subtitle={tr("Bili za wateja: chagua mteja, weka alama kwenye invoice unazotaka, kisha chapisha bili.")} />
+        <PageHeader icon={Receipt} title={tr("Bills")} subtitle={tr("Bili za wateja: invoice za hivi karibuni zinaonekana bila kuchagua mteja; weka alama kwenye invoice unazotaka, kisha chapisha bili.")} />
 
         {business && (business.waiterOrdersEnabled !== false || business.waiterEnabled === true || business.waitressEnabled === true) && <ErrorBoundary inline><BillsPanel /></ErrorBoundary>}
 
@@ -114,28 +126,29 @@ function BillsPageBody() {
               </>
             )}
           </div>
+          {!clientId && <p className="mt-2 text-xs text-muted-foreground">{tr("Huhitaji kuchagua mteja. Bili moja ni ya mteja mmoja: ukiweka alama kwenye invoice ya mteja, za wateja wengine zinasubiri.")}</p>}
         </Panel>
 
         <Panel
-          title={tr("Invoice za mteja")}
-          actions={clientId && list.length > 0 ? (
+          title={clientId ? tr("Invoice za mteja") : tr("Invoice za hivi karibuni")}
+          actions={list.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" onClick={() => { setPicked(allPicked ? new Set() : new Set(eligible.map((i) => String(i._id)))); setShowBill(false); setBillInvoiceIds([]); }}>{allPicked ? tr("Ondoa zote") : tr("Chagua zote")}</Button>
+              {clientId && <Button size="sm" variant="outline" onClick={() => { setPicked(allPicked ? new Set() : new Set(eligible.map((i) => String(i._id)))); setShowBill(false); setBillInvoiceIds([]); }}>{allPicked ? tr("Ondoa zote") : tr("Chagua zote")}</Button>}
               <Button size="sm" variant="outline" disabled={chosen.length === 0 || creatingBill} onClick={() => void startBill()}>{tr("Send")}</Button>
               <label className="flex items-center gap-1 text-xs">{tr("Printer")}<select className="h-8 rounded-md border bg-background px-2" value={paper} onChange={(e) => { const v = e.target.value as "80mm" | "58mm" | "A4"; setPaper(v); localStorage.setItem("smarthub-print-paper", v); }}><option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option></select></label>
               <Button size="sm" disabled={chosen.length === 0 || creatingBill} onClick={() => void startBill()}><Printer className="mr-1 h-4 w-4" />{creatingBill ? tr("Inahifadhi...") : tr("Print")}</Button>
             </div>
           ) : undefined}
         >
-          {!clientId ? <Empty>{tr("Chagua mteja ili kuona invoice zake.")}</Empty>
-            : invoices === undefined ? <Empty>{tr("Inapakia…")}</Empty>
-            : list.length === 0 ? <Empty>{tr("Mteja huyu hana invoice.")}</Empty>
+          {source === undefined ? <Empty>{tr("Inapakia…")}</Empty>
+            : list.length === 0 ? <Empty>{clientId ? tr("Mteja huyu hana invoice.") : tr("Hakuna invoice za hivi karibuni.")}</Empty>
             : (
-              <Table head={["", tr("Invoice"), ...(combine ? [tr("Idara")] : []), tr("Tarehe"), tr("Jumla"), tr("Imelipwa"), tr("Deni"), tr("Hali")]}>
+              <Table head={["", tr("Invoice"), ...(!clientId ? [tr("Mteja")] : []), ...(combine ? [tr("Idara")] : []), tr("Tarehe"), tr("Jumla"), tr("Imelipwa"), tr("Deni"), tr("Hali")]}>
                 {list.map((i) => (
-                  <tr key={i._id} className={!i.eligible ? "opacity-70" : "cursor-pointer"} onClick={() => { if (i.eligible) { toggle(String(i._id)); setShowBill(false); setBillInvoiceIds([]); } }}>
-                    <td className="w-8"><input type="checkbox" aria-label={i.invoiceNo} checked={picked.has(String(i._id))} disabled={!i.eligible} onChange={() => { toggle(String(i._id)); setShowBill(false); setBillInvoiceIds([]); }} onClick={(e) => e.stopPropagation()} /></td>
+                  <tr key={i._id} className={!i.eligible || otherCustomer(i) ? "opacity-50" : "cursor-pointer"} onClick={() => { if (i.eligible && !otherCustomer(i)) { toggle(String(i._id)); setShowBill(false); setBillInvoiceIds([]); } }}>
+                    <td className="w-8"><input type="checkbox" aria-label={i.invoiceNo} checked={picked.has(String(i._id))} disabled={!i.eligible || otherCustomer(i)} onChange={() => { toggle(String(i._id)); setShowBill(false); setBillInvoiceIds([]); }} onClick={(e) => e.stopPropagation()} /></td>
                     <td className="whitespace-nowrap font-medium">{i.invoiceNo}</td>
+                    {!clientId && <td className="min-w-28 break-words"><button type="button" className="text-left underline decoration-dotted" title={tr("Chagua mteja huyu")} onClick={(e) => { e.stopPropagation(); chooseCustomer(i); }}>{i.clientName}</button></td>}
                     {combine && <td className="whitespace-nowrap">{i.department}</td>}
                     <td className="whitespace-nowrap">{formatDate(i.date)}</td>
                     <td className="whitespace-nowrap">{money(i.total)}</td>

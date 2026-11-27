@@ -70,6 +70,39 @@ export const invoicesForClient = query({
   },
 });
 
+/**
+ * Recent invoices WITHOUT choosing a customer first (the "all departments" view): newest first, the user's own department or, with
+ * "all departments", every department he may combine. Each row names its customer so the cashier can pick the customer from the row.
+ */
+export const recentInvoices = query({
+  args: { onlyOpen: v.optional(v.boolean()), allDepartments: v.optional(v.boolean()) },
+  handler: async (ctx, a) => {
+    const user = await requireActiveUser(ctx, "bills");
+    if (!user.tenantId) return [];
+    const { allowed, canSee } = await crossAccess(ctx, user);
+    const cross = allowed && !!a.allDepartments;
+    const staffOnly = isOwnDataOnly(user) || ["waiter", "waitress"].includes(String(user.role ?? "").toLowerCase());
+    const names = new Map((await ctx.db.query("branches").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId!)).collect()).map((b) => [String(b._id), b.name]));
+    const rows = await ctx.db.query("invoices").withIndex("by_tenant_date", (q) => q.eq("tenantId", user.tenantId!)).order("desc").take(800);
+    const clientCache = new Map<string, { name: string; code?: string } | null>();
+    const out = [];
+    for (const i of rows) {
+      if ((i.status !== "posted" && i.status !== "cancelled") || !(cross ? canSee(i) : canAccessRecord(user, i)) || (a.onlyOpen && i.outstanding <= 0)) continue;
+      if (staffOnly && i.createdBy !== user._id) continue; // staff/waiters: own sales only
+      const key = String(i.clientId);
+      if (!clientCache.has(key)) { const c = await ctx.db.get("clients", i.clientId); clientCache.set(key, c ? { name: c.name, code: c.code } : null); }
+      const c = clientCache.get(key);
+      out.push({
+        _id: i._id, invoiceNo: i.invoiceNo, date: i.invoiceDate, total: i.total, amountPaid: i.amountPaid, outstanding: i.outstanding,
+        paymentStatus: i.paymentStatus, status: i.status, alreadyBilled: !!i.customerBillId, eligible: i.status === "posted" && !i.customerBillId,
+        department: i.branchId ? names.get(String(i.branchId)) ?? "" : "", clientId: i.clientId, clientName: c?.name ?? "—", customerKey: norm(c?.name ?? ""),
+      });
+      if (out.length >= 300) break;
+    }
+    return out;
+  },
+});
+
 /** Historical customer bills for a customer, including whether the saved invoice set can still be reprinted. */
 export const historyForClient = query({
   args: { clientId: v.id("clients") },

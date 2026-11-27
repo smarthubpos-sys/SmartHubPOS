@@ -61,7 +61,7 @@ describe("new pages render with data", () => {
   it.each([
     ["Dashboard", <Dashboard />, "Duka"],
     ["Capital", <CapitalPage />, "Mapokezi ya Mtaji"],
-    ["Bills", <BillsPage />, "Chagua mteja ili kuona invoice zake."],
+    ["Bills", <BillsPage />, "Huhitaji kuchagua mteja"],
     ["Expenses", <ExpensesPage />, "TANESCO"],
     ["HR", <HRPage />, "Rasilimali Watu (HR)"],
     ["Notifications", <NotificationsPage />, "Bidhaa inaisha: Sukari"],
