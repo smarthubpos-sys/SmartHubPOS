@@ -140,7 +140,8 @@ export default function InvoiceEntry() {
     }
     for (const [id, qty] of requested) {
       const p = productById.get(id);
-      if (!allowNegative && p && !p.autoProduced && qty > p.currentQty + 1e-8) { toast.error(tr("Stock haitoshi kwa {0}. Iliyopo: {1}, unayouza: {2}", [p.name, fmt(p.currentQty, 4), fmt(qty, 4)])); return; }
+      if (p?.isMenuItem && !p.routed) { toast.error(tr("{0} haijaelekezwa kwenye stock (hakuna recipe). Weka recipe yake kwanza kupitia Stock > Production.", [p.name])); return; }
+      if (!allowNegative && p && !p.isMenuItem && !p.autoProduced && qty > p.currentQty + 1e-8) { toast.error(tr("Stock haitoshi kwa {0}. Iliyopo: {1}, unayouza: {2}", [p.name, fmt(p.currentQty, 4), fmt(qty, 4)])); return; }
     }
     setBusy(true);
     try {
@@ -183,17 +184,17 @@ export default function InvoiceEntry() {
             <tbody>
               {lines.map((l, i) => {
                 const p = productById.get(l.productId);
-                const over = p && !p.autoProduced ? (requested.get(l.productId) ?? 0) > p.currentQty + 1e-8 : false;
+                const over = p && !p.autoProduced && !p.isMenuItem ? (requested.get(l.productId) ?? 0) > p.currentQty + 1e-8 : false;
                 return (
                   <tr key={i} className="border-b">
                     <td className="p-2">
                       <select className="h-10 min-w-52 rounded-md border bg-background px-2" value={l.productId} onChange={(e) => choose(i, e.target.value)}>
                         <option value="">{tr("-- Chagua bidhaa --")}</option>
-                        {products.filter((x) => x.onMenu !== false || x._id === l.productId).map((x) => <option key={x._id} value={x._id}>{x.name} ({fmt(x.currentQty, 2)})</option>)}
+                        {products.filter((x) => x.onMenu !== false || x._id === l.productId).map((x) => <option key={x._id} value={x._id}>{x.isMenuItem ? x.name : `${x.name} (${fmt(x.currentQty, 2)})`}</option>)}
                       </select>
                     </td>
                     <td className="p-2">{p?.unitId ? unitName.get(String(p.unitId)) ?? tr("Unit") : tr("Unit")}</td>
-                    <td className={`p-2 tabular-nums ${over ? "font-semibold text-destructive" : ""}`}>{p ? fmt(p.currentQty, 4) : "—"}</td>
+                    <td className={`p-2 tabular-nums ${over ? "font-semibold text-destructive" : ""}`}>{p && !p.isMenuItem ? fmt(p.currentQty, 4) : "—"}</td>
                     <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.qty} onChange={(e) => update(i, { qty: e.target.value })} /></td>
                     <td className="p-2 tabular-nums">{fmt(num(l.price))}</td>
                     <td className="p-2"><Input className="w-24" type="number" step="any" min="0" value={l.discount} onChange={(e) => update(i, { discount: e.target.value })} /></td>

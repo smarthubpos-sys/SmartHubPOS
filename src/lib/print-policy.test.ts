@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { paperFromSetting, shouldSchedulePrint, tokenAfterSave, tokenForManualPrint } from "./print-policy";
+import { paperFromSetting, resolvePaper, shouldSchedulePrint, tokenAfterSave, tokenForManualPrint } from "./print-policy";
 
 describe("auto-print policy", () => {
   it("auto-print on: each saved sale gets a new token; off: token is 0 so nothing prints", () => {
@@ -25,5 +25,17 @@ describe("auto-print policy", () => {
     expect(paperFromSetting("a4")).toBe("A4");
     expect(paperFromSetting(undefined)).toBe("80mm");
     expect(paperFromSetting("weird")).toBe("80mm");
+  });
+});
+
+describe("paper follows the business's own Hardware setting", () => {
+  it("a 58mm left in this browser by another business never wins over the saved 80mm", () => {
+    const stale = { getItem: () => "58mm" };
+    expect(resolvePaper("80mm", stale)).toBe("80mm");
+    expect(resolvePaper("a4", stale)).toBe("A4");
+    expect(resolvePaper("58mm")).toBe("58mm");
+  });
+  it("nothing saved yet = 80mm", () => {
+    expect(resolvePaper(undefined, { getItem: () => "58mm" })).toBe("80mm");
   });
 });

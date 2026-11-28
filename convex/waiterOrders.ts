@@ -3,7 +3,7 @@ import { mutation, query, type MutationCtx } from "./_generated/server";
 import { orderHasPayment, reverseOrderPayments } from "./waiterRefund";
 import { v, ConvexError } from "convex/values";
 import { surfaceError } from "./surfaceError";
-import { assertAutoProducible, autoProduceForSale } from "./autoProduce";
+import { assertAutoProducible, autoProduceForSale, isMenuItem } from "./autoProduce";
 import type { Doc, Id } from "./_generated/dataModel";
 import { getCompanySettings, isManagerRole, logAudit, normalizeRole, requirePermission, resolveWriteScope, roleHasPermission } from "./access";
 import { resolveWaiterSettings, waiterOrdersAllowedFor } from "./waiterSettings";
@@ -382,7 +382,7 @@ export const cancel = mutation({
       for (const line of order.lines) {
         const product = await ctx.db.get("products", line.productId);
         if (!product) continue;
-        const balance = product.currentQty + line.qty;
+        const balance = isMenuItem(product) ? 0 : product.currentQty + line.qty; // a menu item never keeps a quantity
         await ctx.db.patch("products", line.productId, { currentQty: balance });
         await ctx.db.insert("stockMovements", {
           ...scope,
@@ -609,7 +609,7 @@ export const editBillFromFinder = mutation({
         for (const [productId, qty] of restore) {
           const product = await ctx.db.get("products", productId as Id<"products">);
           if (!product || product.tenantId !== order.tenantId || (order.branchId && product.branchId && product.branchId !== order.branchId)) throw new ConvexError("Bidhaa ya awali haipatikani; stock haijabadilishwa.");
-          const balance = product.currentQty + qty;
+          const balance = isMenuItem(product) ? 0 : product.currentQty + qty; // a menu item never keeps a quantity
           await ctx.db.patch("products", product._id, { currentQty: balance });
           await ctx.db.insert("stockMovements", {
             ...orderScope, movementDate: now.slice(0, 10), productId: product._id,
@@ -675,7 +675,7 @@ export const cancelBillFromFinder = mutation({
         for (const [productId, qty] of restore) {
           const product = await ctx.db.get("products", productId as Id<"products">);
           if (!product || product.tenantId !== order.tenantId || (order.branchId && product.branchId && product.branchId !== order.branchId)) throw new ConvexError("Bidhaa ya bili haipatikani; stock haijabadilishwa.");
-          const balance = product.currentQty + qty;
+          const balance = isMenuItem(product) ? 0 : product.currentQty + qty; // a menu item never keeps a quantity
           await ctx.db.patch("products", product._id, { currentQty: balance });
           await ctx.db.insert("stockMovements", {
             ...orderScope, movementDate: now.slice(0, 10), productId: product._id,

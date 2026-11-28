@@ -25,17 +25,13 @@ export function paperFromSetting(value: unknown): PaperChoice {
   return v === "a4" ? "A4" : v === "58mm" ? "58mm" : "80mm";
 }
 
-/** Browser key holding the paper chosen ON THIS COMPUTER (each POS can have a different printer). */
+/** Old browser key that used to hold a paper chosen on this computer. It is no longer read: it made one business print on the paper of another. */
 export const DEVICE_PAPER_KEY = "smarthub-print-paper";
 
 /**
- * The paper to print on. This computer's own choice wins over the business-wide Hardware setting,
- * because two POS computers in one business can have different printers (80mm, 58mm or A4).
+ * The paper to print on: ALWAYS the one saved in the business's own Hardware Setup (58mm / 80mm / A4), so every business follows its own setting.
+ * Nothing saved yet = 80mm. A value left in this browser by another business is never used.
  */
-export function resolvePaper(businessSetting?: unknown, storage?: { getItem(key: string): string | null } | null): PaperChoice {
-  let local: string | null = null;
-  try { local = (storage ?? (typeof localStorage !== "undefined" ? localStorage : null))?.getItem(DEVICE_PAPER_KEY) ?? null; } catch { /* storage unavailable */ }
-  const v = String(local ?? "").toLowerCase();
-  if (v === "58mm" || v === "80mm" || v === "a4") return paperFromSetting(v);
+export function resolvePaper(businessSetting?: unknown, _legacyStorage?: unknown): PaperChoice {
   return paperFromSetting(businessSetting);
 }

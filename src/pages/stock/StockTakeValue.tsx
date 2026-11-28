@@ -44,7 +44,7 @@ export function StockTakeScreen() {
   const day = useQuery(api.stockDaily.stockTakeDay, { date }); // light: only the movements from the chosen day onwards
   const dayRows = useMemo(() => new Map((day ?? []).map((r) => [r.productId, r])), [day]);
 
-  const products = useMemo(() => (data?.products ?? []).filter((p) => p.isActive), [data]);
+  const products = useMemo(() => (data?.products ?? []).filter((p) => p.isActive && !p.isMenuItem), [data]);
   // "Mfumo" = the stock the system had on the chosen date (not just today's), so counting for yesterday compares with yesterday.
   const curQty = useMemo(() => new Map(products.map((p) => [String(p._id), p.currentQty])), [products]);
   const dayNet = (id: string) => { const r = dayRows.get(id); return r ? r.inflow - r.sold : 0; };
@@ -181,7 +181,7 @@ export function StockValueScreen() {
   const [group, setGroup] = useState("");
   const [withStock, setWithStock] = useState(true);
   if (!data) return loading;
-  const list = data.products.filter((p) => p.isActive && (!group || p.groupId === group) && (!withStock || p.currentQty > 0)).sort((a, b) => b.stockValue - a.stockValue);
+  const list = data.products.filter((p) => p.isActive && !p.isMenuItem && (!group || p.groupId === group) && (!withStock || p.currentQty > 0)).sort((a, b) => b.stockValue - a.stockValue);
   const cost = round2(list.reduce((n, p) => n + p.stockValue, 0));
   const retail = round2(list.reduce((n, p) => n + p.retailValue, 0));
   const byGroup = new Map<string, { name: string; items: number; cost: number; retail: number }>();

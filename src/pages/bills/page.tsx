@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
+import { resolvePaper } from "@/lib/print-policy.ts";
 import { MessageCircle, Printer, Receipt, Wallet } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
@@ -37,7 +38,9 @@ function BillsPageBody() {
   const [allDepts, setAllDepts] = useState(true);
   const [deptFilter, setDeptFilter] = useState("");
   const combine = !!access?.allDepartments && allDepts; // permission "bills.all_departments"
-  const [paper, setPaper] = useState<"80mm" | "58mm" | "A4">(() => { const saved = localStorage.getItem("smarthub-print-paper"); return saved === "58mm" || saved === "A4" ? saved : "80mm"; });
+  const billSettings = useQuery(api.maintenance.getSettings, {});
+  const [paperPick, setPaper] = useState<"80mm" | "58mm" | "A4" | null>(null); // a choice made on this screen only; otherwise the business setting
+  const paper: "80mm" | "58mm" | "A4" = paperPick ?? resolvePaper((billSettings?.app?.hardware as { paperWidth?: string } | undefined)?.paperWidth);
   const [whatsappEnabled, setWhatsappEnabled] = useState(() => localStorage.getItem("smarthub-bill-whatsapp-enabled") !== "false");
 
   const invoices = useQuery(api.customerBills.invoicesForClient, clientId ? { clientId: clientId as Id<"clients">, onlyOpen, allDepartments: combine } : "skip");
@@ -144,7 +147,7 @@ function BillsPageBody() {
             <div className="flex flex-wrap gap-2">
               {clientId && <Button size="sm" variant="outline" onClick={() => { setPicked(allPicked ? new Set() : new Set(eligible.map((i) => String(i._id)))); setShowBill(false); setBillInvoiceIds([]); }}>{allPicked ? tr("Ondoa zote") : tr("Chagua zote")}</Button>}
               <Button size="sm" variant="outline" disabled={chosen.length === 0 || creatingBill} onClick={() => void startBill()}>{tr("Send")}</Button>
-              <label className="flex items-center gap-1 text-xs">{tr("Printer")}<select className="h-8 rounded-md border bg-background px-2" value={paper} onChange={(e) => { const v = e.target.value as "80mm" | "58mm" | "A4"; setPaper(v); localStorage.setItem("smarthub-print-paper", v); }}><option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option></select></label>
+              <label className="flex items-center gap-1 text-xs">{tr("Printer")}<select className="h-8 rounded-md border bg-background px-2" value={paper} onChange={(e) => { const v = e.target.value as "80mm" | "58mm" | "A4"; setPaper(v); }}><option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option></select></label>
               <Button size="sm" disabled={chosen.length === 0 || creatingBill} onClick={() => void startBill()}><Printer className="mr-1 h-4 w-4" />{creatingBill ? tr("Inahifadhi...") : tr("Print")}</Button>
             </div>
           ) : undefined}

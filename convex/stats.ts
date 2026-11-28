@@ -249,6 +249,7 @@ export const rebuild = internalMutation({
     if (a.phase === "products") {
       const page = await ctx.db.query("products").withIndex("by_scope", (q) => q.eq("tenantId", tenantId)).paginate({ numItems: PAGE, cursor: a.cursor });
       for (const p of page.page) {
+        if (p.isStockItem === false) continue; // menu items carry no stock
         const s = (acc.stock[bkey(p.branchId)] ??= { n: 0, low: 0, out: 0, value: 0 });
         s.value = round2(s.value + (p.weightedAvgCost ?? p.lastPurchaseCost ?? 0) * p.currentQty);
         if (!p.isActive) continue;

@@ -22,7 +22,7 @@ type EditLine = { productId: string; name: string; qty: string; price: string; d
 type Full = NonNullable<FunctionReturnType<typeof api.sales.invoiceFull>>;
 
 /** Prints the invoice (or its corrected bill) in the paper size chosen for this device. */
-function printInvoice(d: Full) {
+function printInvoice(d: Full, paperWidth?: string) {
   const cur = d.company.currencySymbol ? `${d.company.currencySymbol} ` : "";
   const m = (n: number) => `${cur}${fmt(n)}`;
   const inv = d.invoice;
@@ -46,7 +46,7 @@ function printInvoice(d: Full) {
       <div style="display:flex;justify-content:space-between"><span>${esc(tr("Imelipwa"))}</span><span>${esc(m(inv.amountPaid))}</span></div>
       <div style="display:flex;justify-content:space-between"><span>${esc(tr("Deni"))}</span><span>${esc(m(inv.outstanding))}</span></div>
     </div></section>`;
-  printElement(el, readPaper());
+  printElement(el, readPaper(paperWidth));
 }
 
 /**
@@ -253,6 +253,7 @@ function InvoicePanel({ invoiceId, onClose }: { invoiceId: Id<"invoices">; onClo
   const [mode, setMode] = useState<"view" | "edit" | "cancel">("view");
   const [showUnpay, setShowUnpay] = useState(false);
   const unpayInvoice = useMutation(api.sales.unpayInvoice);
+  const panelSettings = useQuery(api.maintenance.getSettings, {});
   const [unpayBusy, setUnpayBusy] = useState(false);
   if (d === undefined) return <div className="rounded-lg border p-3 text-sm text-muted-foreground">{tr("Inapakia…")}</div>;
   if (d === null) return <div className="rounded-lg border p-3 text-sm">{tr("Invoice haipatikani.")} <Button size="sm" variant="outline" onClick={onClose}>{tr("Funga")}</Button></div>;
@@ -265,7 +266,7 @@ function InvoicePanel({ invoiceId, onClose }: { invoiceId: Id<"invoices">; onClo
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="font-semibold">{tr("Invoice")} {inv.invoiceNo}{(inv.revision ?? 0) > 0 ? ` — ${tr("Imesahihishwa")} #${inv.revision}` : ""}{cancelled ? ` — ${tr("Imebatilishwa")}` : ""}</h2>
         <div className="flex flex-wrap gap-2">
-          {d.canPrint && <Button size="sm" variant="outline" onClick={() => printInvoice(d)}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
+          {d.canPrint && <Button size="sm" variant="outline" onClick={() => printInvoice(d, (panelSettings?.app?.hardware as { paperWidth?: string } | undefined)?.paperWidth)}><Printer className="mr-1 h-4 w-4" />{tr("Chapisha")}</Button>}
           {!cancelled && inv.amountPaid > 0 && d.canUnpay && mode === "view" && <Button size="sm" variant="outline" onClick={() => setShowUnpay((v) => !v)}>{tr("Unpay")}</Button>}
           {!cancelled && d.canEdit && mode !== "edit" && <Button size="sm" variant="outline" disabled={!!locked || inv.amountPaid > 0} title={inv.amountPaid > 0 ? tr("Fanya Unpay kwanza kabla ya kuhariri invoice.") : locked} onClick={() => setMode("edit")}>{tr("Edit Invoice")}</Button>}
           {!cancelled && d.canVoid && mode !== "cancel" && <Button size="sm" variant="destructive" disabled={inv.amountPaid > 0} title={inv.amountPaid > 0 ? tr("Fanya Unpay kwanza kabla ya kufuta invoice.") : undefined} onClick={() => setMode("cancel")}>{tr("Delete / Cancel Invoice")}</Button>}

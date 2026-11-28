@@ -24,7 +24,7 @@ async function save(fn: () => Promise<unknown>, okMessage = tr("Taarifa zimehifa
 
 /* ───────────────────────── Add / Modify Stock (product catalog + prices) ───────────────────────── */
 
-const emptyProduct = { itemCode: "", partNumber: "", name: "", description: "", barcode: "", groupId: "", unitId: "", sellingPrice: "0", openingQty: "0", openingCost: "0", lastCost: "", reorderLevel: "", minStockLevel: "", trackSerialNumbers: "false", showInSales: "true", trackBatchNumbers: "false", trackExpiry: "false", isActive: "true" };
+const emptyProduct = { itemCode: "", partNumber: "", name: "", description: "", barcode: "", groupId: "", unitId: "", sellingPrice: "0", openingQty: "0", openingCost: "0", lastCost: "", reorderLevel: "", minStockLevel: "", trackSerialNumbers: "false", showInSales: "true", isStockItem: "true", trackBatchNumbers: "false", trackExpiry: "false", isActive: "true" };
 
 function ProductsScreen() {
   const data = useQuery(api.inventory.stockRegisters, { light: true });
@@ -52,7 +52,7 @@ function ProductsScreen() {
       itemCode: p.itemCode, partNumber: p.partNumber, name: p.name, description: p.description, barcode: p.barcode,
       groupId: p.groupId ?? "", unitId: p.unitId ?? "", sellingPrice: String(p.sellingPrice), openingQty: String(p.openingQty), openingCost: "0", lastCost: p.lastPurchaseCost ? String(p.lastPurchaseCost) : "",
       reorderLevel: p.reorderLevel === null ? "" : String(p.reorderLevel), minStockLevel: p.minStockLevel === null ? "" : String(p.minStockLevel),
-      trackSerialNumbers: String(p.trackSerialNumbers), trackBatchNumbers: String(p.trackBatchNumbers), trackExpiry: String(p.trackExpiry), isActive: String(p.isActive), showInSales: String(p.onMenu),
+      trackSerialNumbers: String(p.trackSerialNumbers), trackBatchNumbers: String(p.trackBatchNumbers), trackExpiry: String(p.trackExpiry), isActive: String(p.isActive), showInSales: String(p.onMenu), isStockItem: String(!p.isMenuItem),
     } : { ...emptyProduct, itemCode: nextCode });
     setMode("edit");
   };
@@ -69,7 +69,7 @@ function ProductsScreen() {
       openingQty: editingId ? undefined : num(f.openingQty), openingCost: editingId ? undefined : num(f.openingCost),
       lastCost: editingId && f.lastCost.trim() !== "" ? num(f.lastCost) : undefined,
       reorderLevel: f.reorderLevel === "" ? undefined : num(f.reorderLevel), minStockLevel: f.minStockLevel === "" ? undefined : num(f.minStockLevel),
-      trackSerialNumbers: f.trackSerialNumbers === "true", trackBatchNumbers: f.trackBatchNumbers === "true", trackExpiry: f.trackExpiry === "true", isActive: f.isActive === "true", showInSales: f.showInSales === "true",
+      trackSerialNumbers: f.trackSerialNumbers === "true", trackBatchNumbers: f.trackBatchNumbers === "true", trackExpiry: f.trackExpiry === "true", isActive: f.isActive === "true", showInSales: f.showInSales === "true", isStockItem: f.isStockItem === "true",
     }), editingId ? tr("Bidhaa imebadilishwa.") : tr("Bidhaa mpya imesajiliwa."));
     setBusy(false);
     if (ok) setMode("list");
@@ -109,9 +109,11 @@ function ProductsScreen() {
           </label>
           {field(tr("Bei ya kuuzia (Selling Price)"), "sellingPrice", "number", editingId ? tr("Bei mpya itatumika kwenye mauzo yajayo; invoices zilizopita hazibadiliki.") : undefined)}
           {field(tr("Maelezo (hiari)"), "description")}
-          {field(tr("Reorder Level"), "reorderLevel", "number", tr("Ripoti ya Reorder itaonyesha bidhaa zilizo chini au sawa na kiwango hiki."))}
-          {field(tr("Minimum Stock Level"), "minStockLevel", "number")}
-          {editingId ? (
+          {f.isStockItem === "true" && field(tr("Reorder Level"), "reorderLevel", "number", tr("Ripoti ya Reorder itaonyesha bidhaa zilizo chini au sawa na kiwango hiki."))}
+          {f.isStockItem === "true" && field(tr("Minimum Stock Level"), "minStockLevel", "number")}
+          {f.isStockItem !== "true" ? (
+            <div className="rounded-md border border-sky-500/40 bg-sky-500/10 p-3 text-sm md:col-span-2">{tr("Bidhaa ya menu (si stock item): haina idadi wala thamani ya stock yake yenyewe. Inapouzwa inachukua malighafi zake kwenye recipe (Stock > Production). Bila recipe haiwezi kuuzwa, na malighafi zikiisha mfumo unakataa kuuza.")}</div>
+          ) : editingId ? (
             <>
             <div className="rounded-md border bg-muted/30 p-3 text-sm md:col-span-2">
               
@@ -129,9 +131,10 @@ function ProductsScreen() {
           <div className="flex flex-wrap gap-5 md:col-span-2">
             {check(tr("Bidhaa ipo active (inaonekana kwenye mauzo na manunuzi)"), "isActive")}
             {check(tr("Onyesha kwenye menyu ya mauzo (ikiwa haijatiki inabaki back office tu)"), "showInSales")}
-            {check(tr("Track expiry"), "trackExpiry")}
-            {check(tr("Track serial numbers"), "trackSerialNumbers")}
-            {check(tr("Track batch numbers"), "trackBatchNumbers")}
+            {check(tr("Ni stock item (inafuatilia idadi). Ondoa tiki kwa bidhaa ya menu inayochukua kwenye recipe"), "isStockItem")}
+            {f.isStockItem === "true" && check(tr("Track expiry"), "trackExpiry")}
+            {f.isStockItem === "true" && check(tr("Track serial numbers"), "trackSerialNumbers")}
+            {f.isStockItem === "true" && check(tr("Track batch numbers"), "trackBatchNumbers")}
           </div>
           <div className="md:col-span-2"><Button disabled={busy} onClick={() => void submit()}>{busy ? tr("Inahifadhi…") : tr("Hifadhi")}</Button></div>
         </section>
@@ -160,7 +163,7 @@ function ProductsScreen() {
                 <tr key={p._id} className="border-t">
                   <td className="whitespace-nowrap p-3">{p.itemCode}</td><td className="p-3 font-medium">{p.name}</td><td className="p-3">{p.groupName}</td><td className="p-3">{p.unitName}</td>
                   <td className="p-3 text-right tabular-nums">{fmt(p.sellingPrice)}</td><td className="p-3 text-right tabular-nums">{fmt(p.cost)}</td>
-                  <td className={`p-3 text-right tabular-nums ${p.currentQty <= 0 ? "text-destructive" : ""}`}>{fmt(p.currentQty, 4)}</td>
+                  <td className={`p-3 text-right tabular-nums ${!p.isMenuItem && p.currentQty <= 0 ? "text-destructive" : ""}`}>{p.isMenuItem ? <span className="text-xs text-muted-foreground">{tr("Menu")}</span> : fmt(p.currentQty, 4)}</td>
                   <td className="p-3">{p.isActive ? tr("Active") : tr("Imezimwa")}</td>
                   <td className="p-3">{p.onMenu ? <span className="text-emerald-600">{tr("Inaonekana")}</span> : <span className="text-muted-foreground">{tr("Imefichwa")}</span>}</td>
                   <td className="p-3">{canAdjust ? <Button size="sm" variant="outline" onClick={() => startEdit(p)}>{tr("Modify")}</Button> : <span className="text-xs text-muted-foreground" title={tr("Huna ruhusa ya kubadili / kufuta stock")}>—</span>}</td>
@@ -197,7 +200,7 @@ function AdjustmentScreen() {
       <section className="grid gap-4 rounded-xl border p-5 md:grid-cols-2">
         <label className="grid gap-1 text-sm">{tr("Bidhaa")}
           <SearchSelect value={productId} onChange={(v) => { setProductId(v); setCounted(""); }} placeholder={tr("Andika jina au code kutafuta bidhaa…")}
-            options={data.products.filter((p) => p.isActive).map((p) => ({ value: String(p._id), label: `${p.name} (${p.itemCode})`, hint: p.itemCode }))} />
+            options={data.products.filter((p) => p.isActive && !p.isMenuItem).map((p) => ({ value: String(p._id), label: `${p.name} (${p.itemCode})`, hint: p.itemCode }))} />
         </label>
         <div className="rounded-md border bg-muted/30 p-3 text-sm">{product ? <>{tr("Stock ya mfumo:")} <b>{fmt(product.currentQty, 4)} {product.unitName}</b>  {tr("· Cost:")} {fmt(product.cost)}</> : tr("Chagua bidhaa kuona stock ya mfumo.")}</div>
         <label className="grid gap-1 text-sm">{tr("Kiasi kilichohesabiwa (kipya)")}<Input type="number" step="any" min="0" value={counted} onChange={(e) => setCounted(e.target.value)} /></label>
@@ -284,7 +287,7 @@ function QuantityScreen({ kind }: { kind: "item-quantity" | "quantity" | "prices
   const [group, setGroup] = useState("");
   if (!data) return loading;
   const titles = { "item-quantity": tr("Item Quantity"), quantity: tr("Quantity Report"), prices: tr("Selling Price Report"), reorder: tr("Stock Reorder Report"), "out-of-stock": tr("Out of Stock Report") };
-  let list = data.products.filter((p) => p.isActive && (!group || p.groupId === group));
+  let list = data.products.filter((p) => p.isActive && (!group || p.groupId === group) && (kind === "prices" || !p.isMenuItem)); // menu items carry no stock: only the price report lists them
   if (kind === "reorder") list = list.filter((p) => p.reorderLevel !== null && p.currentQty <= p.reorderLevel);
   if (kind === "out-of-stock") list = list.filter((p) => p.currentQty <= 0);
   let rows: Row[];
@@ -400,7 +403,7 @@ function HistoryScreen() {
           <>
             <label className="grid max-w-md gap-1 text-sm">{tr("Bidhaa")}
               <SearchSelect value={productId} onChange={setProductId} placeholder={tr("Andika jina au code kutafuta bidhaa…")}
-                options={data.products.map((x) => ({ value: String(x._id), label: `${x.name} (${x.itemCode})`, hint: x.itemCode }))} />
+                options={data.products.filter((x) => !x.isMenuItem).map((x) => ({ value: String(x._id), label: `${x.name} (${x.itemCode})`, hint: x.itemCode }))} />
             </label>
             {p && <div className="grid gap-3 sm:grid-cols-3"><Stat label={tr("Stock iliyopo")} value={`${fmt(p.currentQty, 4)} ${p.unitName}`} /><Stat label={tr("Bei ya kuuzia")} value={p.sellingPrice} /><Stat label={tr("Cost")} value={p.cost} /></div>}
             {p ? <ReportTable title={tr("Historia — {0}", [p.name])} rows={rows} /> : <p className="text-sm text-muted-foreground">{tr("Chagua bidhaa kuona historia yake kamili.")}</p>}

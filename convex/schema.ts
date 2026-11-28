@@ -219,6 +219,7 @@ export default defineSchema({
     trackSerialNumbers: v.optional(v.boolean()),
     trackBatchNumbers: v.optional(v.boolean()),
     trackExpiry: v.optional(v.boolean()),
+    isStockItem: v.optional(v.boolean()), // false = menu item: carries no quantity of its own, it only picks from its recipe ingredients when sold; unset/true = ordinary stock item
     showInSales: v.optional(v.boolean()), // ticked = on the sales menu; unticked = hidden (back-office only); unset = automatic (see menuVisibility.ts)
     isActive: v.boolean(),
   }) .index("by_scope", ["tenantId", "branchId"])

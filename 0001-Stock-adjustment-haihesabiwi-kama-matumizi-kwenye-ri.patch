@@ -1,0 +1,111 @@
+From 551444604bd8bd2053073e3b74c9193fab3f36cb Mon Sep 17 00:00:00 2001
+From: Claude <claude@example.com>
+Date: Wed, 18 Nov 2026 08:01:48 +0000
+Subject: [PATCH 1/3] Stock adjustment haihesabiwi kama matumizi kwenye ripoti
+
+---
+ ...LIKO_59_STOCK_ADJUSTMENT_SIO_MATUMIZI_SW.md | 18 ++++++++++++++++++
+ convex/accounting.ts                           |  3 ++-
+ convex/periodReport.ts                         |  2 +-
+ convex/reportCore.test.ts                      | 10 ++++++++++
+ convex/reportCore.ts                           |  4 ++++
+ 5 files changed, 35 insertions(+), 2 deletions(-)
+ create mode 100644 MABADILIKO_59_STOCK_ADJUSTMENT_SIO_MATUMIZI_SW.md
+
+diff --git a/MABADILIKO_59_STOCK_ADJUSTMENT_SIO_MATUMIZI_SW.md b/MABADILIKO_59_STOCK_ADJUSTMENT_SIO_MATUMIZI_SW.md
+new file mode 100644
+index 0000000..000428c
+--- /dev/null
++++ b/MABADILIKO_59_STOCK_ADJUSTMENT_SIO_MATUMIZI_SW.md
+@@ -0,0 +1,18 @@
++# MABADILIKO 59 - Stock adjustment haihesabiwi kama matumizi kwenye ripoti
++
++Tatizo: marekebisho ya stock (Quantity Adjustment na Stock Take) yanaandikwa kwenye journal kwa akaunti 5200 (Stock shrinkage) / 5100 (Stock adjustment gain),
++ambazo ni akaunti za "expense". Ripoti ya Siku/Mwezi/Mwaka iliyahesabu kama Matumizi na kupunguza faida.
++
++Suluhisho: mistari ya matumizi ya journal yenye sourceType "stock_adjustment" haisomwi tena kwenye ripoti.
++- convex/reportCore.ts (entryRows): inaruka mistari ya expense ya stock_adjustment -> Matumizi, faida na daily havibadiliki.
++- convex/periodReport.ts: haiingizi stock adjustment kwenye orodha ya matumizi (items).
++- convex/accounting.ts (profitAndLoss): journal za stock_adjustment hazihesabiwi kwenye Income Statement.
++- convex/reportCore.test.ts: test mpya.
++
++Tahadhari:
++- Quantity ya stock, stock movements, na journal (Inventory 1200) HAVIJABADILIKA; Stock Value / Closing Stock zinaendelea kuwa sahihi.
++- Balance Sheet bado inajumuisha journal hizo (ili ibaki ikilingana na thamani ya Inventory); Income Statement haizijumuishi.
++- Ripoti zilizohifadhiwa (reportRuns) kabla ya mabadiliko haya hazibadiliki; zalisha upya ukitaka.
++
++Endesha: npx vitest run convex/reportCore.test.ts ; npx tsc -b ; npx eslint . ; npx convex deploy ; npm run build
++HAIJAJARIBIWA (hakuna node_modules kwenye ZIP).
+diff --git a/convex/accounting.ts b/convex/accounting.ts
+index 50fa251..a9d9399 100644
+--- a/convex/accounting.ts
++++ b/convex/accounting.ts
+@@ -143,7 +143,8 @@ export const deleteAccount=mutation({args:{accountId:v.id("accounts")},handler:a
+ /** Income statement from posted ledger entries only. */
+ export const profitAndLoss = query({ args: { startDate: v.string(), endDate: v.string() }, handler: async (ctx, a) => {
+  const u = await requirePermission(ctx, "accounts.reports.view", "accounts"); if (a.endDate < a.startDate) throw new ConvexError("Date range si sahihi.");
+- const entries = await postedEntries(ctx, u, a.startDate, a.endDate);
++ // Stock adjustments / stock-take corrections are not a business expense: kept out of the income statement.
++ const entries = (await postedEntries(ctx, u, a.startDate, a.endDate)).filter((e) => e.sourceType !== "stock_adjustment");
+  const accounts = (await visibleAccounts(ctx, u)); const accountMap = new Map(accounts.map(x => [String(x._id), x]));
+  const totals = new Map<string, {accountId:string;code:string;name:string;type:string;amount:number}>();
+  for (const l of await linesOf(ctx, entries)) { const ac = accountMap.get(String(l.accountId)); if (!ac || !["revenue","expense"].includes(ac.type)) continue; const sign = ac.type === "revenue" ? l.credit-l.debit : l.debit-l.credit; const row=totals.get(String(ac._id)) ?? {accountId:String(ac._id),code:ac.code,name:ac.name,type:ac.type,amount:0}; row.amount=roundMoney(row.amount+sign); totals.set(String(ac._id),row); }
+diff --git a/convex/periodReport.ts b/convex/periodReport.ts
+index 9de8afc..60eb69d 100644
+--- a/convex/periodReport.ts
++++ b/convex/periodReport.ts
+@@ -80,7 +80,7 @@ export const chunk = query({
+         if (ac) {
+           lines.push({ code: ac.code, name: ac.name, type: ac.type, subtype: ac.subtype, debit: l.debit, credit: l.credit, channel: ac.subtype === "payment_method" && kindOf.has(k) ? channelOfKind(kindOf.get(k)) : undefined });
+           // Every operating expense exactly as it was entered (date, who/what, category, amount); cost of goods is not an expense line.
+-          if (ac.type === "expense" && ac.code !== "5000") {
++          if (ac.type === "expense" && ac.code !== "5000" && e.sourceType !== "stock_adjustment") {
+             const amount = round2((l.debit || 0) - (l.credit || 0));
+             if (amount !== 0) { const list = itemsBy.get(bk) ?? []; list.push({ bk, d: e.entryDate, t: (e.description || "").slice(0, 160), c: ac.name, a: amount }); itemsBy.set(bk, list); }
+           }
+diff --git a/convex/reportCore.test.ts b/convex/reportCore.test.ts
+index d6f4560..13d36fe 100644
+--- a/convex/reportCore.test.ts
++++ b/convex/reportCore.test.ts
+@@ -18,6 +18,16 @@ describe("report core", () => {
+     expect(s.counts).toEqual({ entries: 4, invoices: 1, voids: 0, returns: 1 });
+     expect(s.daily.find((d) => d.date === "2026-10-14")).toMatchObject({ sales: 90000, cogs: 54000, expenses: 20000, profit: 16000 });
+   });
++  it("stock adjustments (shrinkage / gain) are not counted as expenses", () => {
++    const adj: JEntry = { entryDate: "2026-10-14", sourceType: "stock_adjustment", lines: [
++      { code: "5200", name: "Stock shrinkage expense", type: "expense", debit: 7000, credit: 0 },
++      { code: "1200", name: "Inventory", type: "asset", debit: 0, credit: 7000 },
++    ] };
++    const base = summarize(build(entries));
++    const withAdj = summarize(build([...entries, adj]));
++    expect(withAdj.totalExpenses).toBe(base.totalExpenses);
++    expect(withAdj.netProfit).toBe(base.netProfit);
++  });
+   it("adding chunks gives the same answer as one pass", () => {
+     const merged = mergeRows(mergeRows(new Map<string, Row>(), build(entries.slice(0, 2))), build(entries.slice(2)));
+     expect(summarize(accRows(merged))).toEqual(summarize(build(entries)));
+diff --git a/convex/reportCore.ts b/convex/reportCore.ts
+index 697fd74..17d6450 100644
+--- a/convex/reportCore.ts
++++ b/convex/reportCore.ts
+@@ -57,6 +57,9 @@ export function entryRows(e: JEntry, acc: Acc = new Map()): Acc {
+   // Selling Point (waiter) money: the journal is dated the day the money was RECEIVED, but a sale belongs to the day it was SOLD.
+   // So for these entries only the MONEY (CASH / LIPA / BANK) is read here; their sales and cost of goods come from the orders (see waiterSalesOf).
+   const moneyOnly = isWaiterMoneyEntry(e.sourceType);
++  // Stock adjustments / stock-take corrections only fix the quantity (and the Inventory value in the ledger): they are NOT a business expense, so their
++  // expense lines (5100 gain / 5200 shrinkage) never reach the report.
++  const stockAdjustment = e.sourceType === "stock_adjustment";
+   if (e.sourceType === "sale") row("stat", "invoices", "", 1);
+   if (e.sourceType === "sale_void") row("stat", "voids", "", 1);
+   if (e.sourceType === "sale_return") row("stat", "returns", "", 1);
+@@ -64,6 +67,7 @@ export function entryRows(e: JEntry, acc: Acc = new Map()): Acc {
+   for (const l of e.lines) {
+     const debit = l.debit || 0, credit = l.credit || 0;
+     if (moneyOnly && !isMoneyLine(l)) continue;
++    if (stockAdjustment && l.type === "expense") continue;
+     if (l.type === "revenue") {
+       const amount = credit - debit;
+       row("rev", l.code, l.name, amount);
+-- 
+2.43.0
+

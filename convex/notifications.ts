@@ -25,7 +25,7 @@ export const feed = query({
     const canBills = await roleHasPermission(ctx, user, "accounts.view");
 
     for (const p of (canStock ? await scopedRows(ctx, user, "products") : [])) {
-      if (!p.isActive) continue;
+      if (!p.isActive || p.isStockItem === false) continue; // menu items carry no stock
       if (p.currentQty <= 0) items.push({ key: `out:${p._id}`, code: "out_of_stock", level: "danger", params: { name: p.name }, link: "/stock/reports/out-of-stock", at: a.today });
       else if (p.reorderLevel != null && p.currentQty <= p.reorderLevel) items.push({ key: `low:${p._id}:${p.currentQty}`, code: "low_stock", level: "warning", params: { name: p.name, qty: p.currentQty, level: p.reorderLevel }, link: "/stock/reports/reorder", at: a.today });
     }

@@ -222,7 +222,7 @@ function HardwareForm({ s }: { s: Settings }) {
     printerConnection: str(h.printerConnection, "wired"), printerSource: str(h.printerSource, "installed"),
     receiptPrinter: str(h.receiptPrinter), receiptDevice: (h.receiptDevice ?? null) as DeviceInfo | null,
     paperWidth: str(h.paperWidth, "80mm"), autoPrintReceipt: !!h.autoPrintReceipt, openCashDrawer: !!h.openCashDrawer,
-    labelPrinter: str(h.labelPrinter), scannerMode: str(h.scannerMode, "keyboard"), scannerSuffix: str(h.scannerSuffix, "Enter"), customerDisplay: !!h.customerDisplay,
+    labelPrinter: str(h.labelPrinter), scannerMode: str(h.scannerMode, "keyboard"), scannerSuffix: str(h.scannerSuffix, "Enter"), customerDisplay: !!h.customerDisplay, customerDisplayMode: str(h.customerDisplayMode, "full"),
   });
   const ok = s.canEdit["maintenance.hardware"];
   const wireless = f.printerConnection === "wireless";
@@ -308,7 +308,7 @@ function HardwareForm({ s }: { s: Settings }) {
         )}
 
         <div className="grid gap-4 md:grid-cols-2">
-          <SelectField label={tr("Upana wa karatasi")} value={f.paperWidth} onChange={(v) => { set("paperWidth", v); try { localStorage.setItem("smarthub-print-paper", v === "a4" ? "A4" : v); } catch { /* storage unavailable */ } }} disabled={!ok} options={[["58mm", tr("58 mm")], ["80mm", tr("80 mm")], ["a4", "A4"]]} hint={tr("Upana huu pia unahifadhiwa kwenye kompyuta hii, kwa hiyo kila POS yenye printer tofauti inatumia upana wake.")} />
+          <SelectField label={tr("Upana wa karatasi")} value={f.paperWidth} onChange={(v) => set("paperWidth", v)} disabled={!ok} options={[["58mm", tr("58 mm")], ["80mm", tr("80 mm")], ["a4", "A4"]]} hint={tr("Upana huu ni wa biashara hii: risiti, bili na ripoti zote zinaufuata.")} />
           <TextField label={tr("Kichapishi cha lebo (hiari)")} value={f.labelPrinter} onChange={(v) => set("labelPrinter", v)} disabled={!ok} />
         </div>
         <Toggle label={tr("Chapisha risiti moja kwa moja baada ya mauzo")} checked={f.autoPrintReceipt} onChange={(v) => set("autoPrintReceipt", v)} disabled={!ok} />
@@ -324,6 +324,7 @@ function HardwareForm({ s }: { s: Settings }) {
           <SelectField label={tr("Mwisho wa scan")} value={f.scannerSuffix} onChange={(v) => set("scannerSuffix", v)} disabled={!ok} options={[["Enter", "Enter"], ["Tab", "Tab"], ["none", tr("Hakuna")]]} />
         </div>
         <Toggle label={tr("Customer display imewashwa")} checked={f.customerDisplay} onChange={(v) => set("customerDisplay", v)} disabled={!ok} />
+        {f.customerDisplay && <SelectField label={tr("Customer display ionyeshe nini")} value={f.customerDisplayMode} onChange={(v) => set("customerDisplayMode", v)} disabled={!ok} options={[["full", tr("Bidhaa, idadi na jumla")], ["numbers", tr("Namba tu: idadi na jumla")]]} hint={tr("Chagua \"Namba tu\" kwa mashine yenye display ya namba kama ya kaunta ya bili.")} />}
       </Card>
       <Button disabled={busy || !ok} onClick={() => void run(() => saveSetting({ key: "hardware", value: f }))}>{tr("Hifadhi")}</Button>
     </>

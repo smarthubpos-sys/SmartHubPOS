@@ -7,7 +7,7 @@ import type { UserLike } from "./access";
 import { canAccessRecord, isSuperAdmin, filterScoped, isOwnDataOnly, isManagerRole, roleHasPermission, normalizeRole, requireActiveUser, requirePermission, requireSellingPointOrSales, resolveWriteScope, getCompanySettings, logAudit } from "./access";
 import { bumpStats } from "./stats";
 import { waiterOwes } from "./waiterMath";
-import { autoProduceForSale } from "./autoProduce";
+import { autoProduceForSale, isMenuItem } from "./autoProduce";
 import { visibleClients } from "./clients";
 import { assertDate, assertFinite, assertPeriodOpen, getSystemAccount, methodAccount, postSystemJournal, roundMoney } from "./ledger";
 import { normaliseSplits, splitValidator } from "./paymentMethods";
@@ -359,7 +359,7 @@ export const voidInvoice = mutation({
     for (const l of lines) {
       const qty = stillSold(l); if (qty <= 1e-8) continue;
       const product = await ctx.db.get("products", l.productId); if (!product) continue;
-      const balance = product.currentQty + qty;
+      const balance = isMenuItem(product) ? 0 : product.currentQty + qty; // a menu item never keeps a quantity
       await ctx.db.patch("products", l.productId, { currentQty: balance });
       await ctx.db.insert("stockMovements", { ...scope, movementDate: today, productId: l.productId, movementType: "sale_return", referenceId: String(a.invoiceId), referenceType: "invoice_void", qtyIn: qty, qtyOut: 0, runningBalance: balance, unitCost: l.costAtSale, clientId: invoice.clientId, notes: cancellationReason, createdBy: user._id });
       const serialsToRestore = await ctx.db.query("stockSerials").withIndex("by_product", (q) => q.eq("productId", l.productId)).collect();
@@ -508,7 +508,7 @@ export const returnItems = mutation({
       await ctx.db.insert("salesReturnLines", { returnId, invoiceLineId: x.line._id, productId: x.line.productId, qty: x.qty, value: x.net, cost: x.cost });
       await ctx.db.patch("invoiceLines", x.line._id, { returnedQty: (x.line.returnedQty ?? 0) + x.qty });
       const product = await ctx.db.get("products", x.line.productId); if (!product) continue;
-      const balance = product.currentQty + x.qty;
+      const balance = isMenuItem(product) ? 0 : product.currentQty + x.qty; // a menu item never keeps a quantity
       await ctx.db.patch("products", x.line.productId, { currentQty: balance });
       await ctx.db.insert("stockMovements", { ...scope, movementDate: returnDate, productId: x.line.productId, movementType: "sale_return", referenceId: String(returnId), referenceType: "sales_return", qtyIn: x.qty, qtyOut: 0, runningBalance: balance, unitCost: x.line.costAtSale, clientId: invoice.clientId, notes: a.reason, createdBy: user._id });
       let qtyToRestore = x.qty;
@@ -1090,7 +1090,7 @@ export const editInvoice = mutation({
         const allowed = !!product && (product.isActive || wasOnInvoice) && product.tenantId === invoice.tenantId && (product.branchId === undefined || product.branchId === invoice.branchId || wasOnInvoice);
         if (!product || !allowed) throw new ConvexError(product ? `Bidhaa "${product.name}" haipatikani kwenye idara ya invoice hii (imezimwa au ni ya idara nyingine).` : "Bidhaa haipatikani.");
         const available = product.currentQty + (oldQty.get(String(line.productId)) ?? 0);
-        if (!allowNegativeStock && available + 1e-8 < (newQty.get(String(line.productId)) ?? line.qty)) throw new ConvexError(`Stock haitoshi kwa ${product.name}. Iliyopo: ${available}, unayotaka: ${newQty.get(String(line.productId))}`);
+        if (!allowNegativeStock && !isMenuItem(product) && available + 1e-8 < (newQty.get(String(line.productId)) ?? line.qty)) throw new ConvexError(`Stock haitoshi kwa ${product.name}. Iliyopo: ${available}, unayotaka: ${newQty.get(String(line.productId))}`);
         assertFinite(line.discount, "Discount"); const lineDiscount = money(line.discount ?? 0); const gross = money(line.qty * line.unitPrice);
         if (lineDiscount < 0 || lineDiscount > gross) throw new ConvexError("Discount si sahihi.");
         const lineTotal = money(gross - lineDiscount); subtotal += lineTotal;
@@ -1130,13 +1130,20 @@ export const editInvoice = mutation({
       const revision = (invoice.revision ?? 0) + 1;
 
       // Stock: only the difference per product moves, with a movement for the history.
+      // A menu item has no stock of its own: what the edit adds is taken from its recipe ingredients (refused when they are short).
+      const menuExtra = new Map<string, number>();
+      for (const pid of new Set<string>([...oldQty.keys(), ...newQty.keys()])) {
+        const more = (newQty.get(pid) ?? 0) - (oldQty.get(pid) ?? 0);
+        if (more > 1e-8 && isMenuItem(await ctx.db.get("products", pid as Id<"products">))) menuExtra.set(pid, more);
+      }
+      if (menuExtra.size) await autoProduceForSale(ctx, user, scope, menuExtra, false, { id: String(a.invoiceId), label: "invoice" });
       const productIds = new Set<string>([...oldQty.keys(), ...newQty.keys()]);
       for (const pid of productIds) {
         const diff = (newQty.get(pid) ?? 0) - (oldQty.get(pid) ?? 0);
         if (Math.abs(diff) < 1e-8) continue;
         const productId = pid as Id<"products">;
         const product = await ctx.db.get("products", productId); if (!product) continue;
-        const balance = product.currentQty - diff;
+        const balance = isMenuItem(product) ? 0 : product.currentQty - diff; // a menu item never keeps a quantity
         await ctx.db.patch("products", productId, { currentQty: balance });
         const unitCost = oldCost.get(pid) ?? prepared.find((x) => String(x.productId) === pid)?.cost ?? 0;
         if (diff < 0) await releaseInvoiceTracking(ctx, a.invoiceId, productId, -diff);

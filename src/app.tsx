@@ -22,6 +22,7 @@ const LeavePage = lazy(() => import("./pages/leave/page.tsx"));
 const NotificationsPage = lazy(() => import("./pages/notifications/page.tsx"));
 const HelpPage = lazy(() => import("./pages/help/page.tsx"));
 const KioskPage = lazy(() => import("./pages/kiosk/page.tsx"));
+const CustomerDisplayPage = lazy(() => import("./pages/customer-display/page.tsx"));
 
 export default function App() {
   return (
@@ -30,6 +31,7 @@ export default function App() {
         <ErrorBoundary>
         <Routes>
           <Route path="/auth/callback" element={<AuthCallback />} />
+          <Route path="/customer-display" element={<CustomerDisplayPage />} />
           <Route path="/" element={<Index />} />
           <Route element={<AppLayout />}>
             <Route path="/dashboard" element={<Dashboard />} />

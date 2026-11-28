@@ -1,0 +1,635 @@
+From 404495aeb6e43823fb5b56ee1b35f204710a4735 Mon Sep 17 00:00:00 2001
+From: Claude <claude@example.com>
+Date: Wed, 18 Nov 2026 08:01:48 +0000
+Subject: [PATCH 2/3] Ruhusa kwa mtu mmoja ndani ya module (deniedPermissions)
+
+---
+ convex/access.ts                            |   9 +-
+ convex/maintenance.ts                       |  26 +++--
+ convex/modulePermissions.test.ts            | 107 ++++++++++++++++++
+ convex/permissions.ts                       |  49 +++++++++
+ convex/schema.ts                            |   1 +
+ src/components/module-access-picker.tsx     | 116 ++++++++++++++++++++
+ src/lib/i18n-dict-access.ts                 |  10 ++
+ src/pages/layout/_components/ModuleMenu.tsx |  12 +-
+ src/pages/maintenance/UsersPage.tsx         |  41 +++----
+ 9 files changed, 333 insertions(+), 38 deletions(-)
+ create mode 100644 convex/modulePermissions.test.ts
+ create mode 100644 src/components/module-access-picker.tsx
+
+diff --git a/convex/access.ts b/convex/access.ts
+index 1a24fc8..2bc3b7a 100644
+--- a/convex/access.ts
++++ b/convex/access.ts
+@@ -5,7 +5,7 @@ import { ALL_PERMISSION_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, effect
+ import { planStatus, tzToday } from "./plans";
+ 
+ /** The parts of a user the access helpers read. A real user (Doc<"users">) fits; tests may pass a lighter object. */
+-export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "extraPermissions" | "ownDataOnly" | "branchPicked" | "branchIds" | "allDepartments">> & { departmentsActive?: boolean };
++export type UserLike = Partial<Pick<Doc<"users">, "_id" | "tenantId" | "branchId" | "role" | "isActive" | "name" | "username" | "email" | "menuAccess" | "extraPermissions" | "deniedPermissions" | "ownDataOnly" | "branchPicked" | "branchIds" | "allDepartments">> & { departmentsActive?: boolean };
+ /**
+  * Departments a user is limited to when he was given SEVERAL (e.g. Bar + Kitchen): he works in one at a time and may switch
+  * only between these. null = no such list (one department, or all departments).
+@@ -155,7 +155,8 @@ export async function permissionsOfRole(ctx: QueryCtx, tenantId: Id<"tenants"> |
+ export async function effectivePermissionsOf(ctx: QueryCtx, user: MaybeUser): Promise<string[]> {
+   if (isSuperAdmin(user)) return [...ALL_PERMISSION_KEYS];
+   const extra = (user?.extraPermissions ?? []).filter((k) => ALL_PERMISSION_KEYS.includes(k));
+-  return [...new Set([...(await permissionsOfRole(ctx, user?.tenantId, String(user?.role ?? ""))), ...extra])];
++  const denied = new Set(user?.deniedPermissions ?? []); // switched off for this one person
++  return [...new Set([...(await permissionsOfRole(ctx, user?.tenantId, String(user?.role ?? ""))), ...extra])].filter((k) => !denied.has(k));
+ }
+ 
+ /** True for the shared attendance device account (its only permission is the kiosk one). */
+@@ -165,6 +166,8 @@ export async function isKioskOnlyUser(ctx: QueryCtx, user: MaybeUser): Promise<b
+ 
+ export async function roleHasPermission(ctx: QueryCtx, user: MaybeUser, permission: string) {
+   if (isSuperAdmin(user)) return true;
++  // A permission of his role that the administrator switched off for this one person (Users form > module window).
++  if (user?.deniedPermissions?.includes(permission)) return false;
+   // A permission given to this one user directly (Users form), limited to the grantable list.
+   if (user?.extraPermissions?.includes(permission) && ALL_PERMISSION_KEYS.includes(permission)) return true;
+   const name = normalizeRole(user?.role);
+@@ -219,6 +222,8 @@ export async function requireSellingPointOrSales(ctx: QueryCtx, sellingPointPerm
+  */
+ export async function requireManagerOrPermission(ctx: QueryCtx, permission: string, module?: string) {
+   const user = await requireActiveUser(ctx, module);
++  // A permission switched off for this one person (Users form) also stops a manager-role account; Super Admin is never limited.
++  if (!isSuperAdmin(user) && user.deniedPermissions?.includes(permission)) throw new ConvexError(`Forbidden: permission "${permission}" was switched off for this account`);
+   if (await isManagerRole(ctx, user)) return user;
+   if (await roleHasPermission(ctx, user, permission)) return user;
+   throw new ConvexError(`Forbidden: manager permission required (or permission "${permission}")`);
+diff --git a/convex/maintenance.ts b/convex/maintenance.ts
+index 8481acd..e987453 100644
+--- a/convex/maintenance.ts
++++ b/convex/maintenance.ts
+@@ -11,7 +11,7 @@ import {
+   activeDepartments, findRoleRow, resolveDepartmentAccess, filterScoped, getCurrentProfile, isSuperAdmin, logAudit, normalizeRole, requireActiveUser, requirePermission,
+   requireSuperAdminUser, resolveWriteScope, roleHasPermission, scopedRows, effectivePermissionsOf, permissionsOfRole } from "./access";
+ import type { UserLike } from "./access";
+-import { ALL_PERMISSION_KEYS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
++import { ALL_PERMISSION_KEYS, NOT_PER_USER_PERMISSIONS, SETTING_KEYS, SUPER_ADMIN_ONLY_PERMISSIONS, SYSTEM_ROLES, USER_GRANTABLE_PERMISSIONS, cleanModules, permissionsWithNewDefaults } from "./permissions";
+ 
+ const LOGIN_DOMAIN = "login.smarthub.invalid";
+ /**
+@@ -361,6 +361,13 @@ function cleanExtraPermissions(keys: string[]) {
+   return [...new Set(keys)];
+ }
+ 
++/** Permissions of his role that are switched OFF for one person. Unknown keys are refused; keys that are never per-person (manager, roles, kiosk, Super-Admin-only) are ignored. */
++function cleanDeniedPermissions(keys: string[]) {
++  const bad = keys.filter((k) => !ALL_PERMISSION_KEYS.includes(k));
++  if (bad.length) throw new ConvexError(`Ruhusa isiyojulikana kwa mtumiaji: ${bad.join(", ")}`);
++  return [...new Set(keys.filter((k) => !NOT_PER_USER_PERMISSIONS.includes(k)))];
++}
++
+ async function allowedMenu(ctx: QueryCtx, tenantId: Id<"tenants"> | undefined, wanted: string[]) {
+   const tenant = tenantId ? await ctx.db.get("tenants", tenantId) : null;
+   const keys = cleanModules(wanted);
+@@ -424,7 +431,7 @@ export const listAssignableRoles = query({
+     const rows = await rolesOfBusiness(ctx, actor.tenantId);
+     const byName = new Map(rows.map((r) => [r.name, r]));
+     const names = [...SYSTEM_ROLES.map((r) => ({ name: r.name, displayName: byName.get(r.name)?.displayName ?? r.displayName })), ...rows.filter((r) => !SYSTEM_ROLES.some((x) => x.name === r.name)).map((r) => ({ name: r.name, displayName: r.displayName }))];
+-    const out: { name: string; displayName: string; assignable: boolean }[] = [];
++    const out: { name: string; displayName: string; assignable: boolean; permissions: string[] }[] = [];
+     for (const r of names) {
+       let assignable = true;
+       if (!isSuperAdmin(actor)) {
+@@ -432,7 +439,8 @@ export const listAssignableRoles = query({
+         const rolePermissions = withoutSuperOnly(await permissionsOfRole(ctx, actor.tenantId, r.name));
+         assignable = isManagerActor(actor) && ROLES_ABOVE_MANAGER.includes(normalizeRole(r.name)) ? false : managerStaffRole(actor, r.name) || rolePermissions.every((k) => mine.has(k));
+       }
+-      out.push({ ...r, assignable });
++      // The permission list lets the Users form pre-tick what the role already gives (and show what was switched off for one person).
++      out.push({ ...r, assignable, permissions: withoutSuperOnly(await permissionsOfRole(ctx, actor.tenantId, r.name)) });
+     }
+     return out;
+   },
+@@ -448,7 +456,7 @@ export const listUsers = query({
+     // A user tied to one department only manages (and sees) the users of that department.
+     const limit = departmentLimit(user);
+     const visible = limit ? tenantRows.filter((r) => insideLimit(departmentScope(r), limit)) : tenantRows;
+-    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], ownDataOnly: r.ownDataOnly === true, pinLoginEnabled: r.pinLoginEnabled === true, hasPin: !!r.pinHash, staffCode: r.staffCode ?? "" }));
++    return visible.map((r) => ({ _id: r._id, name: r.name, username: r.username, role: r.role ?? "viewer", tenantId: r.tenantId, branchId: r.branchId, branchPicked: r.branchPicked === true, branchIds: r.branchIds ?? null, allDepartments: r.allDepartments === true, isActive: r.isActive !== false, requirePasswordChange: !!r.requirePasswordChange, lastLogin: r.lastLogin, menuAccess: r.menuAccess ?? null, extraPermissions: r.extraPermissions ?? [], deniedPermissions: r.deniedPermissions ?? [], ownDataOnly: r.ownDataOnly === true, pinLoginEnabled: r.pinLoginEnabled === true, hasPin: !!r.pinHash, staffCode: r.staffCode ?? "" }));
+   },
+ });
+ 
+@@ -672,6 +680,7 @@ export const updateUser = mutation({
+     branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()),
+     isActive: v.optional(v.boolean()), requirePasswordChange: v.optional(v.boolean()),
+     menuAccess: v.optional(v.array(v.string())), clearMenuAccess: v.optional(v.boolean()), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())),
++    deniedPermissions: v.optional(v.array(v.string())), // permissions of his role switched off for this one person
+   },
+   handler: async (ctx, a) => {
+     const actor = await requirePermission(ctx, "maintenance.users");
+@@ -725,13 +734,14 @@ export const updateUser = mutation({
+     if (a.isActive === true && target.isActive === false && !isSuperAdmin(actor) && !isSuperAdmin(target)) await assertUserSeatFree(ctx, target.tenantId); // switching a user back on takes a place again
+     if (a.isActive !== undefined) patch.isActive = a.isActive;
+     if (a.requirePasswordChange !== undefined) patch.requirePasswordChange = a.requirePasswordChange;
+-    if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined || a.extraPermissions !== undefined) {
++    if (a.menuAccess !== undefined || a.clearMenuAccess || a.ownDataOnly !== undefined || a.extraPermissions !== undefined || a.deniedPermissions !== undefined) {
+       if (String(actor._id) === String(target._id)) throw new ConvexError("Huwezi kubadilisha menyu au ruhusa za data za akaunti yako mwenyewe.");
+       if (isSuperAdmin(target)) throw new ConvexError("Huwezi kubadilisha menyu ya Super Admin.");
+     }
+     if (a.clearMenuAccess) patch.menuAccess = undefined;
+     else if (a.menuAccess !== undefined) patch.menuAccess = await allowedMenu(ctx, a.tenantId ?? target.tenantId, a.menuAccess);
+     if (a.ownDataOnly !== undefined) patch.ownDataOnly = a.ownDataOnly ? true : undefined;
++    if (a.deniedPermissions !== undefined) patch.deniedPermissions = a.deniedPermissions.length ? cleanDeniedPermissions(a.deniedPermissions) : undefined;
+     if (a.extraPermissions !== undefined) {
+       assertSuperAdminKeysUnchanged(actor, target.extraPermissions, a.extraPermissions);
+       const extras = cleanExtraPermissions(a.extraPermissions);
+@@ -878,12 +888,13 @@ export const usernameStatus = internalQuery({
+ });
+ 
+ export const finishUserSetup = internalMutation({
+-  args: { userId: v.id("users"), actorId: v.id("users"), name: v.string(), username: v.string(), role: v.string(), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()), requirePasswordChange: v.boolean(), menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())) },
++  args: { userId: v.id("users"), actorId: v.id("users"), name: v.string(), username: v.string(), role: v.string(), tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")), branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()), requirePasswordChange: v.boolean(), menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())), deniedPermissions: v.optional(v.array(v.string())) },
+   handler: async (ctx, a) => {
+     const acc = resolveDepartmentAccess({ branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments });
+     await ctx.db.patch("users", a.userId, {
+       name: a.name, username: a.username, role: normalizeRole(a.role), tenantId: a.tenantId, branchId: acc.branchId, branchIds: acc.branchIds, allDepartments: acc.allDepartments, branchPicked: acc.branchPicked, isActive: true, requirePasswordChange: a.requirePasswordChange,
+       menuAccess: a.menuAccess ? await allowedMenu(ctx, a.tenantId, a.menuAccess) : undefined, ownDataOnly: a.ownDataOnly ? true : undefined, extraPermissions: a.extraPermissions?.length ? cleanExtraPermissions(a.extraPermissions) : undefined,
++      deniedPermissions: a.deniedPermissions?.length ? cleanDeniedPermissions(a.deniedPermissions) : undefined,
+     });
+     const actor = await ctx.db.get("users", a.actorId);
+     await logAudit(ctx, actor, { action: "create_user", module: "maintenance", referenceId: String(a.userId), referenceType: "user", details: `${a.username} (${a.role})` });
+@@ -901,6 +912,7 @@ export const createUser = action({
+     tenantId: v.optional(v.id("tenants")), branchId: v.optional(v.id("branches")),
+     branchIds: v.optional(v.array(v.id("branches"))), allDepartments: v.optional(v.boolean()),
+     menuAccess: v.optional(v.array(v.string())), ownDataOnly: v.optional(v.boolean()), extraPermissions: v.optional(v.array(v.string())),
++    deniedPermissions: v.optional(v.array(v.string())),
+     // Staff who sign in with a PIN only (waiter / waitress): the PIN is saved together with the account, after the system checked nobody else has it.
+     pin: v.optional(v.string()), pinLoginEnabled: v.optional(v.boolean()),
+   },
+@@ -947,7 +959,7 @@ export const createUser = action({
+     }
+     await ctx.runMutation(internal.maintenance.finishUserSetup, {
+       userId, actorId: auth.actorId, name: a.name.trim() || username, username, role: a.role,
+-      tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, requirePasswordChange: pinOnlyRole ? false : auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly, extraPermissions: a.extraPermissions,
++      tenantId, branchId: a.branchId, branchIds: a.branchIds, allDepartments: a.allDepartments, requirePasswordChange: pinOnlyRole ? false : auth.forceChange, menuAccess: a.menuAccess, ownDataOnly: a.ownDataOnly, extraPermissions: a.extraPermissions, deniedPermissions: a.deniedPermissions,
+     });
+     if (newPin && newPinLookup) {
+       await ctx.runMutation(internal.maintenance.saveStaffPin, { userId, actorId: auth.actorId, pinHash: await hashStaffPin(newPin), pinLookup: newPinLookup, enabled: a.pinLoginEnabled ?? true });
+diff --git a/convex/modulePermissions.test.ts b/convex/modulePermissions.test.ts
+new file mode 100644
+index 0000000..039eb98
+--- /dev/null
++++ b/convex/modulePermissions.test.ts
+@@ -0,0 +1,107 @@
++import { describe, expect, it } from "vitest";
++import { convexTest } from "convex-test";
++import { api } from "./_generated/api";
++import schema from "./schema";
++import { cardPermission, modulePermissionItems, permissionModule } from "./permissions";
++import { modules } from "./tes.setup";
++
++/**
++ * Per-person permissions inside a module: the Users form opens a window when a module (Sales, Stock, Accounts ...) is ticked and the
++ * administrator ticks what that person may see and do. Result = role permissions + extraPermissions - deniedPermissions.
++ */
++const now = new Date().toISOString();
++
++async function setup() {
++  const t = convexTest(schema, modules);
++  const ids = await t.run(async (ctx) => {
++    const tenant = await ctx.db.insert("tenants", { name: "Shop A", code: "A", isActive: true, createdByToken: "t", createdAt: now });
++    const mk = (username: string, role: string, extra: Record<string, unknown> = {}) => ctx.db.insert("users", { name: username, username, role, tenantId: tenant, isActive: true, ...extra });
++    return {
++      tenant,
++      boss: await mk("boss", "manager"),
++      adm: await mk("adm", "admin"),
++      acc: await mk("acc", "accountant"),
++      accDenied: await mk("accdenied", "accountant", { deniedPermissions: ["stock.view", "accounts.reports.view"] }),
++      cashier: await mk("cashier", "cashier"),
++      cashierExtra: await mk("cashierextra", "cashier", { extraPermissions: ["stock.view"] }),
++      managerDenied: await mk("mgrdenied", "manager", { deniedPermissions: ["stock.manage"] }),
++    };
++  });
++  const as = (id: typeof ids.boss) => t.withIdentity({ subject: id, tokenIdentifier: `x|${id}` });
++  return { t, as, ...ids };
++}
++
++describe("permission -> module and card mapping", () => {
++  it("knows which module a permission belongs to and lists what can be ticked per person", () => {
++    expect(permissionModule("stock.reports.view")).toBe("stock");
++    expect(permissionModule("suppliers.view")).toBe("purchasing");
++    expect(permissionModule("accounts.reports.delete")).toBe("accounts");
++    const stockKeys = modulePermissionItems("stock").map((i) => i.key);
++    expect(stockKeys).toContain("stock.view");
++    expect(stockKeys).not.toContain("stock.adjust"); // Super Admin only
++    expect(modulePermissionItems("maintenance").map((i) => i.key)).not.toContain("system.manager");
++    expect(modulePermissionItems("maintenance").map((i) => i.key)).not.toContain("maintenance.roles");
++  });
++
++  it("each card needs one permission; reports follow their prefix", () => {
++    expect(cardPermission("/stock/reports/quantity")).toBe("stock.reports.view");
++    expect(cardPermission("/accounts/reports/ledger")).toBe("accounts.reports.view");
++    expect(cardPermission("/stock/barcodes")).toBe("stock.print");
++    expect(cardPermission("/sales/invoice-finder")).toBeUndefined();
++  });
++});
++
++describe("denied / extra permissions of one person", () => {
++  it("a switched-off permission disappears from the screen list and the server refuses it", async () => {
++    const { as, acc, accDenied } = await setup();
++    const normal = await as(acc).query(api.maintenance.myPermissions, {});
++    expect(normal).toContain("stock.view");
++    expect(normal).toContain("accounts.reports.view");
++    await expect(as(acc).query(api.inventory.listMovements, {})).resolves.toBeDefined();
++
++    const limited = await as(accDenied).query(api.maintenance.myPermissions, {});
++    expect(limited).not.toContain("stock.view");
++    expect(limited).not.toContain("accounts.reports.view");
++    expect(limited).toContain("accounts.view"); // the rest of his role stays
++    await expect(as(accDenied).query(api.inventory.listMovements, {})).rejects.toThrow();
++  });
++
++  it("a permission switched on for one person is given on top of his role", async () => {
++    const { as, cashier, cashierExtra } = await setup();
++    expect(await as(cashier).query(api.maintenance.myPermissions, {})).not.toContain("stock.view");
++    expect(await as(cashierExtra).query(api.maintenance.myPermissions, {})).toContain("stock.view");
++  });
++
++  it("denial also stops a manager-role account where the server asks 'manager or permission'", async () => {
++    const { as, managerDenied, boss } = await setup();
++    const group = { code: "G1", name: "Drinks", isActive: true };
++    await expect(as(boss).mutation(api.products.upsertGroup, group)).resolves.toBeDefined();
++    await expect(as(managerDenied).mutation(api.products.upsertGroup, group)).rejects.toThrow(/switched off/);
++  });
++});
++
++describe("Users form saves them", () => {
++  it("updateUser stores deniedPermissions, listUsers returns them, listAssignableRoles gives the role's list", async () => {
++    const { as, adm, cashier } = await setup();
++    const me = as(adm);
++    const roles = await me.query(api.maintenance.listAssignableRoles, {});
++    expect(roles.find((r) => r.name === "cashier")?.permissions).toContain("sales.manage");
++
++    await me.mutation(api.maintenance.updateUser, { userId: cashier, extraPermissions: ["stock.view"], deniedPermissions: ["sales.print", "sales.print", "system.manager"] });
++    const row = (await me.query(api.maintenance.listUsers, {})).find((u) => u._id === cashier);
++    expect(row?.deniedPermissions).toEqual(["sales.print"]); // duplicates and never-per-person keys are dropped
++    expect(row?.extraPermissions).toEqual(["stock.view"]);
++    const mine = await as(cashier).query(api.maintenance.myPermissions, {});
++    expect(mine).not.toContain("sales.print");
++    expect(mine).toContain("stock.view");
++
++    await me.mutation(api.maintenance.updateUser, { userId: cashier, deniedPermissions: [] });
++    expect(await as(cashier).query(api.maintenance.myPermissions, {})).toContain("sales.print");
++  });
++
++  it("refuses unknown keys, and nobody can change his own switches", async () => {
++    const { as, adm, cashier } = await setup();
++    await expect(as(adm).mutation(api.maintenance.updateUser, { userId: cashier, deniedPermissions: ["not.a.permission"] })).rejects.toThrow();
++    await expect(as(adm).mutation(api.maintenance.updateUser, { userId: adm, deniedPermissions: ["sales.print"] })).rejects.toThrow();
++  });
++});
+diff --git a/convex/permissions.ts b/convex/permissions.ts
+index c63fe48..41de6f3 100644
+--- a/convex/permissions.ts
++++ b/convex/permissions.ts
+@@ -232,6 +232,55 @@ export function effectiveModules(tenantModules: string[] | undefined, menuAccess
+ }
+ 
+ 
++/**
++ * Which sidebar module a permission belongs to (first part of the key, plus a few exceptions).
++ * The Users form uses this to open the "what may he see in Stock / Accounts / ..." window when a module is ticked.
++ */
++const PERMISSION_PREFIX_MODULE: Record<string, string> = {
++  dashboard: "dashboard", sales: "sales", waiterOrders: "waiterOrders", bills: "bills", stock: "stock",
++  suppliers: "purchasing", purchasing: "purchasing", accounts: "accounts", payroll: "payroll", attendance: "payroll",
++  leave: "leave", maintenance: "maintenance", system: "maintenance",
++};
++export function permissionModule(key: string): string | undefined {
++  return PERMISSION_PREFIX_MODULE[key.split(".")[0]];
++}
++/**
++ * Permissions that are never ticked one person at a time in the Users form: manager status and role management belong to the role,
++ * the kiosk is a whole account type, and the Super-Admin-only ones have their own rule.
++ */
++export const NOT_PER_USER_PERMISSIONS = ["system.manager", "maintenance.roles", "attendance.kiosk", ...SUPER_ADMIN_ONLY_PERMISSIONS];
++/** Permission items of one module, in the order of the Role Management screen, that may be ticked for one user. */
++export function modulePermissionItems(moduleKey: string): { key: string; label: string }[] {
++  return PERMISSION_GROUPS.flatMap((g) => g.items).filter((i) => permissionModule(i.key) === moduleKey && !NOT_PER_USER_PERMISSIONS.includes(i.key));
++}
++
++/**
++ * The permission each card of a module screen (Stock, Accounts, Sales ...) needs. A card without the permission is hidden for that user,
++ * so ticking / unticking a permission in the Users window really changes which cards he sees. The server still refuses the action itself.
++ * Exact paths win; the prefix rules cover the whole report lists.
++ */
++export const CARD_PERMISSION: Record<string, string> = {
++  "/sales/invoicing": "sales.manage", "/sales/clients": "sales.manage", "/sales/clients/list": "sales.view",
++  "/stock/products": "stock.view", "/stock/production": "stock.manage", "/stock/warehouses": "stock.store.view", "/stock/import": "stock.manage",
++  "/stock/adjustment": "stock.adjust", "/stock/groups": "stock.view", "/stock/item-quantity": "stock.view", "/stock/transactions": "stock.view",
++  "/stock/item-history": "stock.view", "/stock/barcodes": "stock.print",
++  "/purchasing/entry": "purchasing.manage", "/purchasing/orders": "purchasing.view", "/purchasing/grn": "purchasing.view", "/purchasing/returns": "purchasing.view",
++  "/purchasing/payments": "purchasing.manage", "/purchasing/suppliers": "suppliers.view",
++  "/accounts/capital": "accounts.view", "/accounts/chart": "accounts.view", "/accounts/periods": "accounts.view", "/accounts/journals": "accounts.manage",
++  "/accounts/transfer": "accounts.manage", "/accounts/expenses": "accounts.manage", "/accounts/reconciliation": "accounts.manage",
++  "/accounts/period-report": "accounts.reports.view", "/accounts/method-report": "accounts.reports.view",
++  "/payroll/sign-in": "payroll.view", "/payroll/sign-out": "payroll.view", "/payroll/schedules": "payroll.view", "/payroll/deductions": "payroll.view",
++  "/payroll/process": "payroll.manage", "/payroll/employees": "payroll.manage", "/payroll/placement": "payroll.manage", "/payroll/payslip": "payroll.view",
++};
++export const CARD_PERMISSION_PREFIXES: [string, string][] = [
++  ["/sales/reports/", "sales.reports.view"], ["/stock/reports/", "stock.reports.view"], ["/purchasing/reports/", "purchasing.reports.view"],
++  ["/accounts/reports/", "accounts.reports.view"], ["/payroll/reports/", "payroll.reports.view"],
++];
++/** The permission a card needs, or undefined when the card is not tied to one (it stays visible). */
++export function cardPermission(path: string): string | undefined {
++  return CARD_PERMISSION[path] ?? CARD_PERMISSION_PREFIXES.find(([prefix]) => path.startsWith(prefix))?.[1];
++}
++
+ /** Permissions that allow custom roles to open manager-only module screens. Everyday Sales access is intentionally excluded. */
+ export const MODULE_MANAGE_PERMISSION: Record<string, string> = {
+   stock: "stock.manage",
+diff --git a/convex/schema.ts b/convex/schema.ts
+index a565eef..4929457 100644
+--- a/convex/schema.ts
++++ b/convex/schema.ts
+@@ -54,6 +54,7 @@ export default defineSchema({
+     lastLogin: v.optional(v.string()),
+     menuAccess: v.optional(v.array(v.string())), // sidebar modules this user may open (missing = all the business has)
+     extraPermissions: v.optional(v.array(v.string())), // permissions given to this ONE user on top of his role (e.g. "sales.void")
++    deniedPermissions: v.optional(v.array(v.string())), // permissions of his role that were switched OFF for this ONE user (Users form > module window)
+     ownDataOnly: v.optional(v.boolean()), // staff mode: sees only his own sales/bills and a personal dashboard
+     pinLoginEnabled: v.optional(v.boolean()),
+     pinHash: v.optional(v.string()),
+diff --git a/src/components/module-access-picker.tsx b/src/components/module-access-picker.tsx
+new file mode 100644
+index 0000000..9af4f28
+--- /dev/null
++++ b/src/components/module-access-picker.tsx
+@@ -0,0 +1,116 @@
++import { useState } from "react";
++import { MODULES, modulePermissionItems } from "@/convex/permissions";
++import { Button } from "@/components/ui/button";
++import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
++import { tr } from "@/lib/i18n.ts";
++
++type Props = {
++  /** Modules this user may open (menuAccess). */
++  value: string[];
++  onChange: (next: string[]) => void;
++  /** Modules the business has (undefined = all). */
++  available?: string[];
++  /** When true every module the business has is open to this user: the boxes are shown ticked and locked, only the permission windows work. */
++  allModules?: boolean;
++  /** What his ROLE already gives. */
++  rolePermissions: string[];
++  /** Given to this one person on top of the role / switched off for this one person. */
++  extra: string[];
++  denied: string[];
++  onPermissionsChange: (extra: string[], denied: string[]) => void;
++  /** Permissions the person filling the form has himself (null = no limit, Super Admin). Others are shown but locked. */
++  myPermissions: string[] | null;
++  disabled?: boolean;
++};
++
++/**
++ * Sidebar modules for ONE user. Ticking a module (Sales, Stock, Accounts ...) opens a window where the administrator ticks
++ * what that person may see and do inside it; the same window opens later with the "Ruhusa" button.
++ * Result = role permissions + `extra` - `denied`. A permission that the role already gives is "switched off" with `denied`,
++ * one the role does not give is "switched on" with `extra`.
++ */
++export default function ModuleAccessPicker({ value, onChange, available, allModules = false, rolePermissions, extra, denied, onPermissionsChange, myPermissions, disabled = false }: Props) {
++  const [openKey, setOpenKey] = useState<string | null>(null);
++  const shown = MODULES.filter((m) => !available || available.includes(m.key));
++  const isOn = (k: string) => (rolePermissions.includes(k) || extra.includes(k)) && !denied.includes(k);
++  const canTick = (k: string) => myPermissions === null || myPermissions.includes(k);
++
++  const setMany = (keys: string[], on: boolean) => {
++    const ex = new Set(extra);
++    const dn = new Set(denied);
++    for (const k of keys) {
++      if (!canTick(k)) continue;
++      const inRole = rolePermissions.includes(k);
++      if (on) { dn.delete(k); if (!inRole) ex.add(k); }
++      else { ex.delete(k); if (inRole) dn.add(k); }
++    }
++    onPermissionsChange([...ex], [...dn]);
++  };
++  const resetToRole = (keys: string[]) => onPermissionsChange(extra.filter((k) => !keys.includes(k)), denied.filter((k) => !keys.includes(k)));
++
++  const toggleModule = (key: string, on: boolean) => {
++    onChange(on ? [...new Set([...value, key])] : value.filter((k) => k !== key));
++    if (on && modulePermissionItems(key).length > 0) setOpenKey(key); // choosing a module opens the window to tick what he sees inside it
++  };
++
++  const openModule = MODULES.find((m) => m.key === openKey);
++  const items = openKey ? modulePermissionItems(openKey) : [];
++
++  return (
++    <>
++      <div className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
++        {shown.map((m) => {
++          const locked = !!m.core || allModules;
++          const checked = locked || value.includes(m.key);
++          const list = modulePermissionItems(m.key);
++          const on = list.filter((i) => isOn(i.key)).length;
++          return (
++            <div key={m.key} className="flex items-center justify-between gap-2">
++              <label className={`flex items-center gap-2 text-sm ${locked || disabled ? "opacity-70" : "cursor-pointer"}`}>
++                <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={checked} disabled={locked || disabled} onChange={(e) => toggleModule(m.key, e.target.checked)} />
++                {tr(m.label)}
++              </label>
++              {checked && list.length > 0 && (
++                <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={disabled} onClick={() => setOpenKey(m.key)}>
++                  {tr("Ruhusa")} {on}/{list.length}
++                </Button>
++              )}
++            </div>
++          );
++        })}
++      </div>
++
++      <Dialog open={!!openKey} onOpenChange={(o) => { if (!o) setOpenKey(null); }}>
++        <DialogContent className="sm:max-w-xl">
++          <DialogHeader>
++            <DialogTitle>{tr("{0}: anachoweza kuona na kufanya", [tr(openModule?.label ?? "")])}</DialogTitle>
++            <DialogDescription>{tr("Tia tiki kile mtumiaji huyu anachoruhusiwa kwenye sehemu hii. Kisichotiwa tiki hakitaonekana kwake na hawezi kukifanya.")}</DialogDescription>
++          </DialogHeader>
++          <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
++            {items.map((i) => {
++              const locked = !canTick(i.key);
++              return (
++                <label key={i.key} className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${locked ? "opacity-60" : "cursor-pointer"}`}>
++                  <input type="checkbox" className="mt-1 h-4 w-4 cursor-pointer accent-primary" checked={isOn(i.key)} disabled={locked || disabled} onChange={(e) => setMany([i.key], e.target.checked)} />
++                  <span>
++                    {tr(i.label)}
++                    {locked && <span className="block text-xs text-muted-foreground">{tr("Wewe mwenyewe huna ruhusa hii, kwa hiyo huwezi kumpa mwingine.")}</span>}
++                    {!locked && rolePermissions.includes(i.key) && <span className="block text-xs text-muted-foreground">{tr("Role yake inampa hii.")}</span>}
++                  </span>
++                </label>
++              );
++            })}
++          </div>
++          <DialogFooter className="sm:justify-between">
++            <div className="flex flex-wrap gap-2">
++              <Button type="button" size="sm" variant="outline" onClick={() => setMany(items.map((i) => i.key), true)}>{tr("Chagua zote")}</Button>
++              <Button type="button" size="sm" variant="outline" onClick={() => setMany(items.map((i) => i.key), false)}>{tr("Ondoa zote")}</Button>
++              <Button type="button" size="sm" variant="outline" onClick={() => resetToRole(items.map((i) => i.key))}>{tr("Rudisha za role")}</Button>
++            </div>
++            <Button type="button" onClick={() => setOpenKey(null)}>{tr("Sawa")}</Button>
++          </DialogFooter>
++        </DialogContent>
++      </Dialog>
++    </>
++  );
++}
+diff --git a/src/lib/i18n-dict-access.ts b/src/lib/i18n-dict-access.ts
+index 2e84b0a..236464a 100644
+--- a/src/lib/i18n-dict-access.ts
++++ b/src/lib/i18n-dict-access.ts
+@@ -90,4 +90,14 @@ export const ACCESS_DICT: Record<string, { sw: string; en: string }> = {
+   "Biashara imewekwa mode ya Print: oda za wahudumu hazitumwi kwa cashier.": { sw: "Biashara imewekwa mode ya Print: oda za wahudumu hazitumwi kwa cashier.", en: "This business is set to Print mode: waiter orders are not sent to the cashier." },
+   "Kuna oda {0} zinazosubiri kwenye idara nyingine. Wewe uko idara: {1}. Wahudumu wafanye kazi idara yako, au msimamizi akuondoe kwenye idara moja ili uone zote.": { sw: "Kuna oda {0} zinazosubiri kwenye idara nyingine. Wewe uko idara: {1}. Wahudumu wafanye kazi idara yako, au msimamizi akuondoe kwenye idara moja ili uone zote.", en: "There are {0} orders waiting in another department. You are in department: {1}. Waiters should work in your department, or an administrator should free you from the single department so you see them all." },
+   "Hakuna oda zilizotumwa na wahudumu kwa sasa. Zikitumwa zitatokea hapa zenyewe.": { sw: "Hakuna oda zilizotumwa na wahudumu kwa sasa. Zikitumwa zitatokea hapa zenyewe.", en: "No orders have been sent by waiters right now. When they are sent they appear here by themselves." },
++  "{0}: anachoweza kuona na kufanya": { sw: "{0}: anachoweza kuona na kufanya", en: "{0}: what this user can see and do" },
++  "Tia tiki kile mtumiaji huyu anachoruhusiwa kwenye sehemu hii. Kisichotiwa tiki hakitaonekana kwake na hawezi kukifanya.": { sw: "Tia tiki kile mtumiaji huyu anachoruhusiwa kwenye sehemu hii. Kisichotiwa tiki hakitaonekana kwake na hawezi kukifanya.", en: "Tick what this user is allowed in this section. Anything unticked is hidden from him and he cannot do it." },
++  "Wewe mwenyewe huna ruhusa hii, kwa hiyo huwezi kumpa mwingine.": { sw: "Wewe mwenyewe huna ruhusa hii, kwa hiyo huwezi kumpa mwingine.", en: "You do not have this permission yourself, so you cannot give it to someone else." },
++  "Role yake inampa hii.": { sw: "Role yake inampa hii.", en: "His role already gives this." },
++  "Ruhusa": { sw: "Ruhusa", en: "Permissions" },
++  "Chagua zote": { sw: "Chagua zote", en: "Select all" },
++  "Ondoa zote": { sw: "Ondoa zote", en: "Clear all" },
++  "Rudisha za role": { sw: "Rudisha za role", en: "Back to role defaults" },
++  "Sawa": { sw: "Sawa", en: "OK" },
++  "Ukitia tiki sehemu (Sales, Stock, Accounts...) inafunguka dirisha la kuchagua anachoona na kufanya mtumiaji huyu. Kitufe cha 'Ruhusa' kinalifungua tena. Role yake inabaki kuwa msingi; hapa unaongeza au kuondoa kwa mtu mmoja tu.": { sw: "Ukitia tiki sehemu (Sales, Stock, Accounts...) inafunguka dirisha la kuchagua anachoona na kufanya mtumiaji huyu. Kitufe cha 'Ruhusa' kinalifungua tena. Role yake inabaki kuwa msingi; hapa unaongeza au kuondoa kwa mtu mmoja tu.", en: "Ticking a section (Sales, Stock, Accounts...) opens a window to choose what this user can see and do. The 'Permissions' button reopens it. His role stays the base; here you add or remove for this one person only." },
+ };
+diff --git a/src/pages/layout/_components/ModuleMenu.tsx b/src/pages/layout/_components/ModuleMenu.tsx
+index 1eef3d3..99e957d 100644
+--- a/src/pages/layout/_components/ModuleMenu.tsx
++++ b/src/pages/layout/_components/ModuleMenu.tsx
+@@ -4,6 +4,9 @@ import type { LucideIcon } from "lucide-react";
+ import type { ReactNode } from "react";
+ import { cn } from "@/lib/utils.ts";
+ import { tr } from "@/lib/i18n.ts";
++import { useQuery } from "convex/react";
++import { api } from "@/convex/_generated/api";
++import { cardPermission } from "@/convex/permissions";
+ 
+ type MenuItem = {
+   label: string;
+@@ -26,8 +29,15 @@ type Props = {
+   children?: ReactNode;
+ };
+ 
+-export default function ModuleMenu({ title, sections, onClose, variant = "default", children }: Props) {
++export default function ModuleMenu({ title, sections: allSections, onClose, variant = "default", children }: Props) {
+   const navigate = useNavigate();
++  // Each card needs one permission (see CARD_PERMISSION). While the list loads nothing is hidden; the server refuses the action anyway.
++  const permissions = useQuery(api.maintenance.myPermissions, {});
++  const sections = permissions
++    ? allSections
++        .map((s) => ({ ...s, items: s.items.filter((item) => { const need = cardPermission(item.path); return !need || permissions.includes(need); }) }))
++        .filter((s) => s.items.length > 0)
++    : allSections;
+ 
+   return (
+     <div className="max-w-6xl mx-auto">
+diff --git a/src/pages/maintenance/UsersPage.tsx b/src/pages/maintenance/UsersPage.tsx
+index d9ea9a4..c818af6 100644
+--- a/src/pages/maintenance/UsersPage.tsx
++++ b/src/pages/maintenance/UsersPage.tsx
+@@ -6,18 +6,12 @@ import type { Id } from "@/convex/_generated/dataModel";
+ import { Button } from "@/components/ui/button";
+ import { Card, Loading, PageShell, SelectField, TextField } from "./_shared";
+ import { useAuth } from "@/hooks/use-auth";
+-import ModulePicker from "@/components/module-picker.tsx";
++import ModuleAccessPicker from "@/components/module-access-picker.tsx";
+ import { ALL_MODULE_KEYS } from "@/convex/permissions";
+ import { errorText, tr } from "@/lib/i18n.ts";
+ 
+-type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; pin: string; pinLoginEnabled: boolean; hasPin: boolean; staffCode: string; extra: string[] };
+-/** Switches given to ONE user on top of his role (the server checks that the giver has them himself; Super Admin always has all). */
+-const USER_SWITCHES: { key: string; label: string; hint: string }[] = [
+-  { key: "sales.edit", label: "Edit invoice", hint: tr("Anaweza kurekebisha invoice zilizohifadhiwa (bidhaa, idadi, bei).") },
+-  { key: "sales.void", label: "Cancel / Delete invoice", hint: tr("Anaweza kufuta au kubatilisha invoice; stock inarudi na malipo yanarudishwa.") },
+-  { key: "sales.print", label: "Print invoice", hint: tr("Anaweza kuchapisha invoice na risiti.") },
+-];
+-const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, pin: "", pinLoginEnabled: false, hasPin: false, staffCode: "", extra: [] };
++type Form = { id?: Id<"users">; name: string; username: string; password: string; role: string; tenantId: string; branchIds: string[]; allDepartments: boolean; menuAll: boolean; menu: string[]; ownDataOnly: boolean; pin: string; pinLoginEnabled: boolean; hasPin: boolean; staffCode: string; extra: string[]; denied: string[] };
++const empty: Form = { name: "", username: "", password: "", role: "cashier", tenantId: "", branchIds: [], allDepartments: false, menuAll: true, menu: ALL_MODULE_KEYS, ownDataOnly: false, pin: "", pinLoginEnabled: false, hasPin: false, staffCode: "", extra: [], denied: [] };
+ 
+ export default function UsersPage() {
+   const { user: me } = useAuth();
+@@ -25,6 +19,7 @@ export default function UsersPage() {
+   // Needs only user-management permission (listRoles also needs Role Management, so a staff member given only "add users" could not open this page).
+   const roles = useQuery(api.maintenance.listAssignableRoles, {});
+   const offices = useQuery(api.maintenance.listOffices, {});
++  const myPerms = useQuery(api.maintenance.myPermissions, {});
+   const quota = useQuery(api.maintenance.userQuota, {});
+   const seatsFull = !!quota && quota.max !== null && quota.used >= quota.max; // the Super Admin sets the limit; a business administrator cannot go past it
+   const create = useAction(api.maintenance.createUser);
+@@ -42,6 +37,7 @@ export default function UsersPage() {
+   const roleOptions = (roles ?? []).filter((r) => isSuper || r.name !== "super_admin").map((r) => [r.name, isSuper || r.assignable || r.name === f?.role ? r.displayName : `${r.displayName} ${tr("(juu ya ruhusa zako)")}`] as [string, string]);
+   // Super Admin is never handed out; it only shows when the account being edited already is one.
+   if (isSuper && String(f?.role ?? "").toLowerCase().replace(/[\s-]+/g, "_").replace("superadmin", "super_admin") === "super_admin") roleOptions.unshift(["super_admin", tr("Super Admin")]);
++  const rolePermissions = roles?.find((r) => r.name === f?.role)?.permissions ?? []; // what the chosen role already gives
+   const tenantName = (id?: string) => offices?.tenants.find((t) => t._id === id)?.name ?? "—";
+   const branchName = (id?: string) => offices?.branches.find((b) => b._id === id)?.name ?? tr("Zote");
+   const branches = (offices?.branches ?? []).filter((b) => b.tenantId === (f?.tenantId || me?.tenantId));
+@@ -64,7 +60,7 @@ export default function UsersPage() {
+             <TextField label={tr("Jina kamili")} value={f.name} onChange={(v) => set("name", v)} />
+             <TextField label={tr("Username")} value={f.username} onChange={(v) => set("username", v.toLowerCase())} disabled={editing && editingSelf} hint={tr("Herufi ndogo/namba, 3–32, bila nafasi. Jina ni la kipekee kwa biashara zote (mfano asha.duka1). Biashara moja inaweza kuwa na admin na watumiaji wengi wa role moja, kila mmoja akiwa na username yake.")} />
+             {!editing && !pinOnlyRole && <TextField label={tr("Password ya kuanzia")} type="password" value={f.password} onChange={(v) => set("password", v)} />}
+-            <SelectField label={tr("Role")} value={f.role} onChange={(v) => set("role", v)} options={roleOptions} />
++            <SelectField label={tr("Role")} value={f.role} onChange={(v) => setF((p) => (p ? { ...p, role: v, denied: [] } : p))} options={roleOptions} />
+             <TextField label={tr("Staff code (kwa cashier kutafuta mauzo)")} value={f.staffCode} onChange={(v) => set("staffCode", v.toUpperCase())} hint={tr("Herufi/namba 2-20, ya kipekee kwa biashara. Cashier huiandika kuona mauzo na kupokea malipo ya mhudumu huyu.")} />
+             <div className="space-y-2 rounded-xl border p-3 md:col-span-2">
+                 {pinOnlyRole ? (
+@@ -112,26 +108,15 @@ export default function UsersPage() {
+               </div>
+             )}
+             {f.role === "super_admin" && <p className="rounded-xl border p-3 text-sm md:col-span-2">{tr("Super Admin ana ruhusa zote (Edit, Cancel/Delete, Print) kila wakati; hazizimwi.")}</p>}
+-            {f.role !== "super_admin" && !editingSelf && (
+-              <div className="space-y-2 rounded-xl border p-3 md:col-span-2">
+-                <p className="text-sm font-medium">{tr("Ruhusa za invoice (kwa mtumiaji huyu pekee)")}</p>
+-                {USER_SWITCHES.map((sw) => (
+-                  <label key={sw.key} className="flex cursor-pointer items-start gap-2 text-sm">
+-                    <input type="checkbox" className="mt-1 h-4 w-4 cursor-pointer accent-primary" checked={f.extra.includes(sw.key)}
+-                      onChange={(e) => setF((p) => (p ? { ...p, extra: e.target.checked ? [...new Set([...p.extra, sw.key])] : p.extra.filter((k) => k !== sw.key) } : p))} />
+-                    <span>{tr(sw.label)}<span className="block text-xs text-muted-foreground">{tr(sw.hint)}</span></span>
+-                  </label>
+-                ))}
+-                <p className="text-xs text-muted-foreground">{tr("Unaweza kutoa tu ruhusa ulizonazo wewe mwenyewe. Zinaongezwa juu ya ruhusa za role yake.")}</p>
+-              </div>
+-            )}
+             {f.role !== "super_admin" && !editingSelf && (
+               <div className="space-y-2 rounded-xl border p-3 md:col-span-2">
+                 <p className="text-sm font-medium">{tr("Menyu (sidebar) anazoweza kuona")}</p>
+                 <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.menuAll} onChange={(e) => setF((p) => (p ? { ...p, menuAll: e.target.checked } : p))} />{tr("Zote ambazo biashara ina")}</label>
+-                {!f.menuAll && <ModulePicker value={f.menu} onChange={(menu) => setF((p) => (p ? { ...p, menu } : p))} available={tenantModules} />}
++                <ModuleAccessPicker value={f.menu} onChange={(menu) => setF((p) => (p ? { ...p, menu } : p))} available={tenantModules} allModules={f.menuAll}
++                  rolePermissions={rolePermissions} extra={f.extra} denied={f.denied} onPermissionsChange={(extra, denied) => setF((p) => (p ? { ...p, extra, denied } : p))}
++                  myPermissions={isSuper ? null : myPerms ?? []} />
+                 <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" checked={f.ownDataOnly} onChange={(e) => setF((p) => (p ? { ...p, ownDataOnly: e.target.checked } : p))} />{tr("Aone mauzo na bili zake tu (dashboard yake binafsi)")}</label>
+-                <p className="border-t pt-2 text-xs text-muted-foreground">{tr("Ruhusa za kawaida za kazi zinadhibitiwa kupitia Role Management; hapa unaweza kuongeza ruhusa za invoice kwa mtu mmoja, na kuchagua sidebar.")}</p>
++                <p className="border-t pt-2 text-xs text-muted-foreground">{tr("Ukitia tiki sehemu (Sales, Stock, Accounts...) inafunguka dirisha la kuchagua anachoona na kufanya mtumiaji huyu. Kitufe cha 'Ruhusa' kinalifungua tena. Role yake inabaki kuwa msingi; hapa unaongeza au kuondoa kwa mtu mmoja tu.")}</p>
+                 <p className="text-xs text-muted-foreground">{tr("Mfano mhudumu: ruhusu Sales na Bills tu, na weka 'aone mauzo na bili zake tu'. Huduma ambazo biashara haijalipia hazionekani hapa.")}</p>
+               </div>
+             )}
+@@ -157,10 +142,10 @@ export default function UsersPage() {
+               }
+               let savedUserId: Id<"users">;
+               if (editing) {
+-                await update({ userId: f.id!, name: f.name, role: f.role, tenantId, ...dept, ...(editingSelf ? {} : { ...access, extraPermissions: f.extra, ...(f.menuAll ? { clearMenuAccess: true } : menu) }) });
++                await update({ userId: f.id!, name: f.name, role: f.role, tenantId, ...dept, ...(editingSelf ? {} : { ...access, extraPermissions: f.extra, deniedPermissions: f.denied, ...(f.menuAll ? { clearMenuAccess: true } : menu) }) });
+                 savedUserId = f.id!;
+               } else {
+-                const createdId = await create({ name: f.name, username: f.username, ...(pinOnlyRole ? {} : { password: f.password }), role: f.role, tenantId, ...dept, ...access, ...menu, ...(f.extra.length ? { extraPermissions: f.extra } : {}), ...(f.pin ? { pin: f.pin, pinLoginEnabled: pinLogin } : {}) });
++                const createdId = await create({ name: f.name, username: f.username, ...(pinOnlyRole ? {} : { password: f.password }), role: f.role, tenantId, ...dept, ...access, ...menu, ...(f.extra.length ? { extraPermissions: f.extra } : {}), ...(f.denied.length ? { deniedPermissions: f.denied } : {}), ...(f.pin ? { pin: f.pin, pinLoginEnabled: pinLogin } : {}) });
+                 savedUserId = createdId as Id<"users">;
+               }
+               if (editing) { // a new user's PIN was already saved (and checked for duplicates) together with the account
+@@ -201,7 +186,7 @@ export default function UsersPage() {
+                   <td className="p-3">{u.isActive ? tr("Active") : tr("Disabled")}</td>
+                   <td className="p-3">
+                     <div className="flex flex-wrap gap-2">
+-                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, pin: "", pinLoginEnabled: u.pinLoginEnabled, hasPin: u.hasPin, staffCode: u.staffCode ?? "", extra: u.extraPermissions ?? [] })}>{tr("Modify")}</Button>
++                      <Button size="sm" variant="outline" onClick={() => setF({ id: u._id, name: u.name ?? "", username: u.username ?? "", password: "", role: u.role, tenantId: u.tenantId ?? "", branchIds: u.branchIds?.length ? u.branchIds.map(String) : u.branchId && !u.branchPicked ? [String(u.branchId)] : [], allDepartments: u.allDepartments || (!u.branchId && !u.branchIds?.length && !departmentRoles.includes(u.role)), menuAll: u.menuAccess === null, menu: u.menuAccess ?? ALL_MODULE_KEYS, ownDataOnly: u.ownDataOnly, pin: "", pinLoginEnabled: u.pinLoginEnabled, hasPin: u.hasPin, staffCode: u.staffCode ?? "", extra: u.extraPermissions ?? [], denied: u.deniedPermissions ?? [] })}>{tr("Modify")}</Button>
+                       <Button size="sm" variant="outline" onClick={() => { const p = prompt(tr("Password mpya ya {0}:", [u.username])); if (p) void run(() => reset({ userId: u._id, newPassword: p }), tr("Password imebadilishwa; ataingia upya.")); }}>{tr("Reset password")}</Button>
+                       {String(me?._id) !== String(u._id) && (
+                         <Button size="sm" variant="outline" onClick={() => void run(() => update({ userId: u._id, isActive: !u.isActive }), u.isActive ? tr("Amezimwa.") : tr("Amewashwa."))}>{u.isActive ? tr("Disable") : tr("Enable")}</Button>
+-- 
+2.43.0
+

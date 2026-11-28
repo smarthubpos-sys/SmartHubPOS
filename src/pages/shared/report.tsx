@@ -1,12 +1,12 @@
 import { useRef, useState } from "react";
 import ExcelJS from "exceljs";
-import { useAction } from "convex/react";
+import { useAction, useQuery } from "convex/react";
 import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { errorText, getLang, tr, trMessage } from "@/lib/i18n.ts";
-import { printElement, readPaper, savePaper, type Paper } from "@/lib/print-area.ts";
+import { printElement, readPaper, type Paper } from "@/lib/print-area.ts";
 
 import { safeCell } from "@/lib/safe-cell.ts";
 import { daysAgo, fmt, monthStart, num, round2, today, type Row } from "./report-utils.ts";
@@ -96,7 +96,10 @@ export function ReportTable({ title: rawTitle, rows: rawRows, sumCols = [], note
   const sectionRef = useRef<HTMLElement>(null);
   const [picked, setPicked] = useState<number | null>(null);
   const [copies, setCopies] = useState(1);
-  const [paper, setPaper] = useState<Paper>(readPaper());
+  const reportSettings = useQuery(api.maintenance.getSettings, {});
+  const businessPaper = readPaper((reportSettings?.app?.hardware as { paperWidth?: string } | undefined)?.paperWidth);
+  const [paperPick, setPaper] = useState<Paper | null>(null); // a choice made on this screen only; otherwise the business setting
+  const paper: Paper = paperPick ?? businessPaper;
   const [viewOpen, setViewOpen] = useState(true); // the report is shown as soon as it is loaded; "Hide Report" only folds it away
   const emailReport = async () => {
     setSending(true);
@@ -119,7 +122,7 @@ export function ReportTable({ title: rawTitle, rows: rawRows, sumCols = [], note
         <div className="flex flex-wrap items-center gap-2 print:hidden">
           {onPrintRow && (
             <>
-              <select className="h-9 rounded-md border bg-background px-2 text-sm" value={paper} aria-label={tr("Aina ya printer")} onChange={(e) => { const v = e.target.value as Paper; setPaper(v); savePaper(v); }}>
+              <select className="h-9 rounded-md border bg-background px-2 text-sm" value={paper} aria-label={tr("Aina ya printer")} onChange={(e) => { const v = e.target.value as Paper; setPaper(v); }}>
                 <option value="80mm">80mm</option><option value="58mm">58mm</option><option value="A4">A4</option>
               </select>
               <label className="flex items-center gap-1 text-xs">{tr("Nakala")}

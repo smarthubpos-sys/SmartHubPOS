@@ -1,4 +1,5 @@
 import { ingredientOnlyIds, onSalesMenu } from "./menuVisibility";
+import { isMenuItem } from "./autoProduce";
 import { query, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { syncRecipePrices } from "./recipePricing";
@@ -44,7 +45,7 @@ export const list = query({
   args: {},
   handler: async (ctx) => {
     const user = await requireActiveUser(ctx);
-    return await visibleProducts(ctx, user);
+    return (await visibleProducts(ctx, user)).map((p) => (isMenuItem(p) ? { ...p, currentQty: 0, openingQty: 0 } : p)); // a menu item shows no quantity anywhere
   },
 });
 
@@ -56,8 +57,14 @@ export const listActive = query({
     // "autoProduced": made from its recipe at the moment of sale, so low / zero stock does not stop selling it.
     const auto = new Set<string>();
     if (user.tenantId) for (const r of await ctx.db.query("productionRecipes").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect()) if (r.active && r.autoOnSale === true) auto.add(String(r.outputProductId));
+    // A menu item (not a stock item) works from its recipe whether or not "auto on sale" is ticked; "routed" = it has a recipe to pick from.
+    const routed = new Set<string>();
+    if (user.tenantId) for (const r of await ctx.db.query("productionRecipes").withIndex("by_tenant", (q) => q.eq("tenantId", user.tenantId)).collect()) if (r.active) routed.add(String(r.outputProductId));
     const hiddenByDefault = await ingredientOnlyIds(ctx, user.tenantId);
-    return active.map((p) => ({ ...p, autoProduced: auto.has(String(p._id)), onMenu: onSalesMenu(p, hiddenByDefault) }));
+    return active.map((p) => {
+      const menu = isMenuItem(p);
+      return { ...p, currentQty: menu ? 0 : p.currentQty, openingQty: menu ? 0 : p.openingQty, isMenuItem: menu, routed: routed.has(String(p._id)), autoProduced: menu ? routed.has(String(p._id)) : auto.has(String(p._id)), onMenu: onSalesMenu(p, hiddenByDefault) };
+    });
   },
 });
 
@@ -93,6 +100,7 @@ export const upsert = mutation({
     trackBatchNumbers: v.optional(v.boolean()),
     trackExpiry: v.optional(v.boolean()),
     showInSales: v.optional(v.boolean()),
+    isStockItem: v.optional(v.boolean()), // false = menu item: no quantity of its own, sells straight from its recipe ingredients
     isActive: v.boolean(),
   },
   handler: async (ctx, args) => {
@@ -140,7 +148,13 @@ export const upsert = mutation({
     if (id) {
       const existingRecord = editing;
       if (!existingRecord) throw new ConvexError("Forbidden: record is outside your office/branch");
-      await ctx.db.patch("products", id, clean); // never touches currentQty / openingQty
+      await ctx.db.patch("products", id, clean); // never touches currentQty / openingQty (except when the item becomes a menu item, see below)
+      if (clean.isStockItem === false && Math.abs(existingRecord.currentQty) > 1e-8) {
+        // Becoming a menu item: whatever quantity it carried (plus or minus) is dropped, with a movement so the history still adds up.
+        const left = existingRecord.currentQty; const today = new Date().toISOString().slice(0, 10);
+        await ctx.db.patch("products", id, { currentQty: 0, openingQty: 0 });
+        await ctx.db.insert("stockMovements", { tenantId: existingRecord.tenantId, branchId: existingRecord.branchId, movementDate: today, productId: id, movementType: "adjustment", referenceId: String(id), referenceType: "menuItem", qtyIn: left < 0 ? -left : 0, qtyOut: left > 0 ? left : 0, runningBalance: 0, unitCost: existingRecord.weightedAvgCost ?? existingRecord.lastPurchaseCost ?? 0, notes: "Imekuwa bidhaa ya menu (si stock item)", createdBy: user._id });
+      }
       // LAST COST typed on the edit form: saved as the product's last purchase cost. The average cost (what stock value and profit use) is only
       // set from it when the product has no cost yet; otherwise the average keeps being worked out from purchases.
       const costChanged = lastCost !== undefined && lastCost !== (existingRecord.lastPurchaseCost ?? 0);
@@ -155,8 +169,8 @@ export const upsert = mutation({
       return id;
     }
 
-    const qty = openingQty ?? 0;
-    const cost = openingCost ?? 0;
+    const qty = clean.isStockItem === false ? 0 : (openingQty ?? 0); // a menu item starts with nothing
+    const cost = clean.isStockItem === false ? 0 : (openingCost ?? 0);
     if (!Number.isFinite(qty) || qty < 0) throw new ConvexError("Opening quantity si sahihi.");
     if (!Number.isFinite(cost) || cost < 0) throw new ConvexError("Opening cost si sahihi.");
 

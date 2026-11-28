@@ -1,28 +1,16 @@
 
+import { resolvePaper } from "./print-policy.ts";
+
 export type Paper = "80mm" | "58mm" | "A4";
 
-export const readPaper = (): Paper => {
-  try {
-    const saved = localStorage.getItem("smarthub-print-paper");
-    return saved === "58mm" || saved === "A4" ? saved : "80mm";
-  } catch {
-    return "80mm";
-  }
-};
+/** The paper of the business (its Hardware Setup value); nothing saved = 80mm. Never read from this browser's storage. */
+export const readPaper = (businessSetting?: unknown): Paper => resolvePaper(businessSetting);
 
 /**
  * Width of the print area inside the sheet. A receipt printer cannot print to the very edge of the paper, and the browser adds its own @page margin,
  * so a column as wide as the whole roll loses the last letters of every line on the right. The column is a little narrower than the roll and centred.
  */
 export const printableWidth = (paper: Paper) => (paper === "58mm" ? "52mm" : paper === "80mm" ? "72mm" : "100%");
-
-export const savePaper = (paper: Paper) => {
-  try {
-    localStorage.setItem("smarthub-print-paper", paper);
-  } catch {
-    /* storage unavailable */
-  }
-};
 
 /**
  * Print one receipt in an isolated iframe using the app's CSS.

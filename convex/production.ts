@@ -3,7 +3,7 @@ import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { applyRecipePrice, recipeUnitPrices } from "./recipePricing";
 import { logAudit, requireActiveUser, requireManagerOrPermission, resolveWriteScope } from "./access";
-import { autoProduceForSale } from "./autoProduce";
+import { autoProduceForSale, isMenuItem } from "./autoProduce";
 
 type Scope = { tenantId?: Id<"tenants">; branchId?: Id<"branches"> };
 const now = () => new Date().toISOString();
@@ -69,7 +69,8 @@ export const saveRecipe = mutation({
     // ingredients (a batch is recorded, the product returns to 0). From here on every sale picks from stock / produces from the ingredients.
     let clearedMinus = 0; let clearError: string | undefined;
     const fresh = await ctx.db.get("products", output._id);
-    if (args.active && args.autoOnSale === true && fresh && fresh.currentQty < -1e-8) {
+    if (fresh && isMenuItem(fresh) && Math.abs(fresh.currentQty) > 1e-8) await ctx.db.patch("products", fresh._id, { currentQty: 0 }); // a menu item never keeps a quantity (an old plus or minus is dropped)
+    else if (args.active && args.autoOnSale === true && fresh && fresh.currentQty < -1e-8) {
       const deficit = -fresh.currentQty;
       try {
         await autoProduceForSale(ctx, user, scope, new Map([[String(output._id), 0]]), false, { id: "recipe", label: "recipe imeunganishwa na stock" });
@@ -93,6 +94,7 @@ export const produceBatch = mutation({
     if (!Number.isFinite(args.quantity) || args.quantity <= 0) throw new ConvexError("Kiasi cha production lazima kiwe zaidi ya sifuri.");
     const output = await ctx.db.get("products", args.outputProductId);
     if (!output || !belongsToScope(output, scope)) throw new ConvexError("Bidhaa ya mwisho haipo kwenye biashara/department hii.");
+    if (isMenuItem(output)) throw new ConvexError(`${output.name} ni bidhaa ya menu (si stock item): haitengenezwi kwenye batch, inachukua malighafi zake yenyewe kila inapouzwa.`);
     const recipes = await ctx.db.query("productionRecipes").withIndex("by_output", q => q.eq("outputProductId", output._id)).collect();
     const recipe = recipes.find(r => r.tenantId === scope.tenantId && r.branchId === scope.branchId && r.active)
       ?? recipes.find(r => r.tenantId === scope.tenantId && r.branchId === undefined && r.active);
@@ -172,7 +174,7 @@ export const clearNegativeStock = mutation({
     const skipped: Array<{ name: string; reason: string }> = [];
     for (const r of recipes) {
       const product = await ctx.db.get("products", r.outputProductId);
-      if (!product || !belongsToScope(product, scope) || product.currentQty >= -1e-8) continue;
+      if (!product || !belongsToScope(product, scope) || isMenuItem(product) || product.currentQty >= -1e-8) continue;
       const deficit = -product.currentQty;
       try {
         await autoProduceForSale(ctx, user, scope, new Map([[String(product._id), 0]]), false, { id: "futa-minus", label: "kufuta minus" });

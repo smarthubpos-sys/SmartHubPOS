@@ -1,4 +1,5 @@
 import { ingredientOnlyIds, onSalesMenu } from "./menuVisibility";
+import { isMenuItem } from "./autoProduce";
 import { mutation, query, type MutationCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -17,6 +18,7 @@ async function applyAdjustment(ctx: AdjustCtx, user: AdjustUser, scope: AdjustSc
   if (!validQty(args.newQty) || !args.reason.trim()) throw new ConvexError("Weka stock halali na sababu ya marekebisho.");
   const p = await ctx.db.get("products", args.productId);
   if (!canAccessRecord(user, p) || !p) throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");
+  if (isMenuItem(p)) throw new ConvexError(`${p.name} ni bidhaa ya menu (si stock item): haina idadi ya kurekebisha. Rekebisha stock ya malighafi zake.`);
   // baseQty = what the system showed on the adjustment date (stock take of a past day); the difference is then carried to today's quantity.
   const before = args.baseQty ?? p.currentQty;
   const delta = Math.round((args.newQty - before) * 1e8) / 1e8;
@@ -93,6 +95,7 @@ export const stockTake = mutation({
     for (const l of a.lines) {
       const p = await ctx.db.get("products", l.productId);
       if (!p || !canAccessRecord(user, p)) throw new ConvexError("Bidhaa haipatikani kwenye branch yako.");
+      if (isMenuItem(p)) { unchanged++; continue; } // a menu item has no quantity to count
       const systemQty = Math.round((p.currentQty - (later.get(String(p._id)) ?? 0)) * 1e8) / 1e8;
       if (Math.round((l.counted - systemQty) * 1e8) === 0) { unchanged++; continue; }
       if (seller && l.counted < systemQty) {
@@ -195,7 +198,7 @@ export const stockRegisters = query({
     };
     const rows: Array<{ _id: Doc<"stockMovements">["_id"]; date: string; productId: Doc<"stockMovements">["productId"]; itemCode: string; productName: string; type: string; qtyIn: number; qtyOut: number; balance: number; unitCost: number; reference: string; notes: string }> = [];
     for (const m of movements) {
-      const g = agg.get(String(m.productId)); const p = pById.get(String(m.productId)); if (!g || !p) continue;
+      const g = agg.get(String(m.productId)); const p = pById.get(String(m.productId)); if (!g || !p || isMenuItem(p)) continue; // a menu item has no stock history to show
       g.running = round8(g.running + m.qtyIn - m.qtyOut);
       if (!inRange(m.movementDate)) continue;
       rows.push({ _id: m._id, date: m.movementDate, productId: m.productId, itemCode: p.itemCode, productName: p.name, type: m.movementType, qtyIn: m.qtyIn, qtyOut: m.qtyOut, balance: g.running, unitCost: m.unitCost ?? 0, reference: await refOf(m), notes: m.notes ?? "" });
@@ -203,13 +206,21 @@ export const stockRegisters = query({
 
     const productRows = products.map((p) => {
       const g = agg.get(String(p._id))!; const cost = costOf(p);
+      if (isMenuItem(p)) return {
+        _id: p._id, itemCode: p.itemCode, partNumber: p.partNumber ?? "", name: p.name, description: p.description ?? "", barcode: p.barcode ?? "",
+        groupId: p.groupId, groupName: p.groupId ? groupName.get(String(p.groupId)) ?? "—" : "—", unitId: p.unitId, unitName: p.unitId ? unitName.get(String(p.unitId)) ?? "Unit" : "Unit",
+        openingQty: 0, currentQty: 0, sellingPrice: p.sellingPrice, cost, lastPurchaseCost: p.lastPurchaseCost ?? 0, lastPurchaseDate: p.lastPurchaseDate ?? "",
+        stockValue: 0, retailValue: 0, reorderLevel: null, minStockLevel: null, isActive: p.isActive, isMenuItem: true,
+        trackExpiry: false, trackSerialNumbers: false, trackBatchNumbers: false, onMenu: onSalesMenu(p, hiddenByDefault),
+        qtyBefore: 0, qtyIn: 0, qtyOut: 0, qtyEnd: 0, movementBalance: 0, difference: 0,
+      };
       return {
         _id: p._id, itemCode: p.itemCode, partNumber: p.partNumber ?? "", name: p.name, description: p.description ?? "", barcode: p.barcode ?? "",
         groupId: p.groupId, groupName: p.groupId ? groupName.get(String(p.groupId)) ?? "—" : "—", unitId: p.unitId, unitName: p.unitId ? unitName.get(String(p.unitId)) ?? "Unit" : "Unit",
         openingQty: p.openingQty, currentQty: p.currentQty, sellingPrice: p.sellingPrice, cost, lastPurchaseCost: p.lastPurchaseCost ?? 0, lastPurchaseDate: p.lastPurchaseDate ?? "",
         stockValue: round2(p.currentQty * cost), retailValue: round2(p.currentQty * p.sellingPrice),
         reorderLevel: p.reorderLevel ?? null, minStockLevel: p.minStockLevel ?? null, isActive: p.isActive,
-        trackExpiry: !!p.trackExpiry, trackSerialNumbers: !!p.trackSerialNumbers, trackBatchNumbers: !!p.trackBatchNumbers, onMenu: onSalesMenu(p, hiddenByDefault),
+        trackExpiry: !!p.trackExpiry, trackSerialNumbers: !!p.trackSerialNumbers, trackBatchNumbers: !!p.trackBatchNumbers, onMenu: onSalesMenu(p, hiddenByDefault), isMenuItem: false,
         qtyBefore: round8(g.before), qtyIn: round8(g.inQty), qtyOut: round8(g.outQty), qtyEnd: round8(g.before + g.inQty - g.outQty),
         movementBalance: round8(g.all), difference: round8(p.currentQty - g.all),
       };
@@ -266,7 +277,7 @@ export const stockRegisters = query({
     const adjustments = filterScoped(user, adjustmentsRaw).filter((x) => inRange(x.adjustmentDate)).sort((x, y) => y.adjustmentDate.localeCompare(x.adjustmentDate))
       .map((x) => ({ _id: x._id, date: x.adjustmentDate, productName: pById.get(String(x.productId))?.name ?? "Bidhaa", itemCode: pById.get(String(x.productId))?.itemCode ?? "—", qtyBefore: x.qtyBefore, counted: x.qtyAfter, difference: x.adjustmentQty, reason: x.reason, reference: x.reference ?? "", status: x.status, cost: costOf(pById.get(String(x.productId))) }));
 
-    const active = productRows.filter((p) => p.isActive);
+    const active = productRows.filter((p) => p.isActive && !p.isMenuItem); // menu items are not stock: they never count in stock value, out of stock or reorder
     return {
       products: productRows, groups: groups.map((g) => ({ _id: g._id, code: g.code, name: g.name, description: g.description ?? "", isActive: g.isActive })), units: units.map((u) => ({ _id: u._id, code: u.code, name: u.name, isActive: u.isActive })),
       movements: rows, adjustments, earnings,
@@ -424,6 +435,7 @@ export const reconcileMovements = mutation({
     const byProduct = new Map<string, typeof movements>();
     for (const m of movements) { const k = String(m.productId); const list = byProduct.get(k); if (list) list.push(m); else byProduct.set(k, [m]); }
     for (const p of products) {
+      if (isMenuItem(p)) continue;
       const mine = byProduct.get(String(p._id)) ?? [];
       const net = round8(mine.reduce((n, m) => n + m.qtyIn - m.qtyOut, 0));
       const diff = round8(p.currentQty - net);

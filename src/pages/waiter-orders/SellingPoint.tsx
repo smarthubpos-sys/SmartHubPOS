@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -11,6 +11,8 @@ import ServicePointFields from "@/components/ServicePointFields.tsx";
 import { emptyServicePoint, filterProducts, formatServicePoint, serviceWords, type ServicePoint } from "@/lib/sales-flow.ts";
 import { printWaiterOrder, qzPrinterFrom } from "@/lib/print-waiter-order.ts";
 import { printPaymentReceipt } from "@/lib/print-payment-receipt.ts";
+import { createScanBuffer, scannerSuffix } from "@/lib/scanner.ts";
+import { buildDisplayState, emptyDisplay, openCustomerDisplay, publishDisplay } from "@/lib/customer-display.ts";
 import { usePaymentMethods } from "@/hooks/use-payment-methods.ts";
 import PaymentSplit from "@/components/PaymentSplit.tsx";
 import { newSplitLine, splitsTotal, toSplits, type SplitLine } from "@/lib/payment-split.ts";
@@ -49,7 +51,7 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
   const methods = usePaymentMethods();
   const [payLines, setPayLines] = useState<SplitLine[]>(() => [newSplitLine(methods)]);
   const [printReceipt, setPrintReceipt] = useState<boolean>(readPrintReceiptChoice);
-  const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string };
+  const hardware = (settings?.app?.hardware ?? {}) as { printerSource?: string; receiptPrinter?: string; paperWidth?: string; scannerSuffix?: string; customerDisplay?: boolean; customerDisplayMode?: string };
 
   const [groupId, setGroupId] = useState<string>("all");
   const [cart, setCart] = useState<Record<string, number>>({});
@@ -70,6 +72,36 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
   const add = (id: string, d: number) => { if (locked) return; setCart((c) => { const q = Math.max(0, Math.round(((c[id] ?? 0) + d) * 1000) / 1000); const { [id]: _drop, ...rest } = c; return q > 0 ? { ...c, [id]: q } : rest; }); };
   // Typed quantity (e.g. 0.5 or 2.5). Tapping a product still adds exactly 1; this is only for when someone wants a half or other fraction.
   const setQty = (id: string, q: number) => { if (locked || !(q > 0)) return; setCart((c) => ({ ...c, [id]: Math.round(q * 1000) / 1000 })); };
+
+  // Barcode / item code -> product on the menu (used by the search box and by the scanner).
+  const findByCode = (raw: string) => { const code = raw.trim().toLowerCase(); return code ? (products ?? []).find((p) => p.onMenu !== false && ((p.barcode ?? "").toLowerCase() === code || (p.itemCode ?? "").toLowerCase() === code)) : undefined; };
+  // A scan adds the item to "Oda ya sasa" by itself, with no box needing the cursor. Always calls the latest handler.
+  const scanRef = useRef<(code: string) => void>(() => undefined);
+  scanRef.current = (code) => { const hit = findByCode(code); if (hit) add(String(hit._id), 1); else toast.error(tr("Bidhaa haijapatikana.")); };
+  const suffix = scannerSuffix(hardware.scannerSuffix);
+  useEffect(() => {
+    const buf = createScanBuffer(suffix);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      const editable = !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+      const code = buf.push(e.key, Date.now(), editable);
+      if (code) { e.preventDefault(); scanRef.current(code); }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [suffix]);
+
+  // Customer display: what the customer sees follows the current order (items, quantities and total) as it grows.
+  const displayOn = hardware.customerDisplay === true;
+  const displayKey = JSON.stringify(lines.map((l) => [l.p?.name, l.qty, l.p?.sellingPrice]));
+  useEffect(() => {
+    if (!displayOn) return;
+    publishDisplay(buildDisplayState(branding.companyName ?? "", lines.map((l) => ({ name: l.p!.name, qty: l.qty, price: l.p!.sellingPrice })), hardware.customerDisplayMode === "numbers"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayOn, displayKey, branding.companyName, hardware.customerDisplayMode]);
+  useEffect(() => () => { if (displayOn) publishDisplay(emptyDisplay(branding.companyName ?? "")); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayOn]);
 
   async function finish(mode: "send" | "print") {
     if (locked || lines.length === 0) return;
@@ -127,7 +159,7 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
             if (e.key !== "Enter") return;
             e.preventDefault();
             const code = query.trim().toLowerCase();
-            const hit = code ? (products ?? []).find((p) => p.onMenu !== false && ((p.barcode ?? "").toLowerCase() === code || (p.itemCode ?? "").toLowerCase() === code)) : undefined;
+            const hit = findByCode(code);
             if (hit) { add(String(hit._id), 1); setQuery(""); } else if (code && shown.length !== 1) toast.error(tr("Bidhaa haijapatikana."));
             else if (shown.length === 1) { add(String(shown[0]._id), 1); setQuery(""); }
           }} />
@@ -157,7 +189,7 @@ export default function SellingPoint({ counter = false }: { counter?: boolean } 
       </div>
 
       <aside className="h-fit min-w-0 space-y-2 rounded-2xl border bg-card p-3 shadow-sm md:sticky md:top-2">
-        <h2 className="text-lg font-bold">{tr("Oda ya sasa")}</h2>
+        <div className="flex items-center justify-between gap-2"><h2 className="text-lg font-bold">{tr("Oda ya sasa")}</h2>{displayOn && <Button type="button" size="sm" variant="outline" onClick={openCustomerDisplay}>{tr("Fungua Customer Display")}</Button>}</div>
         <ul className="max-h-[38vh] space-y-2 overflow-y-auto pr-1">
           {lines.map((l) => (
             <li key={l.id} className="flex items-center justify-between gap-2">

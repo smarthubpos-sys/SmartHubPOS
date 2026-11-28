@@ -52,7 +52,7 @@ export default function ProductionPage() {
   const [busy, setBusy] = useState(false);
   const productOptions = useMemo(() => {
     const unitById = new Map((units ?? []).map((u) => [String(u._id), u]));
-    return (products ?? []).map((p) => ({ id: String(p._id), name: p.name, qty: p.currentQty, unit: unitInfo(p.unitId ? unitById.get(String(p.unitId)) : undefined) }));
+    return (products ?? []).map((p) => ({ id: String(p._id), name: p.name, qty: p.currentQty, menu: p.isMenuItem === true, unit: unitInfo(p.unitId ? unitById.get(String(p.unitId)) : undefined) }));
   }, [products, units]);
   const infoOf = (id: string): UnitInfo => productOptions.find((p) => p.id === id)?.unit ?? { label: "" };
   const submitRecipe = async () => {
@@ -145,19 +145,19 @@ export default function ProductionPage() {
       <label className="flex cursor-pointer items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 h-4 w-4 accent-primary" checked={autoOnSale} onChange={e => setAutoOnSale(e.target.checked)} /><span><b>{tr("Tengeneza yenyewe mauzo yanapofanyika")}</b><br /><span className="text-muted-foreground">{tr("Mhudumu akiuza bidhaa hii, mfumo unapunguza viungo kwenye stock yenyewe (bila kutengeneza batch kwanza).")}</span></span></label>
       <label className="flex cursor-pointer items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 h-4 w-4 accent-primary" checked={priceFromIngredients} onChange={e => setPriceFromIngredients(e.target.checked)} /><span><b>{tr("Bei ya kuuzia ichukuliwe kutoka kwa viungo (hiari)")}</b><br /><span className="text-muted-foreground">{tr("Kawaida: bei ya menu unaiweka mwenyewe kwenye bidhaa ya menu, na gharama inatoka kwenye bei za manunuzi za viungo vya stock. Washa hapa tu kama unataka bei ya menu ijijumlishe kutoka bei za kuuzia za viungo.")}</span></span></label>
       <div className="space-y-2">{ingredients.map((line, i) => <div key={i} className="grid grid-cols-[1fr_150px_auto] gap-2">
-        <select className={selectClass} value={line.productId} onChange={e => setIngredients(prev => prev.map((x,j) => j === i ? {...x, productId:e.target.value, small:false} : x))}><option value="">{tr("-- Malighafi --")}</option>{productOptions.filter(p => p.id !== outputProductId).map(p => <option key={p.id} value={p.id}>{p.name} (stock {p.qty})</option>)}</select>
+        <select className={selectClass} value={line.productId} onChange={e => setIngredients(prev => prev.map((x,j) => j === i ? {...x, productId:e.target.value, small:false} : x))}><option value="">{tr("-- Malighafi --")}</option>{productOptions.filter(p => p.id !== outputProductId && !p.menu).map(p => <option key={p.id} value={p.id}>{p.menu ? p.name : `${p.name} (stock ${p.qty})`}</option>)}</select>
         <QtyInput label={tr("Kiasi cha malighafi")} value={line.qty} info={infoOf(line.productId)} small={line.small} onChange={v => setIngredients(prev => prev.map((x,j) => j === i ? {...x, qty:v} : x))} onSmall={v => setIngredients(prev => prev.map((x,j) => j === i ? {...x, small:v} : x))} />
         <Button variant="outline" disabled={ingredients.length === 1} onClick={() => setIngredients(prev => prev.filter((_,j) => j !== i))}>{tr("Ondoa")}</Button>
       </div>)}</div>
-      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setIngredients(prev => [...prev,{productId:"",qty:"1"}])}>{tr("+ Ongeza malighafi")}</Button><Button disabled={busy} onClick={() => void submitRecipe()}>Hifadhi Recipe</Button></div>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setIngredients(prev => [...prev,{productId:"",qty:"1"}])}>{tr("+ Ongeza malighafi")}</Button><Button disabled={busy} onClick={() => void submitRecipe()}>{tr("Hifadhi Recipe")}</Button></div>
       <p className="text-xs text-muted-foreground">{tr("Recipe ni ya bidhaa na department ya sasa. Batch inatumia kiasi kilichohifadhiwa kwenye recipe wakati wa production.")}</p>
     </section>
     <section className="rounded-xl border p-4 space-y-4">
       <div><h2 className="text-lg font-semibold">{tr("2. Tengeneza Batch")}</h2><p className="text-sm text-muted-foreground">{tr("Mfumo hukagua stock yote kwanza, kisha hupunguza malighafi na kuongeza bidhaa iliyokamilika.")}</p></div>
       <div className="grid gap-3 md:grid-cols-[1fr_210px_auto] items-end">
-        <label className="space-y-1 text-sm">{tr("Bidhaa")}<select className={selectClass} value={batchProductId} onChange={e => { setBatchProductId(e.target.value); setBatchSmall(false); }}><option value="">{tr("-- Chagua bidhaa --")}</option>{productOptions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label className="space-y-1 text-sm">{tr("Bidhaa")}<select className={selectClass} value={batchProductId} onChange={e => { setBatchProductId(e.target.value); setBatchSmall(false); }}><option value="">{tr("-- Chagua bidhaa --")}</option>{productOptions.filter(p => !p.menu).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <label className="space-y-1 text-sm">{tr("Kiasi cha kutengeneza")}<QtyInput label={tr("Kiasi cha kutengeneza")} value={batchQty} onChange={setBatchQty} info={infoOf(batchProductId)} small={batchSmall} onSmall={setBatchSmall} /></label>
-        <Button disabled={busy} onClick={() => void submitBatch()}>Kamilisha Production</Button>
+        <Button disabled={busy} onClick={() => void submitBatch()}>{tr("Kamilisha Production")}</Button>
         <Button variant="outline" disabled={busy} onClick={() => void submitClearMinus()}>{tr("Futa minus (tengeneza zilizouzwa)")}</Button>
       </div>
     </section>
