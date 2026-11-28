@@ -51,3 +51,5 @@ backup-*.zip
 *.zip
 .env*
 !.env.example
+*.patch
+MABADILIKO_*.md
